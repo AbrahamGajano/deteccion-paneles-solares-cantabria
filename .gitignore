@@ -1,0 +1,17 @@
+# Entorno virtual
+.venv/
+venv/
+
+# Datos grandes
+data/
+*.tif
+*.tiff
+
+# Resultados y modelos
+runs/
+outputs/
+*.pt
+
+# Archivos temporales de Python
+__pycache__/
+*.pyc
