@@ -15,3 +15,7 @@ outputs/
 # Archivos temporales de Python
 __pycache__/
 *.pyc
+
+# Archivos personales de prueba
+src/prueba.py
+src/probar_manifest.py
