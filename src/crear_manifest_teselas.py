@@ -124,7 +124,6 @@ def guardar_manifest(registros: list[dict], ruta: str = RUTA_MANIFEST) -> None:
 
     # Creo el dataframe
     manifest = pd.DataFrame(data=registros, columns=columnas)
-    print(manifest)
     # Guardo el csv
     manifest.to_csv(ruta, index=False)
 
@@ -137,12 +136,12 @@ def main():
     edificios = cargar_edificios()
 
     print("\nBuscando ortofotos [2/4]...")
-    tifs = buscar_ortofotos()[:1]
+    tifs = buscar_ortofotos()
 
     print("\nProcesando tifs [3/4]...")
     registros_totales = []
     for num, tif in enumerate(tifs):
-        print(f"Procesando tif [{num}/{len(tifs)}]: {tif.name}")
+        print(f"Procesando tif [{num + 1}/{len(tifs)}]: {tif.name}")
         registros_tif = procesar_tif(ruta_tif=tif, edificios=edificios)
         registros_totales.extend(registros_tif)
 
