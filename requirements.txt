@@ -16,7 +16,7 @@ pyogrio>=0.9,<1
 tqdm>=4.66,<5
 
 # Etiquetado manual
-labelme>=5.6,<6
+labelme>=7,<8
 
 # Entrenamiento y uso de YOLO
 ultralytics>=8.3,<9
