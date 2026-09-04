@@ -1,5 +1,7 @@
 from pathlib import Path
 
+import cv2
+import numpy as np
 import pandas as pd
 
 RUTA_IMAGENES = Path("./data/extern/bdappv/ign/img")
@@ -57,7 +59,8 @@ def seleccionar_datos(
         ValueError: En caso de solicitar mas de los existentes
 
     Returns:
-        _type_: _description_
+        pd.DataFrame: Dataframe de los seleccionados que indica si son positivos o no
+        y tambien de si son para entreno o no
     """
     # Separamos en positivos y negativos
     positivos_solicitados = datos[datos["tiene_mascara"]]
@@ -97,7 +100,51 @@ def seleccionar_datos(
 
 
 def convertir_mascara_yolo(ruta_mascara: Path, ruta_txt: Path) -> None:
-    """Convierte las zonas blancas de una máscara en polígonos YOLO."""
+    """Funcion que convierte una mascaraen un txt valido para YOLO
+
+    Args:
+        ruta_mascara (Path): Ruta de la mascara a procesar
+        ruta_txt (Path): Ruta destino del txt
+    """
+    # Creo la mascara para diff panel de no panel
+    mascara = cv2.imread(str(ruta_mascara), cv2.IMREAD_GRAYSCALE)
+
+    # Solo porsiacaso
+    mascara_binaria = (mascara > 0).astype(np.uint8) * 255
+
+    # Para Yolo tenemos que feedearle solo los paneles
+    contornos, _ = cv2.findContours(
+        mascara_binaria, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    # Necesitamos el donde se encuentran los pixeles relativamente [0, 1] no el num abs
+    alto, ancho = mascara.shape
+    lineas = []
+
+    for contorno in contornos:
+        puntos = contorno.reshape(-1, 2)
+
+        # Si es poligono ha de ser mayor a 3 sus vertices
+        if len(puntos) < 3:
+            continue
+
+        coords = []
+
+        for x, y in puntos:
+            coords.append(x / ancho)
+            coords.append(y / alto)
+
+        # Yolo necesita un formato tipo {clase} x0 y0 x1 y1 ...
+        # Por cada panel siendo la clase 0 para panel_solar
+        coordenadas_txt = " ".join(str(val) for val in coords)
+
+        linea = f"0 {coordenadas_txt}"
+        lineas.append(linea)
+
+    # A modo de precaucion por si es la primera creada y no existe todavia la ruta
+    ruta_txt.parent.mkdir(parents=True, exist_ok=True)
+    # Guardamos el txt codificado en utf-8
+    ruta_txt.write_text(data="\n".join(lineas), encoding="utf-8")
 
 
 def preparar_grupo(datos: pd.DataFrame, grupo: str) -> None:
