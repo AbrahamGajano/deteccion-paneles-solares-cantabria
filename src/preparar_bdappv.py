@@ -217,4 +217,17 @@ def guardar_configuracion() -> None:
 
 
 def main() -> None:
-    """Ejecuta la preparación completa del dataset."""
+    """Ejecuta la preparación completa del dataset"""
+
+    print("\nBuscando datos [1/4]")
+    df = buscar_datos()
+
+    print("\nSeleccionando datos [2/4]")
+    df = seleccionar_datos(datos=df, positivos=NUM_POS, negativos=NUM_NEG)
+
+    print("\nPreparando grupos [3/4]")
+    preparar_grupo(datos=df, grupo="train")
+    preparar_grupo(datos=df, grupo="val")
+
+    print("\nGuardando .yaml [4/4]")
+    guardar_configuracion()
