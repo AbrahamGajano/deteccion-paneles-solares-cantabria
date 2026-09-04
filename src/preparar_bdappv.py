@@ -1,3 +1,4 @@
+import shutil
 from pathlib import Path
 
 import cv2
@@ -6,6 +7,8 @@ import pandas as pd
 
 RUTA_IMAGENES = Path("./data/extern/bdappv/ign/img")
 RUTA_MASCARAS = Path("./data/extern/bdappv/ign/mask")
+
+RUTA_YOLO = Path("./data/processed/bdappv_yolo")
 
 RATIO_TRAIN = 80
 NUM_POS = 4000
@@ -148,7 +151,54 @@ def convertir_mascara_yolo(ruta_mascara: Path, ruta_txt: Path) -> None:
 
 
 def preparar_grupo(datos: pd.DataFrame, grupo: str) -> None:
-    """Copia imágenes y genera etiquetas para train o val."""
+    """Organiza los datos del dataset para el entrenamiento en sus grupos
+
+    Args:
+        datos (pd.DataFrame): DataFrame que contiene los datos de todas las imagenes con
+        sus mascaras en caso de existir y si son "train" o "val"
+        grupo (str): "train" o "val" para saber a que grupo pertenecen
+
+    Raises:
+        ValueError: En caso de no haber usado "train" o "val" como argumento
+    """
+
+    # Hay que validar que sea un grupo valido
+    if grupo not in ["train", "val"]:
+        raise ValueError("El grupo debe ser train o val")
+
+    # Preparamos las rutas basandonos en el grupo
+    # Ademas de filtrar el df al del grupo
+    datos_grupo = datos[datos["grupo"] == grupo]
+
+    ruta_yolo_imagenes = RUTA_YOLO / "images" / grupo
+    ruta_yolo_labels = RUTA_YOLO / "labels" / grupo
+
+    ruta_yolo_imagenes.mkdir(parents=True, exist_ok=True)
+    ruta_yolo_labels.mkdir(parents=True, exist_ok=True)
+
+    # Recorremos todas las lineas
+    for _, row in datos_grupo.iterrows():
+        ruta_imagen_origen = Path(row["ruta_imagen"])
+
+        ruta_imagen_destino = ruta_yolo_imagenes / ruta_imagen_origen.name
+
+        ruta_label_destino = ruta_yolo_labels / f"{ruta_imagen_origen.stem}.txt"
+
+        # Copiamos pero NO movemos las imagnes
+        shutil.copy2(
+            src=ruta_imagen_origen,
+            dst=ruta_imagen_destino,
+        )
+
+        # Solo en caso de existir llamaremos a la funcion sino
+        # ponemos uno vacio
+        if row["tiene_mascara"]:
+            convertir_mascara_yolo(
+                ruta_mascara=Path(row["ruta_mascara"]),
+                ruta_txt=ruta_label_destino,
+            )
+        else:
+            ruta_label_destino.write_text("", encoding="utf-8")
 
 
 def guardar_configuracion() -> None:
