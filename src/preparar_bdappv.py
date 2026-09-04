@@ -202,7 +202,18 @@ def preparar_grupo(datos: pd.DataFrame, grupo: str) -> None:
 
 
 def guardar_configuracion() -> None:
-    """Crea el archivo bdappv.yaml utilizado por YOLO."""
+    """Funcion para crear el .yaml"""
+    contenido = (
+        f"path: {RUTA_YOLO.as_posix()}\n"
+        "train: images/train\n"
+        "val: images/val\n"
+        "\n"
+        "names:\n"
+        "  0: panel_solar\n"
+    )
+
+    ruta_yaml = RUTA_YOLO / "bdappv.yaml"
+    ruta_yaml.write_text(contenido, encoding="utf-8")
 
 
 def main() -> None:
