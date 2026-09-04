@@ -5,12 +5,12 @@ import cv2
 import numpy as np
 import pandas as pd
 
-RUTA_IMAGENES = Path("./data/extern/bdappv/ign/img")
-RUTA_MASCARAS = Path("./data/extern/bdappv/ign/mask")
+RUTA_IMAGENES = Path("./data/external/bdappv/ign/img")
+RUTA_MASCARAS = Path("./data/external/bdappv/ign/mask")
 
 RUTA_YOLO = Path("./data/processed/bdappv_yolo")
 
-RATIO_TRAIN = 80
+RATIO_TRAIN = 0.8
 NUM_POS = 4000
 NUM_NEG = 4000
 
@@ -108,9 +108,15 @@ def convertir_mascara_yolo(ruta_mascara: Path, ruta_txt: Path) -> None:
     Args:
         ruta_mascara (Path): Ruta de la mascara a procesar
         ruta_txt (Path): Ruta destino del txt
+
+    Raises:
+        FileNotFoundError: En caso de no poder abrir la ruta de la mascara
     """
     # Creo la mascara para diff panel de no panel
     mascara = cv2.imread(str(ruta_mascara), cv2.IMREAD_GRAYSCALE)
+
+    if mascara is None:
+        raise FileNotFoundError(f"No se pudo abrir la máscara: {ruta_mascara}")
 
     # Solo porsiacaso
     mascara_binaria = (mascara > 0).astype(np.uint8) * 255
@@ -231,3 +237,7 @@ def main() -> None:
 
     print("\nGuardando .yaml [4/4]")
     guardar_configuracion()
+
+
+if __name__ == "__main__":
+    main()
