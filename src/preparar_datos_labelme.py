@@ -171,7 +171,7 @@ def guardar_seleccion(seleccion: pd.DataFrame) -> None:
 def main():
     """Programa que selecciona teselas para guardar como png"""
     # Definimos la cantidad de pngs a generar inicial
-    cantidad = 150
+    cantidad = 1000
 
     print("\nCargando el manifest [1/5]")
     manifest = cargar_manifest()
