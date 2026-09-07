@@ -3,7 +3,7 @@ import shutil
 from pathlib import Path
 
 CARPETA_IMGS = Path("./data/labeling/images")
-CARPETA_JSON = Path("./data/labeling/annotations")
+CARPETA_JSON = Path("./data/labeling/anotations")
 
 RUTA_YOLO = Path("./data/processed/cantabria_test_yolo")
 RUTA_YAML = RUTA_YOLO / "cantabria_test.yaml"
@@ -13,17 +13,20 @@ RUTA_LAB_YOLO = RUTA_YOLO / "labels"
 TAM_IMG = 512
 
 
-def convierte_json_yolo(ruta_json_ori: Path, ruta_txt_dst: Path) -> None:
+def convierte_json_yolo(ruta_json_ori: Path, ruta_txt_dst: Path) -> int:
     """Funcion que convierte los anotations hechos por labelme a algo que
     ultralytics entiende (txt con px)
 
     Args:
         ruta_json_ori (Path): Json origen
         ruta_txt_dst (Path): Txt destino
+
+    Returns:
+        int: Retorna el num de paneles que habia
     """
     # Leemos los contenidos del json
     contenido_json = json.loads(ruta_json_ori.read_text(encoding="utf-8"))
-
+    total = len(contenido_json["shapes"])
     lineas = []  # Una por cada panel
     for panel in contenido_json["shapes"]:  # Puede haber varios por img
         px_panel = panel["points"]  # Sacamos la lista de puntos
@@ -41,6 +44,7 @@ def convierte_json_yolo(ruta_json_ori: Path, ruta_txt_dst: Path) -> None:
 
     ruta_txt_dst.parent.mkdir(parents=True, exist_ok=True)
     ruta_txt_dst.write_text("\n".join(lineas), encoding="utf-8")
+    return total
 
 
 def preparar_yaml() -> None:
@@ -76,7 +80,10 @@ def preparar_test():
     RUTA_IMG_YOLO.mkdir(parents=True, exist_ok=True)
     RUTA_LAB_YOLO.mkdir(parents=True, exist_ok=True)
 
-    for json_lab in jsons:
+    total = 0  # Por llevar un recuento
+
+    for idx, json_lab in enumerate(iterable=jsons, start=1):
+        print(f"Procesando json [{idx}/{len(jsons)}]")
         # Sacamos solo el nombre
         name = json_lab.stem
 
@@ -92,7 +99,9 @@ def preparar_test():
             print("Imagen no encontrada")
             raise ValueError
 
-        convierte_json_yolo(ruta_json_ori=json_lab, ruta_txt_dst=rut_lab_dst)
+        total += convierte_json_yolo(ruta_json_ori=json_lab, ruta_txt_dst=rut_lab_dst)
+
+    print(f"Se han encontrado {total} paneles")
 
     # Necesitamos el YAML para correr los tests
     preparar_yaml()
