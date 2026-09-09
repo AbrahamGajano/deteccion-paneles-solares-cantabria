@@ -1,24 +1,50 @@
+from pathlib import Path
+
 from ultralytics import YOLO
 
-RUTA_YAML = "./data/processed/bdappv_yolo/bdappv.yaml"
+RUTA_YAML = Path("./data/processed/cantabria_yolo/cantabria.yaml")
+
+MODELO_FRANCES = Path("./runs/segment/bdappv_completo/weights/best.pt")
 
 
-def main():
-    """Programa que entrena el modelo"""
-    modelo = YOLO("runs/segment/runs/segment/prueba_bdappv/weights/best.pt")
+def entrenar(
+    nombre: str,
+    pesos_iniciales: str | Path = "yolo11n-seg.pt",
+) -> None:
+    """Entrena un modelo con los datos de Cantabria."""
+
+    print(f"\nEntrenando: {nombre}")
+    print(f"Pesos iniciales: {pesos_iniciales}\n")
+
+    modelo = YOLO(str(pesos_iniciales))
 
     modelo.train(
-        data="data/processed/bdappv_yolo/bdappv.yaml",
+        data=str(RUTA_YAML),
         imgsz=512,
-        time=7,
-        patience=15,
+        epochs=150,
+        time=3.5,
+        patience=20,
         batch=16,
         device=0,
         workers=4,
         cache=False,
         optimizer="auto",
         amp=True,
-        name="bdappv_completo",
+        seed=42,
+        deterministic=True,
+        project="runs/cantabria",
+        name=nombre,
+    )
+
+
+def main():
+    entrenar(
+        nombre="desde_generico_n",
+    )
+
+    entrenar(
+        nombre="desde_francia_n",
+        pesos_iniciales=MODELO_FRANCES,
     )
 
 

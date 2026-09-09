@@ -10,7 +10,8 @@ RUTA_MANIFEST = Path("./data/processed/manifests/teselas_con_edificios.csv")
 RUTA_SELECCION = Path("./data/processed/manifests/muestra_etiquetado.csv")
 
 CARPETA_PNOA = Path("data/pnoa")
-CARPETA_IMAGENES = Path("data/labeling/images")
+CONJUNTO = "train_val"
+CARPETA_IMAGENES = Path("data/labeling") / CONJUNTO / "images"
 TAM_TES = 512
 
 
@@ -171,7 +172,7 @@ def guardar_seleccion(seleccion: pd.DataFrame) -> None:
 def main():
     """Programa que selecciona teselas para guardar como png"""
     # Definimos la cantidad de pngs a generar inicial
-    cantidad = 1000
+    cantidad = 4000
 
     print("\nCargando el manifest [1/5]")
     manifest = cargar_manifest()
@@ -183,6 +184,8 @@ def main():
     seleccion_actual = seleccionar_nuevas_teselas(
         seleccion_anterior=seleccion_anterior, manifest=manifest, cantidad=cantidad
     )
+    seleccion_actual = seleccion_actual.copy()
+    seleccion_actual["conjunto"] = CONJUNTO
 
     print("\nGuardando pngs [4/5]")
     seleccion_correcta = extraer_teselas(seleccion_actual)
