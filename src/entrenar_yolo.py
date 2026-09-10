@@ -22,7 +22,7 @@ def entrenar(
         data=str(RUTA_YAML),
         imgsz=512,
         epochs=150,
-        time=3.5,
+        time=4,
         patience=20,
         batch=16,
         device=0,
