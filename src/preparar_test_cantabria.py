@@ -2,8 +2,8 @@ import json
 import shutil
 from pathlib import Path
 
-CARPETA_IMGS = Path("./data/labeling/images")
-CARPETA_JSON = Path("./data/labeling/anotations")
+CARPETA_IMGS = Path("./data/labeling/test/images")
+CARPETA_JSON = Path("./data/labeling/test/annotations")
 
 RUTA_YOLO = Path("./data/processed/cantabria_test_yolo")
 RUTA_YAML = RUTA_YOLO / "cantabria_test.yaml"
