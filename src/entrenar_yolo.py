@@ -2,9 +2,8 @@ from pathlib import Path
 
 from ultralytics import YOLO
 
-RUTA_YAML = Path("./data/processed/cantabria_yolo/cantabria.yaml")
-
-MODELO_FRANCES = Path("./runs/segment/bdappv_completo/weights/best.pt")
+RUTA_YAML = Path("./data/processed/cantabria_yolo_ronda_1/cantabria.yaml")
+MODELO_INICIAL = Path("./runs/segment/runs/cantabria/desde_francia_n/weights/best.pt")
 
 
 def entrenar(
@@ -37,14 +36,10 @@ def entrenar(
     )
 
 
-def main():
+def main() -> None:
     entrenar(
-        nombre="desde_generico_n",
-    )
-
-    entrenar(
-        nombre="desde_francia_n",
-        pesos_iniciales=MODELO_FRANCES,
+        nombre="desde_cantabria_ronda_1",
+        pesos_iniciales=MODELO_INICIAL,
     )
 
 

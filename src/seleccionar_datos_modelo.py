@@ -1,4 +1,3 @@
-import json
 from pathlib import Path
 
 import numpy as np
@@ -8,342 +7,313 @@ from PIL import Image
 from rasterio.windows import Window
 from ultralytics import YOLO
 
-TAREA = "nuevas"
-
-RUTA_MODELO = Path("runs/segment/runs/cantabria/desde_francia_n/weights/best.pt")
+RUTA_MODELO = Path(
+    "runs/segment/runs/cantabria/desde_cantabria_ronda_1/weights/best.pt"
+)
 
 RUTA_MANIFEST = Path("data/processed/manifests/teselas_con_edificios.csv")
+
+RUTA_MUESTRA = Path("data/processed/manifests/muestra_etiquetado.csv")
+
+RUTA_RESULTADO = Path("data/processed/manifests/seleccion_ronda_2.csv")
+
 CARPETA_PNOA = Path("data/pnoa")
+CARPETA_SALIDA = Path("data/labeling/ronda_2/images")
 
-CARPETA_TRAIN_VAL = Path("data/labeling/train_val")
-CARPETA_TEST = Path("data/labeling/test")
-CARPETA_RONDA = Path("data/labeling/ronda_1")
+CONFIANZA_INTERVALO_MIN = 0.40
+CONFIANZA_INTERVALO_MAX = 0.60
+CANTIDAD_INTERVALO = 250
 
-RUTA_YOLO_ANTERIOR = Path("data/processed/cantabria_yolo")
-
-RUTA_NEGATIVAS = Path("data/processed/manifests/negativas_dificiles_modelo.csv")
-RUTA_SELECCION_RONDA = Path("data/processed/manifests/seleccion_ronda_1.csv")
-
-CONFIANZA_NEGATIVAS = 0.40
-CANTIDAD_NEGATIVAS = 300
-
-CONFIANZA_NUEVAS = 0.75
-CANTIDAD_NUEVAS = 200
+CONFIANZA_DETECCIONES = 0.50
+MINIMO_DETECCIONES = 4
+CANTIDAD_GRANDES = 150
 
 TAM_TES = 512
-TAM_LOTE = 8
 SEMILLA = 42
 
 
-def cargar_nombres_usados_entreno() -> set[str]:
-    """Retorna los nombres usados en el anterior train y val."""
-
-    nombres = set()
-
-    for division in ["train", "val"]:
-        carpeta = RUTA_YOLO_ANTERIOR / "images" / division
-
-        for ruta_imagen in carpeta.glob("*.png"):
-            nombres.add(ruta_imagen.stem)
-
-    return nombres
-
-
-def cargar_negativas_no_usadas() -> list[Path]:
-    """Carga las negativas no utilizadas en el anterior entrenamiento."""
-
-    nombres_usados = cargar_nombres_usados_entreno()
-    carpeta_imagenes = CARPETA_TRAIN_VAL / "images"
-    carpeta_json = CARPETA_TRAIN_VAL / "annotations"
-
-    negativas = []
-
-    for ruta_json in sorted(carpeta_json.glob("*.json")):
-        if ruta_json.stem in nombres_usados:
-            continue
-
-        datos = json.loads(ruta_json.read_text(encoding="utf-8"))
-        flags = datos.get("flags") or {}
-
-        if flags.get("dudosa", False):
-            continue
-
-        tiene_paneles = any(
-            forma.get("label") == "panel_solar" and len(forma.get("points", [])) >= 3
-            for forma in datos.get("shapes", [])
-        )
-
-        if tiene_paneles:
-            continue
-
-        ruta_imagen = carpeta_imagenes / f"{ruta_json.stem}.png"
-
-        if not ruta_imagen.exists():
-            raise FileNotFoundError(ruta_imagen)
-
-        negativas.append(ruta_imagen)
-
-    return negativas
-
-
-def seleccionar_negativas_dificiles(
-    modelo: YOLO,
-    rutas_imagenes: list[Path],
-    confianza_minima: float,
-    cantidad_maxima: int,
-) -> pd.DataFrame:
-    """Selecciona negativas donde el modelo encuentra falsennials paneles."""
-
-    seleccionadas = []
-    total = len(rutas_imagenes)
-
-    for inicio in range(0, total, TAM_LOTE):
-        lote = rutas_imagenes[inicio : inicio + TAM_LOTE]
-
-        resultados = modelo.predict(
-            source=[str(ruta) for ruta in lote],
-            imgsz=512,
-            conf=confianza_minima,
-            device=0,
-            verbose=False,
-        )
-
-        for resultado in resultados:
-            if resultado.boxes is None or len(resultado.boxes) == 0:
-                continue
-
-            seleccionadas.append(
-                {
-                    "tile_id": Path(resultado.path).stem,
-                    "confianza": resultado.boxes.conf.max().item(),
-                    "detecciones": len(resultado.boxes),
-                }
-            )
-
-        procesadas = min(inicio + TAM_LOTE, total)
-        print(
-            f"\rProcesadas: {procesadas}/{total} | "
-            f"Con fals बेलos positivos: {len(seleccionadas)}",
-            end="",
-        )
-
-    print()
-
-    seleccion = pd.DataFrame(seleccionadas)
-
-    if seleccion.empty:
-        return pd.DataFrame(columns=["tile_id", "confianza", "detecciones"])
-
-    seleccion = seleccion.sort_values(
-        by="confianza",
-        ascending=False,
-    )
-
-    return seleccion.head(cantidad_maxima)
-
-
 def cargar_manifest() -> pd.DataFrame:
-    """Carga las teselas candidatas del manifest."""
+    """Carga las teselas disponibles y elimina las ya utilizadas."""
+
+    if not RUTA_MANIFEST.exists():
+        raise FileNotFoundError(RUTA_MANIFEST)
 
     manifest = pd.read_csv(RUTA_MANIFEST)
 
-    if manifest.empty:
-        raise ValueError("El manifest esta vacio")
+    manifest = manifest[
+        (manifest["ancho"] == TAM_TES) & (manifest["alto"] == TAM_TES)
+    ].copy()
 
-    return manifest
+    usados = cargar_tile_ids_usados()
+
+    manifest = manifest[~manifest["tile_id"].astype(str).isin(usados)]
+
+    return manifest.sample(
+        frac=1,
+        random_state=SEMILLA,
+    ).reset_index(drop=True)
 
 
-def cargar_ids_usados() -> set[str]:
-    """Carga los tile_id que ya se han extraido para etiquetar."""
+def cargar_tile_ids_usados() -> set[str]:
+    """Busca las teselas que ya han sido utilizadas anteriormente."""
 
-    ids_usados = set()
+    usados = set()
 
-    carpetas = [
-        CARPETA_TRAIN_VAL / "images",
-        CARPETA_TEST / "images",
-        CARPETA_RONDA / "images",
-    ]
+    if RUTA_MUESTRA.exists():
+        muestra = pd.read_csv(RUTA_MUESTRA)
 
-    for carpeta in carpetas:
-        for ruta_imagen in carpeta.glob("*.png"):
-            ids_usados.add(ruta_imagen.stem)
+        if "tile_id" in muestra.columns:
+            usados.update(muestra["tile_id"].dropna().astype(str))
 
-    return ids_usados
+    carpeta_labeling = Path("data/labeling")
+
+    if carpeta_labeling.exists():
+        for ruta in carpeta_labeling.rglob("*"):
+            if ruta.suffix.lower() in {".png", ".jpg", ".jpeg", ".json"}:
+                usados.add(ruta.stem)
+
+    return usados
 
 
 def leer_tesela(registro: pd.Series) -> np.ndarray:
-    """Lee una tesela del PNOA sin guardarla todavía."""
+    """Extrae una tesela directamente de su ortofoto."""
 
-    ruta_tif = CARPETA_PNOA / registro["tif"]
+    ruta_tif = CARPETA_PNOA / str(registro["tif"])
+
+    if not ruta_tif.exists():
+        raise FileNotFoundError(ruta_tif)
+
+    ventana = Window(
+        col_off=int(registro["columna"]),
+        row_off=int(registro["fila"]),
+        width=int(registro["ancho"]),
+        height=int(registro["alto"]),
+    )
 
     with rasterio.open(ruta_tif) as tif:
-        ventana = Window(
-            col_off=int(registro["columna"]),
-            row_off=int(registro["fila"]),
-            width=int(registro["ancho"]),
-            height=int(registro["alto"]),
+        imagen = tif.read(
+            [1, 2, 3],
+            window=ventana,
         )
 
-        imagen = tif.read([1, 2, 3], window=ventana)
-        imagen = np.moveaxis(imagen, 0, -1)
-
-    return imagen
+    return np.moveaxis(imagen, 0, -1)
 
 
-def guardar_seleccion_ronda(
-    seleccion: list[dict],
-) -> None:
-    """Guarda las teselas aceptadas para poder reanudar."""
+def predecir(
+    modelo: YOLO,
+    imagen: np.ndarray,
+) -> tuple[float, int]:
+    """Retorna la confianza maxima y el numero de detecciones fiables."""
 
-    RUTA_SELECCION_RONDA.parent.mkdir(parents=True, exist_ok=True)
+    imagen_bgr = imagen[:, :, ::-1].copy()
 
-    pd.DataFrame(seleccion).to_csv(
-        RUTA_SELECCION_RONDA,
-        index=False,
+    resultado = modelo.predict(
+        source=imagen_bgr,
+        imgsz=512,
+        conf=CONFIANZA_INTERVALO_MIN,
+        batch=1,
+        device=0,
+        verbose=False,
+    )[0]
+
+    if resultado.boxes is None or len(resultado.boxes) == 0:
+        return 0.0, 0
+
+    confianzas = resultado.boxes.conf.detach().cpu().tolist()
+
+    confianza_maxima = max(confianzas)
+
+    numero_detecciones = sum(
+        confianza >= CONFIANZA_DETECCIONES for confianza in confianzas
     )
 
+    return confianza_maxima, numero_detecciones
 
-def seleccionar_nuevas_por_confianza(
-    modelo: YOLO,
-    cantidad: int,
-    confianza_minima: float,
-) -> None:
-    """Extrae nuevas teselas seleccionadas por el modelo."""
 
-    manifest = cargar_manifest()
-    ids_usados = cargar_ids_usados()
+def guardar_imagen(
+    imagen: np.ndarray,
+    tile_id: str,
+) -> Path:
+    """Guarda la tesela seleccionada como PNG."""
 
-    if RUTA_SELECCION_RONDA.exists():
-        seleccion = pd.read_csv(RUTA_SELECCION_RONDA).to_dict("records")
-    else:
-        seleccion = []
+    CARPETA_SALIDA.mkdir(parents=True, exist_ok=True)
 
-    if len(seleccion) >= cantidad:
-        print(f"\nYa existen {len(seleccion)} teselas seleccionadas")
+    ruta_salida = CARPETA_SALIDA / f"{tile_id}.png"
+    Image.fromarray(imagen).save(ruta_salida)
+
+    return ruta_salida
+
+
+def guardar_resultados(registros: list[dict]) -> None:
+    """Guarda la ronda y actualiza la lista de teselas utilizadas."""
+
+    if not registros:
+        print("\nNo se ha seleccionado ninguna imagen")
         return
 
-    teselas_validas = manifest[
-        (manifest["ancho"] == TAM_TES)
-        & (manifest["alto"] == TAM_TES)
-        & (~manifest["tile_id"].astype(str).isin(ids_usados))
-    ]
+    seleccion = pd.DataFrame(registros)
 
-    teselas_validas = teselas_validas.sample(
-        frac=1,
-        random_state=SEMILLA,
+    RUTA_RESULTADO.parent.mkdir(parents=True, exist_ok=True)
+    seleccion.to_csv(RUTA_RESULTADO, index=False)
+
+    if RUTA_MUESTRA.exists():
+        muestra_anterior = pd.read_csv(RUTA_MUESTRA)
+        muestra_total = pd.concat(
+            [muestra_anterior, seleccion],
+            ignore_index=True,
+        )
+    else:
+        muestra_total = seleccion
+
+    muestra_total = muestra_total.drop_duplicates(
+        subset="tile_id",
+        keep="last",
     )
 
-    carpeta_imagenes = CARPETA_RONDA / "images"
-    carpeta_anotaciones = CARPETA_RONDA / "annotations"
+    muestra_total.to_csv(RUTA_MUESTRA, index=False)
 
-    carpeta_imagenes.mkdir(parents=True, exist_ok=True)
-    carpeta_anotaciones.mkdir(parents=True, exist_ok=True)
 
-    revisadas = 0
-    seleccionadas_iniciales = len(seleccion)
+def seleccionar(
+    modelo: YOLO,
+    manifest: pd.DataFrame,
+) -> list[dict]:
+    """Selecciona imágenes ambiguas y posibles instalaciones grandes."""
 
-    for _, registro in teselas_validas.iterrows():
+    seleccionados = []
+    cantidad_intervalo = 0
+    cantidad_grandes = 0
+    total = len(manifest)
+
+    for indice, (_, registro) in enumerate(
+        manifest.iterrows(),
+        start=1,
+    ):
+        if (
+            cantidad_intervalo >= CANTIDAD_INTERVALO
+            and cantidad_grandes >= CANTIDAD_GRANDES
+        ):
+            break
+
         try:
             imagen = leer_tesela(registro)
-            imagen_pil = Image.fromarray(imagen)
 
-            resultado = modelo.predict(
-                source=imagen_pil,
-                imgsz=512,
-                conf=confianza_minima,
-                device=0,
-                verbose=False,
-            )[0]
+            confianza_maxima, numero_detecciones = predecir(
+                modelo=modelo,
+                imagen=imagen,
+            )
 
-            revisadas += 1
+            cumple_intervalo = (
+                cantidad_intervalo < CANTIDAD_INTERVALO
+                and CONFIANZA_INTERVALO_MIN
+                <= confianza_maxima
+                <= CONFIANZA_INTERVALO_MAX
+            )
 
-            if resultado.boxes is None or len(resultado.boxes) == 0:
+            cumple_grandes = (
+                cantidad_grandes < CANTIDAD_GRANDES
+                and numero_detecciones >= MINIMO_DETECCIONES
+            )
+
+            if not cumple_intervalo and not cumple_grandes:
+                if indice % 100 == 0:
+                    print(
+                        f"Procesadas: {indice}/{total} | "
+                        f"Intervalo: {cantidad_intervalo}/"
+                        f"{CANTIDAD_INTERVALO} | "
+                        f"Grandes: {cantidad_grandes}/"
+                        f"{CANTIDAD_GRANDES}"
+                    )
+
                 continue
 
+            tipos = []
+
+            if cumple_intervalo:
+                tipos.append("intervalo")
+                cantidad_intervalo += 1
+
+            if cumple_grandes:
+                tipos.append("muchas_detecciones")
+                cantidad_grandes += 1
+
             tile_id = str(registro["tile_id"])
-            ruta_png = carpeta_imagenes / f"{tile_id}.png"
 
-            imagen_pil.save(ruta_png)
-
-            datos_registro = registro.to_dict()
-            datos_registro["confianza_modelo"] = resultado.boxes.conf.max().item()
-            datos_registro["detecciones_modelo"] = len(resultado.boxes)
-
-            seleccion.append(datos_registro)
-            guardar_seleccion_ronda(seleccion)
-
-            nuevas = len(seleccion) - seleccionadas_iniciales
-
-            print(
-                f"\nSeleccionada: {ruta_png.name} | "
-                f"Confianza: {datos_registro['confianza_modelo']:.3f} | "
-                f"Nuevas: {nuevas}/{cantidad - seleccionadas_iniciales}"
+            ruta_imagen = guardar_imagen(
+                imagen=imagen,
+                tile_id=tile_id,
             )
 
-            if len(seleccion) >= cantidad:
-                break
+            nuevo_registro = registro.to_dict()
+            nuevo_registro["confianza_maxima"] = round(
+                confianza_maxima,
+                4,
+            )
+            nuevo_registro["numero_detecciones"] = numero_detecciones
+            nuevo_registro["tipo_seleccion"] = "_y_".join(tipos)
+            nuevo_registro["ruta_imagen"] = str(ruta_imagen)
+
+            seleccionados.append(nuevo_registro)
+
+            print(
+                f"Seleccionada: {tile_id} | "
+                f"conf={confianza_maxima:.3f} | "
+                f"detecciones={numero_detecciones} | "
+                f"tipo={nuevo_registro['tipo_seleccion']}"
+            )
 
         except Exception as error:
-            print(f"\nError en {registro['tile_id']}: {error}")
+            print(f"Error procesando {registro['tile_id']}: {error}")
 
-        if revisadas % 100 == 0:
-            print(
-                f"\rRevisadas por el modelo: {revisadas} | "
-                f"Seleccionadas totales: {len(seleccion)}/{cantidad}",
-                end="",
-            )
-
-    print("\n\nSeleccion terminada")
-    print(f"Teselas revisadas: {revisadas}")
-    print(f"Teselas seleccionadas: {len(seleccion)}")
-    print(f"Imagenes: {carpeta_imagenes}")
-    print(f"Manifest: {RUTA_SELECCION_RONDA}")
-
-
-def ejecutar_negativas(modelo: YOLO) -> None:
-    """Busca negativas dificiles entre las etiquetas anteriores."""
-
-    print("\nCargando negativas no utilizadas...")
-    negativas = cargar_negativas_no_usadas()
-    print(f"Negativas encontradas: {len(negativas)}")
-
-    print("\nBuscando falsos positivos...")
-    seleccion = seleccionar_negativas_dificiles(
-        modelo=modelo,
-        rutas_imagenes=negativas,
-        confianza_minima=CONFIANZA_NEGATIVAS,
-        cantidad_maxima=CANTIDAD_NEGATIVAS,
-    )
-
-    RUTA_NEGATIVAS.parent.mkdir(parents=True, exist_ok=True)
-    seleccion.to_csv(RUTA_NEGATIVAS, index=False)
-
-    print("\nSeleccion terminada")
-    print(f"Negativas dificiles seleccionadas: {len(seleccion)}")
-    print(f"Resultado: {RUTA_NEGATIVAS}")
+    return seleccionados
 
 
 def main() -> None:
-    """Selecciona datos utilizando el modelo de Cantabria."""
+    """Selecciona las imágenes de la segunda ronda de etiquetado."""
 
     if not RUTA_MODELO.exists():
         raise FileNotFoundError(RUTA_MODELO)
 
-    print("\nCargando modelo...")
+    if CARPETA_SALIDA.exists() and any(CARPETA_SALIDA.iterdir()):
+        raise FileExistsError(f"La carpeta {CARPETA_SALIDA} ya contiene imágenes")
+
+    print("\nCargando teselas disponibles [1/3]")
+    manifest = cargar_manifest()
+    print(f"Teselas disponibles: {len(manifest)}")
+
+    print("\nCargando modelo [2/3]")
     modelo = YOLO(str(RUTA_MODELO))
 
-    if TAREA == "negativas":
-        ejecutar_negativas(modelo)
+    print("\nBuscando imágenes interesantes [3/3]")
 
-    elif TAREA == "nuevas":
-        seleccionar_nuevas_por_confianza(
+    try:
+        seleccionados = seleccionar(
             modelo=modelo,
-            cantidad=CANTIDAD_NUEVAS,
-            confianza_minima=CONFIANZA_NUEVAS,
+            manifest=manifest,
         )
+    except KeyboardInterrupt:
+        print("\nProceso detenido por el usuario")
+        guardar_resultados(seleccionados)
+        return
 
-    else:
-        raise ValueError("TAREA debe ser 'negativas' o 'nuevas'")
+    guardar_resultados(seleccionados)
+
+    if seleccionados:
+        seleccion = pd.DataFrame(seleccionados)
+
+        cantidad_intervalo = seleccion[
+            seleccion["tipo_seleccion"].str.contains("intervalo")
+        ].shape[0]
+
+        cantidad_grandes = seleccion[
+            seleccion["tipo_seleccion"].str.contains("muchas_detecciones")
+        ].shape[0]
+
+        print("\nSeleccion terminada")
+        print(f"Casos del intervalo: {cantidad_intervalo}")
+        print(f"Casos con muchas detecciones: {cantidad_grandes}")
+        print(f"Imagenes diferentes: {len(seleccionados)}")
+        print(f"Imagenes: {CARPETA_SALIDA}")
+        print(f"CSV: {RUTA_RESULTADO}")
 
 
 if __name__ == "__main__":

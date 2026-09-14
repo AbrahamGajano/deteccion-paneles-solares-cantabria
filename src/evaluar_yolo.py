@@ -1,21 +1,35 @@
+import csv
 from pathlib import Path
 
 from ultralytics import YOLO
 
-RUTA_MODELO = Path("runs/segment/runs/cantabria/desde_francia_n/weights/best.pt")
+RUTA_MODELO = Path("runs/segment/cantabria/desde_cantabria_ronda_2/weights/best.pt")
+
+CARPETA_PREDICCIONES = Path("runs/segment/revision_cantabria_ronda_2_050")
+
 RUTA_YAML = Path("data/processed/cantabria_test_yolo/cantabria_test.yaml")
 
 CARPETA_IMAGENES = Path("data/processed/cantabria_test_yolo/images")
-CARPETA_PREDICCIONES = Path("runs/segment/predicciones_test_francia_050")
+
+CARPETA_LABELS = Path("data/processed/cantabria_test_yolo/labels")
+
+
+CONFIANZA_VISUAL = 0.50
 
 
 def guardar_predicciones(
     modelo: YOLO,
-    confianza: float = 0.50,
+    confianza: float,
 ) -> None:
-    """Guarda las imagenes donde el modelo encuentra algun panel."""
+    """Guarda las predicciones separadas segun el tipo de resultado."""
 
-    CARPETA_PREDICCIONES.mkdir(parents=True, exist_ok=True)
+    carpeta_fp = CARPETA_PREDICCIONES / "posibles_falsos_positivos"
+    carpeta_detectadas = CARPETA_PREDICCIONES / "positivas_detectadas"
+    carpeta_no_detectadas = CARPETA_PREDICCIONES / "positivas_sin_deteccion"
+
+    carpeta_fp.mkdir(parents=True, exist_ok=True)
+    carpeta_detectadas.mkdir(parents=True, exist_ok=True)
+    carpeta_no_detectadas.mkdir(parents=True, exist_ok=True)
 
     resultados = modelo.predict(
         source=str(CARPETA_IMAGENES),
@@ -27,26 +41,90 @@ def guardar_predicciones(
         verbose=False,
     )
 
-    cantidad = 0
+    resumen = []
+
+    cantidad_fp = 0
+    cantidad_detectadas = 0
+    cantidad_no_detectadas = 0
 
     for resultado in resultados:
-        if resultado.boxes is None or len(resultado.boxes) == 0:
+        nombre_imagen = Path(resultado.path).name
+        nombre_txt = f"{Path(nombre_imagen).stem}.txt"
+        ruta_label = CARPETA_LABELS / nombre_txt
+
+        tiene_panel_real = ruta_label.exists() and bool(
+            ruta_label.read_text(encoding="utf-8").strip()
+        )
+
+        tiene_predicciones = resultado.boxes is not None and len(resultado.boxes) > 0
+
+        if not tiene_predicciones:
+            if tiene_panel_real:
+                resultado.save(filename=str(carpeta_no_detectadas / nombre_imagen))
+
+                resumen.append(
+                    {
+                        "imagen": nombre_imagen,
+                        "tipo": "positiva_sin_deteccion",
+                        "detecciones": 0,
+                        "confianza_maxima": "",
+                    }
+                )
+
+                cantidad_no_detectadas += 1
+
             continue
 
-        nombre_imagen = Path(resultado.path).name
-        ruta_salida = CARPETA_PREDICCIONES / nombre_imagen
+        confianzas = resultado.boxes.conf.cpu().tolist()
+        confianza_maxima = max(confianzas)
 
-        resultado.save(filename=str(ruta_salida))
-        cantidad += 1
+        nombre_salida = f"{confianza_maxima:.3f}_{nombre_imagen}"
 
-    print(
-        f"\nImagenes con predicciones mayores o iguales a {confianza:.2f}: {cantidad}"
-    )
-    print(f"Guardadas en: {CARPETA_PREDICCIONES}")
+        if tiene_panel_real:
+            carpeta_salida = carpeta_detectadas
+            tipo = "positiva_detectada"
+            cantidad_detectadas += 1
+        else:
+            carpeta_salida = carpeta_fp
+            tipo = "posible_falso_positivo"
+            cantidad_fp += 1
+
+        resultado.save(filename=str(carpeta_salida / nombre_salida))
+
+        resumen.append(
+            {
+                "imagen": nombre_imagen,
+                "tipo": tipo,
+                "detecciones": len(confianzas),
+                "confianza_maxima": round(confianza_maxima, 4),
+            }
+        )
+
+    ruta_csv = CARPETA_PREDICCIONES / "resumen_predicciones.csv"
+
+    with ruta_csv.open("w", newline="", encoding="utf-8") as archivo:
+        escritor = csv.DictWriter(
+            archivo,
+            fieldnames=[
+                "imagen",
+                "tipo",
+                "detecciones",
+                "confianza_maxima",
+            ],
+        )
+
+        escritor.writeheader()
+        escritor.writerows(resumen)
+
+    print(f"\nRevision visual con confianza minima {confianza:.2f}")
+    print(f"Posibles falsos positivos: {cantidad_fp}")
+    print(f"Positivas detectadas: {cantidad_detectadas}")
+    print(f"Positivas sin deteccion: {cantidad_no_detectadas}")
+    print(f"Resultados guardados en: {CARPETA_PREDICCIONES}")
 
 
 def main() -> None:
-    """Evalua y guarda las predicciones del modelo."""
+    """Evalua el modelo y prepara su revision visual."""
 
     if not RUTA_MODELO.exists():
         raise FileNotFoundError(f"No se encontro el modelo: {RUTA_MODELO}")
@@ -54,13 +132,10 @@ def main() -> None:
     if not RUTA_YAML.exists():
         raise FileNotFoundError(f"No se encontro el YAML: {RUTA_YAML}")
 
-    if not CARPETA_IMAGENES.exists():
-        raise FileNotFoundError(f"No se encontraron las imagenes: {CARPETA_IMAGENES}")
-
-    print("\nCargando el modelo...")
+    print("\nCargando modelo...")
     modelo = YOLO(str(RUTA_MODELO))
 
-    print("\nEvaluando con las imagenes de Cantabria...")
+    print("\nEvaluando sobre las 1000 imagenes de test...")
     metricas = modelo.val(
         data=str(RUTA_YAML),
         split="test",
@@ -70,7 +145,7 @@ def main() -> None:
         workers=4,
         plots=True,
         project="runs/segment",
-        name="test_cantabria",
+        name="test_cantabria_ronda_1",
     )
 
     print("\nMetricas de segmentacion:")
@@ -79,10 +154,10 @@ def main() -> None:
     print(f"mAP50: {metricas.seg.map50:.3f}")
     print(f"mAP50-95: {metricas.seg.map:.3f}")
 
-    print("\nGenerando predicciones visuales...")
+    print("\nPreparando revision visual...")
     guardar_predicciones(
         modelo=modelo,
-        confianza=0.50,
+        confianza=CONFIANZA_VISUAL,
     )
 
 

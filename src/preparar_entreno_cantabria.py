@@ -5,13 +5,14 @@ from pathlib import Path
 
 from preparar_test_cantabria import convierte_json_yolo
 
-CARPETA_IMAGENES = Path("./data/labeling/train_val/images")
-CARPETA_JSON = Path("./data/labeling/train_val/annotations")
+CARPETA_IMAGENES = Path("./data/labeling/ronda_1/images")
+CARPETA_JSON = Path("./data/labeling/ronda_1/annotations")
 
-RUTA_YOLO = Path("./data/processed/cantabria_yolo")
+RUTA_YOLO_ANTERIOR = Path("./data/processed/cantabria_yolo")
+RUTA_YOLO = Path("./data/processed/cantabria_yolo_ronda_1")
 RUTA_YAML = RUTA_YOLO / "cantabria.yaml"
 
-PROPORCION_VAL = 0.20
+PROPORCION_VAL = 0.15
 NEGATIVAS_TRAIN = 600
 SEMILLA = 42
 
@@ -196,10 +197,16 @@ def preparar_division(
 def preparar_yaml() -> None:
     """Funcion que crea el archivo de configuracion para Ultralytics"""
 
+    ruta_anterior = RUTA_YOLO_ANTERIOR.resolve().as_posix()
+    ruta_nueva = RUTA_YOLO.resolve().as_posix()
+
     contenido = (
-        f"path: {RUTA_YOLO.resolve().as_posix()}\n"
-        "train: images/train\n"
-        "val: images/val\n"
+        "train:\n"
+        f"  - {ruta_anterior}/images/train\n"
+        f"  - {ruta_nueva}/images/train\n"
+        "val:\n"
+        f"  - {ruta_anterior}/images/val\n"
+        f"  - {ruta_nueva}/images/val\n"
         "\n"
         "names:\n"
         "  0: panel_solar\n"
