@@ -4,11 +4,39 @@ from pathlib import Path
 
 import pandas as pd
 
-from paneles_solares.datos.anotaciones import excluida, revisar_par, texto_yolo
+from paneles_solares.datos.anotaciones import (
+    crear_mascara_unet,
+    leer_anotacion,
+    texto_yolo,
+)
 from paneles_solares.datos.coleccion import POOL, SPLITS, cargar_manifest
 from paneles_solares.rutas import ruta_proyecto
 
 DATASETS = ruta_proyecto("data/datasets")
+
+
+def exportar_yolo(datos: dict, destino: Path) -> None:
+    """Pasa una anotación de LabelMe al formato de segmentación de YOLO.
+
+    Args:
+        datos (dict): Datos de la anotación.
+        destino (Path): Ruta del archivo TXT de destino.
+    """
+    destino.write_text(
+        texto_yolo(datos),
+        encoding="utf-8",
+    )
+
+
+def exportar_unet(datos: dict, destino: Path) -> None:
+    """Pasa una anotación de LabelMe a una máscara para U-Net.
+
+    Args:
+        datos (dict): Datos de la anotación.
+        destino (Path): Ruta de la máscara PNG de destino.
+    """
+    mascara = crear_mascara_unet(datos)
+    mascara.save(destino)
 
 
 def obtener_seleccion() -> tuple[pd.Series, pd.Series, pd.Series]:
@@ -17,7 +45,6 @@ def obtener_seleccion() -> tuple[pd.Series, pd.Series, pd.Series]:
     Returns:
         tuple[pd.Series, pd.Series, pd.Series]: IDs de train, val y test.
     """
-
     # Cargamos el manifest que guarda el estado de cada imagen.
     manifest = cargar_manifest()
 
@@ -46,10 +73,8 @@ def buscar_cambios(
     Returns:
         tuple[set[str], set[str]]: IDs que faltan y que sobran.
     """
-
     # Con conjuntos podemos calcular fácilmente las diferencias.
     deseados = set(ids)
-
     existentes = {archivo.stem for archivo in carpeta.glob(f"*{extension}")}
 
     faltan = deseados - existentes
@@ -69,7 +94,6 @@ def sincronizar_imagenes(
         seleccion (tuple[pd.Series, pd.Series, pd.Series]):
             IDs de train, val y test.
     """
-
     # Repetimos el proceso para cada división del dataset.
     for split, ids in zip(SPLITS, seleccion):
         carpeta = dataset / "images" / split
@@ -77,55 +101,55 @@ def sincronizar_imagenes(
 
         faltan, sobran = buscar_cambios(ids, carpeta, ".png")
 
-        # Quitamos las imágenes que ya no aparecen en este split.
+        # Quitamos las imágenes que ya no pertenecen a este split.
         for tile_id in sobran:
             (carpeta / f"{tile_id}.png").unlink()
 
-        # Enlazamos al pool sin duplicar los píxeles en disco.
+        # Enlazamos al pool sin duplicar las imágenes en disco.
         for tile_id in faltan:
             origen = POOL / "images" / f"{tile_id}.png"
             destino = carpeta / f"{tile_id}.png"
 
+            if not origen.is_file():
+                raise FileNotFoundError(f"No existe la imagen: {origen}")
+
             destino.hardlink_to(origen)
 
 
-def sincronizar_etiquetas_yolo(
+def sincronizar_anotaciones(
     dataset: Path,
+    modelo: dict,
     seleccion: tuple[pd.Series, pd.Series, pd.Series],
 ) -> None:
-    """Genera las etiquetas que necesita YOLO.
+    """Sincroniza las etiquetas o máscaras de un formato.
 
     Args:
-        dataset (Path): Ruta del dataset YOLO.
+        dataset (Path): Ruta principal del dataset.
+        modelo (dict): Configuración del formato que se quiere generar.
         seleccion (tuple[pd.Series, pd.Series, pd.Series]):
             IDs de train, val y test.
     """
+    ruta = dataset / modelo["carpeta"]
+    extension = modelo["extension"]
+    exportar = modelo["exportar"]
 
     for split, ids in zip(SPLITS, seleccion):
-        carpeta = dataset / "labels" / split
+        carpeta = ruta / split
         carpeta.mkdir(parents=True, exist_ok=True)
 
-        # YOLO debe releer los TXT aunque una corrección no cambie su tamaño en bytes.
-        carpeta.with_suffix(".cache").unlink(missing_ok=True)
+        _, sobrantes = buscar_cambios(ids, carpeta, extension)
 
-        _, sobran = buscar_cambios(ids, carpeta, ".txt")
+        # Eliminamos las anotaciones que ya no pertenecen al split.
+        for tile_id in sobrantes:
+            (carpeta / f"{tile_id}{extension}").unlink()
 
-        # Eliminamos las etiquetas que ya no pertenecen a este split.
-        for tile_id in sobran:
-            (carpeta / f"{tile_id}.txt").unlink()
-
-        # Las regeneramos todas por si se corrigió algún JSON.
+        # Las regeneramos para recoger posibles cambios en los JSON.
         for tile_id in ids:
-            imagen = POOL / "images" / f"{tile_id}.png"
             anotacion = POOL / "annotations" / f"{tile_id}.json"
+            destino = carpeta / f"{tile_id}{extension}"
 
-            datos = revisar_par(imagen, anotacion)
-
-            destino = carpeta / f"{tile_id}.txt"
-            destino.write_text(
-                texto_yolo(datos),
-                encoding="utf-8",
-            )
+            datos = leer_anotacion(anotacion)
+            exportar(datos, destino)
 
 
 def crear_yaml_yolo(dataset: Path) -> None:
@@ -134,7 +158,6 @@ def crear_yaml_yolo(dataset: Path) -> None:
     Args:
         dataset (Path): Ruta del dataset YOLO.
     """
-
     # Ultralytics utiliza este archivo para localizar los tres splits.
     contenido = [
         f'path: "{dataset.resolve().as_posix()}"',
@@ -152,66 +175,47 @@ def crear_yaml_yolo(dataset: Path) -> None:
     )
 
 
-def sincronizar_yolo(
-    dataset: Path,
-    seleccion: tuple[pd.Series, pd.Series, pd.Series],
-) -> None:
-    """Sincroniza la parte específica del dataset YOLO.
-
-    Args:
-        dataset (Path): Ruta del dataset YOLO.
-        seleccion (tuple[pd.Series, pd.Series, pd.Series]):
-            IDs de train, val y test.
-    """
-
-    sincronizar_etiquetas_yolo(dataset, seleccion)
-    crear_yaml_yolo(dataset)
+# Cada formato define únicamente lo que cambia respecto a los demás.
+SINCRONIZADORES = [
+    {
+        "nombre": "yolo",
+        "carpeta": "labels",
+        "extension": ".txt",
+        "exportar": exportar_yolo,
+        "finalizar": crear_yaml_yolo,
+    },
+    {
+        "nombre": "unet",
+        "carpeta": "masks",
+        "extension": ".png",
+        "exportar": exportar_unet,
+        "finalizar": None,
+    },
+]
 
 
 def sincronizar() -> None:
     """Sincroniza todos los datasets conocidos."""
-
     seleccion = obtener_seleccion()
 
-    # Comprobamos los originales antes de quitar o modificar archivos del dataset.
-    for ids in seleccion:
-        for tile_id in ids:
-            imagen = POOL / "images" / f"{tile_id}.png"
-            anotacion = POOL / "annotations" / f"{tile_id}.json"
-            datos = revisar_par(imagen, anotacion)
+    for modelo in SINCRONIZADORES:
+        dataset = DATASETS / modelo["nombre"]
+        dataset.mkdir(parents=True, exist_ok=True)
 
-            if excluida(datos):
-                raise ValueError(f"Muestra descartada aún seleccionada: {tile_id}")
-
-    # Cada dataset tiene una forma distinta de representar sus anotaciones.
-    sincronizadores = {
-        "yolo": sincronizar_yolo,
-        # "unet": sincronizar_unet,
-    }
-
-    # Buscamos automáticamente los datasets que existan.
-    for dataset in DATASETS.glob("*"):
-        if not dataset.is_dir():
-            continue
-
-        sincronizador = sincronizadores.get(dataset.name)
-
-        if sincronizador is None:
-            print(f"Dataset ignorado porque su formato no está definido: {dataset.name}")
-            continue
-
-        # Las imágenes tienen la misma organización en todos los formatos.
         sincronizar_imagenes(dataset, seleccion)
+        sincronizar_anotaciones(dataset, modelo, seleccion)
 
-        # Después generamos los archivos específicos del modelo.
-        sincronizador(dataset, seleccion)
+        # Algunos formatos necesitan archivos adicionales.
+        finalizar = modelo["finalizar"]
 
-        print(f"Dataset sincronizado: {dataset}")
+        if finalizar is not None:
+            finalizar(dataset)
+
+        print(f"Dataset sincronizado: {modelo['nombre']}")
 
 
 def main() -> None:
     """Ejecuta la sincronización de los datasets."""
-
     sincronizar()
 
 

@@ -3,9 +3,10 @@
 import json
 from pathlib import Path
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 CLASE = "panel_solar"
+COL_BLANCO = 255
 
 
 def leer_anotacion(ruta: Path) -> dict:
@@ -111,3 +112,35 @@ def texto_yolo(datos: dict) -> str:
         lineas.append("0 " + " ".join(coordenadas))
 
     return "\n".join(lineas)
+
+
+def crear_mascara_unet(datos: dict) -> Image.Image:
+    """Convierte los polígonos de LabelMe en una máscara binaria.
+
+    Args:
+        datos (dict): Datos de la anotación de LabelMe.
+
+    Returns:
+        Image.Image: Máscara con fondo negro y paneles blancos.
+    """
+
+    ancho = datos["imageWidth"]
+    alto = datos["imageHeight"]
+
+    mascara = Image.new(
+        mode="L",
+        size=(ancho, alto),
+        color=0,
+    )
+
+    dibujo = ImageDraw.Draw(mascara)
+
+    for forma in datos["shapes"]:
+        puntos = [(round(x), round(y)) for x, y in forma["points"]]
+
+        dibujo.polygon(
+            puntos,
+            fill=255,
+        )
+
+    return mascara
