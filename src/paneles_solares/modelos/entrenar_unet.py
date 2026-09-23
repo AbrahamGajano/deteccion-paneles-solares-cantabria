@@ -75,15 +75,15 @@ class DatasetPaneles(Dataset):
     def __getitem__(
         self,
         indice: int,
-    ) -> tuple[torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, str]:
         """Carga una imagen y su máscara correspondiente.
 
         Args:
             indice (int): Posición de la muestra que se quiere cargar.
 
         Returns:
-            tuple[torch.Tensor, torch.Tensor]:
-                Imagen y máscara convertidas en tensores.
+            tuple[torch.Tensor, torch.Tensor, str]:
+                Imagen y máscara convertidas en tensores e id_tile.
         """
         ruta_imagen = self.imagenes[indice]
         ruta_mascara = self.carpeta_mascaras / ruta_imagen.name
@@ -120,7 +120,7 @@ class DatasetPaneles(Dataset):
         imagen = torch.from_numpy(imagen)
         mascara = torch.from_numpy(mascara)
 
-        return imagen, mascara
+        return imagen, mascara, ruta_imagen.stem
 
 
 def aumentar_datos(
@@ -284,7 +284,7 @@ def entrenar_epoca(
     perdida_total = 0.0
     cantidad = 0
 
-    for imagenes, mascaras in cargador:
+    for imagenes, mascaras, _ in cargador:
         imagenes = imagenes.to(
             dispositivo,
             non_blocking=True,
@@ -347,7 +347,7 @@ def validar_epoca(
 
     # En validación no necesitamos calcular gradientes.
     with torch.inference_mode():
-        for imagenes, mascaras in cargador:
+        for imagenes, mascaras, _ in cargador:
             imagenes = imagenes.to(
                 dispositivo,
                 non_blocking=True,
