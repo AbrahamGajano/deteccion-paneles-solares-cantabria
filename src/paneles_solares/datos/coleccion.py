@@ -58,30 +58,22 @@ def cargar_manifest(ruta: Path = MANIFEST) -> pd.DataFrame:
 
 def guardar_manifest(
     manifest: pd.DataFrame,
-    ruta: Path = MANIFEST,
+    ruta: Path,
 ) -> None:
-    """Guarda un manifest ordenado por tile_id.
+    """Guarda un manifest completo.
 
     Args:
         manifest (pd.DataFrame): Datos que se quieren guardar.
-        ruta (Path): Ruta donde se guardará el manifest.
+        ruta (Path): Ruta del archivo CSV.
     """
 
     ruta.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = manifest.reindex(columns=CAMPOS)
-    manifest = manifest.sort_values("tile_id")
-
-    # Sustituimos el CSV solo cuando se ha terminado de escribir.
-    temporal = ruta.with_suffix(".tmp")
-
-    manifest.to_csv(
-        temporal,
+    manifest.sort_values("tile_id").to_csv(
+        ruta,
         index=False,
         encoding="utf-8",
     )
-
-    temporal.replace(ruta)
 
 
 def nueva_fila(registro: dict, origen: str) -> dict:
