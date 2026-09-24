@@ -1,393 +1,406 @@
-"""Decide qué muestras se utilizan en train, val y test."""
+"""Decide qué imágenes válidas se utilizan para entrenar y validar."""
 
-import random
-
+import numpy as np
 import pandas as pd
+import torch
+from PIL import Image
 
-from paneles_solares.datos.anotaciones import excluida, revisar_par
 from paneles_solares.datos.coleccion import (
     MANIFEST,
     POOL,
-    SPLITS,
     cargar_manifest,
     guardar_manifest,
-    rutas_muestra,
 )
 from paneles_solares.rutas import ruta_proyecto
 
-# Porcentaje de las nuevas muestras aleatorias que irá a cada split.
-FRACCIONES = {
-    "train": 1.0,
-    "val": 0.0,
-    "test": 0.0,
-}
+# La validación solo sale de imágenes aleatorias para que sea representativa.
+FRACCION_VAL_ALEATORIAS = 0.25
+REHACER_VALIDACION = True
 
-# Cantidad de fondos que queremos añadir a entrenamiento.
-MAX_NEGATIVAS_DIFICILES = None
-MAX_NEGATIVAS_FACILES = 0
+# Además de los fallos de los modelos, añadimos algunos fondos fáciles.
+MAX_NEGATIVAS_FACILES = 100
 
-# Modelo utilizado para localizar negativas difíciles.
+# Umbrales bajos para encontrar falsos positivos útiles para el entrenamiento.
+UMBRAL_YOLO = 0.20
+UMBRAL_UNET = 0.30
+MINIMO_PIXELES = 10
+
 MODELO_YOLO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
+MODELO_UNET = ruta_proyecto("weights/unet_resnet34.pt")
 
-UMBRAL_NEGATIVA_DIFICIL = 0.30
 IMGSZ = 640
-DEVICE = 0
-
-# Las teselas próximas deben permanecer en el mismo split.
-TAM_GRUPO = 2048
-MARGEN_SEPARACION = 512
-
+DEVICE_YOLO = 0
 SEMILLA = 42
 
+MEDIA_IMAGENET = np.array(
+    [0.485, 0.456, 0.406],
+    dtype=np.float32,
+)
+DESVIACION_IMAGENET = np.array(
+    [0.229, 0.224, 0.225],
+    dtype=np.float32,
+)
 
-def obtener_grupo(fila: pd.Series) -> tuple:
-    """Obtiene el grupo espacial de una muestra.
-
-    Args:
-        fila (pd.Series): Fila del manifest.
-
-    Returns:
-        tuple: Identificador del grupo espacial.
-    """
-
-    # Las imágenes manuales sin posición forman grupos independientes.
-    if not fila["tif"] or fila["fila"] == "" or fila["columna"] == "":
-        return "manual", fila["tile_id"]
-
-    grupo_fila = int(float(fila["fila"])) // TAM_GRUPO
-    grupo_columna = int(float(fila["columna"])) // TAM_GRUPO
-
-    return fila["tif"], grupo_fila, grupo_columna
+MOTIVO_VALIDACION = "validacion aleatoria representativa"
 
 
-def son_cercanas(a: dict, b: dict) -> bool:
-    """Comprueba si dos muestras pertenecen a zonas cercanas.
-
-    Args:
-        a (dict): Primera muestra.
-        b (dict): Segunda muestra.
-
-    Returns:
-        bool: True si las muestras son cercanas.
-    """
-
-    if not a["tif"] or a["tif"] != b["tif"]:
-        return False
-
-    campos = ("fila", "columna", "ancho", "alto")
-
-    if any(a[campo] == "" or b[campo] == "" for campo in campos):
-        return False
-
-    fila_a = float(a["fila"])
-    columna_a = float(a["columna"])
-    ancho_a = float(a["ancho"])
-    alto_a = float(a["alto"])
-
-    fila_b = float(b["fila"])
-    columna_b = float(b["columna"])
-    ancho_b = float(b["ancho"])
-    alto_b = float(b["alto"])
-
-    separados_horizontalmente = (
-        columna_a >= columna_b + ancho_b + MARGEN_SEPARACION
-        or columna_b >= columna_a + ancho_a + MARGEN_SEPARACION
-    )
-
-    separados_verticalmente = (
-        fila_a >= fila_b + alto_b + MARGEN_SEPARACION
-        or fila_b >= fila_a + alto_a + MARGEN_SEPARACION
-    )
-
-    return not separados_horizontalmente and not separados_verticalmente
-
-
-def hay_conflicto(
-    muestras: list[dict],
-    reservadas: list[dict],
-    split: str,
-) -> bool:
-    """Comprueba si un grupo está cerca de otro split.
-
-    Args:
-        muestras (list[dict]): Muestras que se quieren asignar.
-        reservadas (list[dict]): Muestras que ya tienen un split.
-        split (str): Split elegido para el nuevo grupo.
-
-    Returns:
-        bool: True si existe contaminación entre splits.
-    """
-
-    for muestra in muestras:
-        for reservada in reservadas:
-            if reservada["uso"] != split and son_cercanas(muestra, reservada):
-                return True
-
-    return False
-
-
-def asignar_splits(
-    pendientes: pd.DataFrame,
+def asignar_uso(
     manifest: pd.DataFrame,
-) -> dict[str, str]:
-    """Reparte las muestras pendientes entre train, val y test.
+    indices: pd.Index,
+    uso: str,
+    motivo: str,
+) -> None:
+    """Asigna el uso de varias imágenes y conserva su valor anterior.
 
     Args:
-        pendientes (pd.DataFrame): Muestras válidas pendientes.
-        manifest (pd.DataFrame): Manifest completo.
-
-    Returns:
-        dict[str, str]: Split asignado a cada tile_id.
+        manifest (pd.DataFrame): Manifest completo del pool.
+        indices (pd.Index): Filas que se quieren modificar.
+        uso (str): Nuevo uso de las imágenes.
+        motivo (str): Explicación breve de la decisión.
     """
 
-    if abs(sum(FRACCIONES.values()) - 1) > 1e-6:
-        raise ValueError("Las fracciones de train, val y test deben sumar 1")
+    if len(indices) == 0:
+        return
 
-    # Puede no quedar ninguna pendiente después de releer las marcas de LabelMe.
-    if pendientes.empty:
-        return {}
+    manifest.loc[indices, "uso_anterior"] = manifest.loc[indices, "uso"]
+    manifest.loc[indices, "uso"] = uso
+    manifest.loc[indices, "motivo"] = motivo
 
-    pendientes = pendientes.copy()
 
-    # Las teselas próximas se sortean como un único grupo.
-    pendientes["_grupo"] = pendientes.apply(
-        obtener_grupo,
-        axis=1,
+def elegir_validacion(aleatorias: pd.DataFrame) -> pd.Index:
+    """Elige una parte de las aleatorias manteniendo positivos y negativos.
+
+    Args:
+        aleatorias (pd.DataFrame): Imágenes aleatorias válidas y pendientes.
+
+    Returns:
+        pd.Index: Filas que se utilizarán para validación.
+    """
+
+    if not 0 <= FRACCION_VAL_ALEATORIAS < 1:
+        raise ValueError("La fracción de validación debe estar entre 0 y 1")
+
+    if aleatorias.empty or FRACCION_VAL_ALEATORIAS == 0:
+        return pd.Index([])
+
+    # Se toma la misma fracción de positivas y negativas.
+    validacion = aleatorias.groupby(
+        "tipo",
+        group_keys=False,
+    ).sample(
+        frac=FRACCION_VAL_ALEATORIAS,
+        random_state=SEMILLA,
     )
 
-    grupos = [grupo.to_dict("records") for _, grupo in pendientes.groupby("_grupo", sort=False)]
-
-    rng = random.Random(SEMILLA)
-    rng.shuffle(grupos)
-
-    pesos = [FRACCIONES[split] for split in SPLITS]
-
-    # Partimos de las imágenes que ya tienen un split asignado.
-    reservadas = manifest[manifest["uso"].isin(SPLITS)].to_dict("records")
-
-    asignaciones = {}
-
-    for muestras in grupos:
-        # Las muestras buscadas mediante fallos de YOLO solo pueden ir a train.
-        muestra_aleatoria = all(
-            muestra["origen"] in ("aleatorias", "manual") for muestra in muestras
-        )
-
-        if muestra_aleatoria:
-            split = rng.choices(
-                SPLITS,
-                weights=pesos,
-            )[0]
-        else:
-            split = "train"
-
-        conflicto = hay_conflicto(
-            muestras,
-            reservadas,
-            split,
-        )
-
-        for muestra in muestras:
-            tile_id = muestra["tile_id"]
-
-            if conflicto:
-                asignaciones[tile_id] = "no_usar"
-            else:
-                asignaciones[tile_id] = split
-
-                nueva_reserva = muestra.copy()
-                nueva_reserva["uso"] = split
-                reservadas.append(nueva_reserva)
-
-    return asignaciones
+    return validacion.index
 
 
-def actualizar_anotaciones(manifest: pd.DataFrame) -> pd.DataFrame:
-    """Actualiza la información de los JSON pendientes.
-
-    Args:
-        manifest (pd.DataFrame): Manifest completo.
+def cargar_modelos() -> tuple[object, torch.nn.Module, torch.device]:
+    """Carga una sola vez YOLO y U-Net para revisar las negativas.
 
     Returns:
-        pd.DataFrame: Manifest actualizado.
+        tuple[object, torch.nn.Module, torch.device]:
+            Modelo YOLO, modelo U-Net y dispositivo de U-Net.
     """
 
-    pendientes = manifest[(manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")]
+    if not MODELO_YOLO.is_file():
+        raise FileNotFoundError(MODELO_YOLO)
 
-    # Releemos los JSON por si se modificaron después de incorporarlos.
-    for indice, fila in pendientes.iterrows():
-        imagen, anotacion = rutas_muestra(
-            POOL,
-            fila["tile_id"],
-        )
+    if not MODELO_UNET.is_file():
+        raise FileNotFoundError(MODELO_UNET)
 
-        datos = revisar_par(imagen, anotacion)
+    from ultralytics import YOLO
 
-        if excluida(datos):
-            manifest.loc[indice, "estado"] = "descartada"
-            manifest.loc[indice, "uso"] = "no_usar"
-            manifest.loc[indice, "motivo"] = "marcada en LabelMe"
-            continue
+    from paneles_solares.modelos.entrenar_unet import crear_modelo
 
-        manifest.loc[indice, "tipo"] = "positiva" if datos["shapes"] else "negativa"
+    dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        manifest.loc[indice, "instancias"] = len(datos["shapes"])
+    modelo_yolo = YOLO(str(MODELO_YOLO))
 
-    return manifest
+    modelo_unet = crear_modelo()
+    pesos = torch.load(
+        MODELO_UNET,
+        map_location=dispositivo,
+        weights_only=True,
+    )
+    modelo_unet.load_state_dict(pesos)
+    modelo_unet.to(dispositivo)
+    modelo_unet.eval()
+
+    return modelo_yolo, modelo_unet, dispositivo
 
 
-def predecir_yolo(modelo, tile_id: str) -> tuple[float, int]:
-    """Ejecuta YOLO sobre una imagen negativa.
+def predecir_yolo(
+    modelo: object,
+    imagen: np.ndarray,
+) -> tuple[float, int, int]:
+    """Predice una imagen y resume la salida de YOLO.
 
     Args:
-        modelo: Modelo YOLO cargado.
-        tile_id (str): Identificador de la imagen.
+        modelo (object): Modelo YOLO cargado.
+        imagen (np.ndarray): Imagen RGB.
 
     Returns:
-        tuple[float, int]: Confianza máxima y número de detecciones.
+        tuple[float, int, int]: Confianza máxima, detecciones y píxeles.
     """
 
-    imagen, _ = rutas_muestra(POOL, tile_id)
-
+    # Ultralytics interpreta los arrays como imágenes BGR.
+    imagen_bgr = imagen[:, :, ::-1].copy()
     resultado = modelo.predict(
-        source=str(imagen),
-        conf=UMBRAL_NEGATIVA_DIFICIL,
+        source=imagen_bgr,
+        conf=UMBRAL_YOLO,
         imgsz=IMGSZ,
-        device=DEVICE,
+        device=DEVICE_YOLO,
+        retina_masks=True,
         verbose=False,
     )[0]
 
     if resultado.boxes is None or len(resultado.boxes) == 0:
-        return 0.0, 0
+        return 0.0, 0, 0
 
     confianza = float(resultado.boxes.conf.max().item())
     detecciones = len(resultado.boxes)
 
-    return confianza, detecciones
+    if resultado.masks is None:
+        raise ValueError("YOLO ha detectado objetos, pero no ha devuelto máscaras")
+
+    mascara = resultado.masks.data.any(dim=0)
+    pixeles = int(mascara.sum().item())
+
+    return confianza, detecciones, pixeles
 
 
-def seleccionar_muestras(manifest: pd.DataFrame) -> pd.DataFrame:
-    """Decide qué muestras pendientes se utilizarán finalmente.
+def predecir_unet(
+    modelo: torch.nn.Module,
+    imagen: np.ndarray,
+    dispositivo: torch.device,
+) -> int:
+    """Cuenta los píxeles que U-Net considera panel solar.
 
     Args:
-        manifest (pd.DataFrame): Manifest completo.
+        modelo (torch.nn.Module): Modelo U-Net cargado.
+        imagen (np.ndarray): Imagen RGB.
+        dispositivo (torch.device): CPU o GPU utilizada.
 
     Returns:
-        pd.DataFrame: Manifest con las decisiones actualizadas.
+        int: Número de píxeles predichos como panel.
     """
 
-    pendientes = manifest[
-        (manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")
-    ].copy()
+    preparada = imagen.astype(np.float32) / 255.0
+    preparada = (preparada - MEDIA_IMAGENET) / DESVIACION_IMAGENET
+    preparada = preparada.transpose(2, 0, 1).copy()
 
-    # El orden aleatorio evita favorecer los primeros tile_id al llenar los cupos.
-    pendientes = pendientes.sample(
-        frac=1,
-        random_state=SEMILLA,
-    )
+    tensor = torch.from_numpy(preparada).unsqueeze(0).to(dispositivo)
 
-    asignaciones = asignar_splits(
-        pendientes,
-        manifest,
-    )
+    with torch.inference_mode():
+        logits = modelo(tensor)
+        probabilidades = torch.sigmoid(logits)
 
-    negativas_dificiles = 0
-    negativas_faciles = 0
-    modelo = None
+    pixeles = torch.count_nonzero(probabilidades >= UMBRAL_UNET)
 
-    for indice, fila in pendientes.iterrows():
-        split = asignaciones[fila["tile_id"]]
+    return int(pixeles.item())
 
-        if split == "no_usar":
-            manifest.loc[indice, "uso"] = "no_usar"
-            manifest.loc[indice, "motivo"] = "cercana a otro conjunto"
-            continue
 
-        # Val y test conservan la distribución natural de las imágenes.
-        if split in ("val", "test"):
-            manifest.loc[indice, "uso"] = split
-            manifest.loc[indice, "motivo"] = "evaluacion aleatoria"
-            continue
+def analizar_negativas(
+    manifest: pd.DataFrame,
+    negativas: pd.DataFrame,
+) -> pd.Index:
+    """Busca falsos positivos de YOLO y U-Net en imágenes negativas.
 
-        # Todas las imágenes positivas se utilizan en train.
-        if fila["tipo"] == "positiva":
-            manifest.loc[indice, "uso"] = "train"
-            manifest.loc[indice, "motivo"] = "positiva"
-            continue
+    Args:
+        manifest (pd.DataFrame): Manifest completo del pool.
+        negativas (pd.DataFrame): Negativas pendientes de decidir.
 
-        # Una detección de YOLO en una imagen negativa es un falso positivo.
-        if modelo is None:
-            if not MODELO_YOLO.is_file():
-                raise FileNotFoundError(MODELO_YOLO)
+    Returns:
+        pd.Index: Negativas fáciles donde ninguno de los modelos falla.
+    """
 
-            from ultralytics import YOLO
+    if negativas.empty:
+        return pd.Index([])
 
-            modelo = YOLO(str(MODELO_YOLO))
+    modelo_yolo, modelo_unet, dispositivo = cargar_modelos()
 
-        confianza, detecciones = predecir_yolo(
-            modelo,
-            fila["tile_id"],
+    fallos_yolo = []
+    fallos_unet = []
+    fallos_ambos = []
+    faciles = []
+
+    total = len(negativas)
+
+    for numero, (indice, fila) in enumerate(negativas.iterrows(), start=1):
+        ruta_imagen = POOL / "images" / f"{fila['tile_id']}.png"
+
+        if not ruta_imagen.is_file():
+            raise FileNotFoundError(ruta_imagen)
+
+        with Image.open(ruta_imagen) as archivo:
+            imagen = np.asarray(archivo.convert("RGB"))
+
+        confianza, detecciones, pixeles_yolo = predecir_yolo(
+            modelo_yolo,
+            imagen,
+        )
+        pixeles_unet = predecir_unet(
+            modelo_unet,
+            imagen,
+            dispositivo,
         )
 
-        manifest.loc[indice, "modelo_yolo"] = str(MODELO_YOLO)
-        manifest.loc[indice, "confianza_yolo"] = confianza
-        manifest.loc[indice, "detecciones_yolo"] = detecciones
-        manifest.loc[indice, "umbral_yolo"] = UMBRAL_NEGATIVA_DIFICIL
+        falla_yolo = detecciones > 0 and pixeles_yolo >= MINIMO_PIXELES
+        falla_unet = pixeles_unet >= MINIMO_PIXELES
 
-        # YOLO ya aplica el umbral, por lo que cualquier detección es difícil.
-        if detecciones > 0:
-            incluir = (
-                MAX_NEGATIVAS_DIFICILES is None or negativas_dificiles < MAX_NEGATIVAS_DIFICILES
-            )
+        # Guardamos los datos de YOLO en las columnas que ya tiene el manifest.
+        manifest.at[indice, "modelo_yolo"] = str(MODELO_YOLO)
+        manifest.at[indice, "confianza_yolo"] = confianza
+        manifest.at[indice, "detecciones_yolo"] = detecciones
+        manifest.at[indice, "umbral_yolo"] = UMBRAL_YOLO
 
-            if incluir:
-                negativas_dificiles += 1
-                motivo = "negativa dificil"
-            else:
-                motivo = "cupo de negativas dificiles cubierto"
-
+        if falla_yolo and falla_unet:
+            fallos_ambos.append(indice)
+        elif falla_yolo:
+            fallos_yolo.append(indice)
+        elif falla_unet:
+            fallos_unet.append(indice)
         else:
-            incluir = negativas_faciles < MAX_NEGATIVAS_FACILES
+            faciles.append(indice)
 
-            if incluir:
-                negativas_faciles += 1
-                motivo = "negativa facil"
-            else:
-                motivo = "negativa facil no seleccionada"
+        if numero % 100 == 0 or numero == total:
+            print(f"Analizadas {numero}/{total} negativas.")
 
-        manifest.loc[indice, "uso"] = "train" if incluir else "no_usar"
+    asignar_uso(
+        manifest,
+        pd.Index(fallos_ambos),
+        "train",
+        "falso positivo de YOLO y U-Net",
+    )
+    asignar_uso(
+        manifest,
+        pd.Index(fallos_yolo),
+        "train",
+        "falso positivo de YOLO",
+    )
+    asignar_uso(
+        manifest,
+        pd.Index(fallos_unet),
+        "train",
+        "falso positivo de U-Net",
+    )
 
-        manifest.loc[indice, "motivo"] = motivo
+    return pd.Index(faciles)
+
+
+def decidir_dataset(manifest: pd.DataFrame) -> pd.DataFrame:
+    """Decide el uso de las imágenes válidas que continúan pendientes.
+
+    Args:
+        manifest (pd.DataFrame): Manifest completo del pool.
+
+    Returns:
+        pd.DataFrame: Manifest con las decisiones aplicadas.
+    """
+
+    if MAX_NEGATIVAS_FACILES < 0:
+        raise ValueError("El máximo de negativas fáciles no puede ser negativo")
+
+    # Una descartada se conserva en el pool, pero nunca entra en un dataset.
+    descartadas = manifest.index[manifest["estado"] == "descartada"]
+    asignar_uso(manifest, descartadas, "no_usar", "descartada en LabelMe")
+
+    # Podemos aprovechar la validación anterior para entrenar el nuevo modelo.
+    if REHACER_VALIDACION:
+        validacion_antigua = manifest.index[
+            (manifest["uso"] == "val") & (manifest["motivo"] != MOTIVO_VALIDACION)
+        ]
+        asignar_uso(
+            manifest,
+            validacion_antigua,
+            "train",
+            "antigua validacion pasada a train",
+        )
+
+    pendientes = manifest[(manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")]
+
+    tipos_incorrectos = pendientes[~pendientes["tipo"].isin(("positiva", "negativa"))]
+
+    if not tipos_incorrectos.empty:
+        ids = ", ".join(tipos_incorrectos["tile_id"].head(5))
+        raise ValueError(f"Hay imágenes pendientes sin tipo válido: {ids}")
+
+    # La validación se decide antes de mirar los resultados de los modelos.
+    aleatorias = pendientes[pendientes["origen"] == "aleatorias"]
+    indices_val = elegir_validacion(aleatorias)
+    asignar_uso(
+        manifest,
+        indices_val,
+        "val",
+        MOTIVO_VALIDACION,
+    )
+
+    pendientes = manifest[(manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")]
+
+    # Todos los positivos sirven para ampliar la variedad del entrenamiento.
+    positivas = pendientes.index[pendientes["tipo"] == "positiva"]
+    asignar_uso(manifest, positivas, "train", "positiva etiquetada")
+
+    pendientes = manifest[(manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")]
+    negativas = pendientes[pendientes["tipo"] == "negativa"]
+
+    # De las negativas guardamos todos los falsos positivos y algunos fondos fáciles.
+    faciles = analizar_negativas(manifest, negativas)
+    cantidad = min(MAX_NEGATIVAS_FACILES, len(faciles))
+
+    if cantidad > 0:
+        faciles_train = pd.Index(
+            pd.Series(faciles).sample(
+                n=cantidad,
+                random_state=SEMILLA,
+            )
+        )
+    else:
+        faciles_train = pd.Index([])
+
+    asignar_uso(
+        manifest,
+        faciles_train,
+        "train",
+        "negativa facil seleccionada",
+    )
+
+    faciles_no_usar = faciles.difference(faciles_train)
+    asignar_uso(
+        manifest,
+        faciles_no_usar,
+        "no_usar",
+        "negativa facil no necesaria",
+    )
 
     return manifest
 
 
-def main() -> None:
-    """Actualiza el manifest con el uso de las muestras pendientes."""
+def mostrar_resumen(manifest: pd.DataFrame) -> None:
+    """Muestra el resultado de la selección.
 
-    manifest = cargar_manifest(MANIFEST)
+    Args:
+        manifest (pd.DataFrame): Manifest actualizado.
+    """
 
-    pendientes = (manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")
+    print("\nUso de las imágenes")
 
-    cantidad = pendientes.sum()
-
-    if cantidad == 0:
-        print("No hay muestras válidas pendientes de decidir.")
-        return
-
-    print(f"Revisando {cantidad} muestras pendientes.")
-
-    manifest = actualizar_anotaciones(manifest)
-    manifest = seleccionar_muestras(manifest)
-
-    guardar_manifest(manifest, MANIFEST)
-
-    # Resumen del reparto guardado en el manifest.
-    for uso in (*SPLITS, "pendiente", "no_usar"):
-        cantidad = (manifest["uso"] == uso).sum()
+    for uso, cantidad in manifest["uso"].value_counts().items():
         print(f"{uso}: {cantidad}")
 
-    print("Ahora puedes ejecutar sincronizar.py.")
+    print("\nNuevas imágenes por origen y uso")
+    nuevas = manifest[manifest["origen"].isin(("aleatorias", "discrepancias"))]
+    print(pd.crosstab(nuevas["origen"], nuevas["uso"]))
+
+
+def main() -> None:
+    """Carga el manifest, decide el dataset y guarda el resultado."""
+
+    manifest = cargar_manifest(MANIFEST)
+    manifest = decidir_dataset(manifest)
+    guardar_manifest(manifest, MANIFEST)
+    mostrar_resumen(manifest)
 
 
 if __name__ == "__main__":
