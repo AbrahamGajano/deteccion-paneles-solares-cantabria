@@ -174,7 +174,9 @@ def incorporar(
             imagen, anotacion = rutas_muestra(labeling, tile_id)
 
             if imagen.exists() or anotacion.exists():
-                raise ValueError(f"ID ya incorporado con archivos duplicados: {tile_id}")
+                raise ValueError(
+                    f"ID ya incorporado con archivos duplicados: {tile_id}"
+                )
 
             revisar_par(*rutas_muestra(pool, tile_id))
             pendientes = pendientes.drop(indice)
