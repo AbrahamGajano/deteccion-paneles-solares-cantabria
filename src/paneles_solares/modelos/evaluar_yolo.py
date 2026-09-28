@@ -6,17 +6,21 @@ sus máscaras coincidan con los paneles reales.
 
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
+from PIL import Image
 
 from paneles_solares.rutas import reemplazar_carpeta, ruta_proyecto
 
 MODELO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
 IMAGENES = ruta_proyecto("data/datasets/yolo/images/test")
 LABELS = ruta_proyecto("data/datasets/yolo/labels/test")
+IMAGENES_UNET = ruta_proyecto("data/datasets/unet/images/test")
+MASCARAS_REALES = ruta_proyecto("data/datasets/unet/masks/test")
 SALIDA = ruta_proyecto("runs/evaluacion/cantabria/yolo11s/revision")
 
 CONFIANZA = 0.30
-IMGSZ = 640  # Misma escala de entrada que en el entrenamiento actual.
+IMGSZ = 512
 DEVICE = 0
 
 CATEGORIAS = (
@@ -38,7 +42,11 @@ def comprobar_etiquetas(imagenes: Path, labels: Path) -> None:
     cantidad = 0
 
     for imagen in imagenes.iterdir():
-        if not imagen.is_file() or imagen.suffix.lower() not in (".png", ".jpg", ".jpeg"):
+        if not imagen.is_file() or imagen.suffix.lower() not in (
+            ".png",
+            ".jpg",
+            ".jpeg",
+        ):
             continue
 
         etiqueta = labels / f"{imagen.stem}.txt"
@@ -51,6 +59,71 @@ def comprobar_etiquetas(imagenes: Path, labels: Path) -> None:
 
     if cantidad == 0:
         raise ValueError(f"No hay imágenes en {imagenes}")
+
+
+def comprobar_mismo_test(imagenes: Path) -> None:
+    """Exige las mismas imágenes y máscaras reales que evalúa U-Net."""
+    ids_yolo = {ruta.stem for ruta in imagenes.glob("*.png")}
+    ids_unet = {ruta.stem for ruta in IMAGENES_UNET.glob("*.png")}
+    ids_mascaras = {ruta.stem for ruta in MASCARAS_REALES.glob("*.png")}
+
+    if not ids_yolo or ids_yolo != ids_unet or ids_yolo != ids_mascaras:
+        raise ValueError(
+            "Los tests de YOLO y U-Net no contienen las mismas imágenes "
+            "y máscaras: "
+            f"YOLO={len(ids_yolo)}, U-Net={len(ids_unet)}, "
+            f"máscaras={len(ids_mascaras)}; "
+            f"faltan en U-Net={len(ids_yolo - ids_unet)}, "
+            f"faltan máscaras={len(ids_yolo - ids_mascaras)}"
+        )
+
+
+def medir_mascara(resultado, ruta_real: Path) -> dict:
+    """Compara la unión de máscaras YOLO con la máscara real de U-Net."""
+    with Image.open(ruta_real) as archivo:
+        real = np.asarray(archivo.convert("L")) > 0
+
+    if real.shape != tuple(resultado.orig_shape):
+        raise ValueError(
+            f"Imagen y máscara real tienen tamaños distintos en {resultado.path}: "
+            f"imagen={resultado.orig_shape}, real={real.shape}"
+        )
+
+    if resultado.masks is None:
+        if resultado.boxes is not None and len(resultado.boxes) > 0:
+            raise ValueError(f"Hay detecciones sin máscaras: {resultado.path}")
+        predicha = np.zeros(real.shape, dtype=bool)
+    else:
+        predicha = resultado.masks.data.cpu().numpy().astype(bool).any(axis=0)
+
+    if real.shape != predicha.shape:
+        raise ValueError(
+            f"Tamaños de máscaras distintos en {resultado.path}: "
+            f"real={real.shape}, YOLO={predicha.shape}"
+        )
+
+    tp = int(np.count_nonzero(real & predicha))
+    fp = int(np.count_nonzero(~real & predicha))
+    fn = int(np.count_nonzero(real & ~predicha))
+    pixeles_reales = tp + fn
+    pixeles_predichos = tp + fp
+    diferencia_superficie = pixeles_predichos - pixeles_reales
+
+    return {
+        "tp": tp,
+        "fp": fp,
+        "fn": fn,
+        "dice": 1.0 if 2 * tp + fp + fn == 0 else 2 * tp / (2 * tp + fp + fn),
+        "iou": 1.0 if tp + fp + fn == 0 else tp / (tp + fp + fn),
+        "precision": np.nan if tp + fp == 0 else tp / (tp + fp),
+        "recall": np.nan if tp + fn == 0 else tp / (tp + fn),
+        "pixeles_reales": pixeles_reales,
+        "pixeles_predichos": pixeles_predichos,
+        "diferencia_superficie": diferencia_superficie,
+        "sesgo_superficie": (
+            np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
+        ),
+    }
 
 
 def clasificar_imagen(tiene_panel: bool, tiene_deteccion: bool) -> str:
@@ -133,8 +206,7 @@ def guardar_resumen(registros: list[dict], salida: Path) -> None:
         salida (Path): Carpeta de la revisión.
     """
 
-    columnas = ["imagen", "tipo", "detecciones", "confianza_maxima"]
-    resumen = pd.DataFrame(registros, columns=columnas)
+    resumen = pd.DataFrame(registros)
 
     resumen.to_csv(
         salida / "resumen_predicciones.csv",
@@ -142,6 +214,48 @@ def guardar_resumen(registros: list[dict], salida: Path) -> None:
         encoding="utf-8",
     )
 
+    # Igual que evaluar_unet.py: sumar píxeles antes de calcular las métricas.
+    tp = int(resumen["tp"].sum())
+    fp = int(resumen["fp"].sum())
+    fn = int(resumen["fn"].sum())
+    pixeles_reales = tp + fn
+    pixeles_predichos = tp + fp
+    diferencia_superficie = pixeles_predichos - pixeles_reales
+    dice = 1.0 if 2 * tp + fp + fn == 0 else 2 * tp / (2 * tp + fp + fn)
+    iou = 1.0 if tp + fp + fn == 0 else tp / (tp + fp + fn)
+    precision = np.nan if tp + fp == 0 else tp / (tp + fp)
+    recall = np.nan if tp + fn == 0 else tp / (tp + fn)
+    sesgo_superficie = (
+        np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
+    )
+
+    pd.DataFrame(
+        [
+            {
+                "imagenes": len(resumen),
+                "tp": tp,
+                "fp": fp,
+                "fn": fn,
+                "dice": dice,
+                "iou": iou,
+                "precision": precision,
+                "recall": recall,
+                "pixeles_reales": pixeles_reales,
+                "pixeles_predichos": pixeles_predichos,
+                "diferencia_superficie": diferencia_superficie,
+                "sesgo_superficie": sesgo_superficie,
+            }
+        ]
+    ).to_csv(salida / "resumen.csv", index=False)
+
+    print("\nResultados globales")
+    print(f"Imágenes: {len(resumen)}")
+    print(f"Dice: {dice:.4f}")
+    print(f"IoU: {iou:.4f}")
+    print(f"Precision: {precision:.4f}")
+    print(f"Recall: {recall:.4f}")
+    print(f"Sesgo de superficie: {sesgo_superficie:.2%}")
+    print("\nClasificación de imágenes")
     for categoria in CATEGORIAS:
         cantidad = (resumen["tipo"] == categoria).sum()
         print(f"{categoria}: {cantidad}")
@@ -153,7 +267,7 @@ def guardar_predicciones(
     imagenes: Path,
     labels: Path,
     salida: Path,
-    imgsz: int = 640,
+    imgsz: int = 512,
     device: int | str = 0,
 ) -> None:
     """Revisa el test y guarda las imágenes y el resumen.
@@ -172,6 +286,7 @@ def guardar_predicciones(
         raise FileExistsError(f"Quedó una revisión interrumpida: {salida}")
 
     comprobar_etiquetas(imagenes, labels)
+    comprobar_mismo_test(imagenes)
     salida.mkdir(parents=True)
 
     # Procesamos una imagen cada vez para no acumular todo el test en memoria.
@@ -186,13 +301,23 @@ def guardar_predicciones(
     )
 
     registros = []
+    procesadas = set()
 
     for resultado in resultados:
         imagen = Path(resultado.path)
+        if imagen.stem in procesadas:
+            raise ValueError(f"Imagen repetida en predicciones: {imagen.name}")
+        procesadas.add(imagen.stem)
         etiqueta = labels / f"{imagen.stem}.txt"
 
         tiene_panel = bool(etiqueta.read_text(encoding="utf-8").strip())
         detecciones, confianza_maxima = obtener_detecciones(resultado)
+        indicadores = medir_mascara(
+            resultado,
+            MASCARAS_REALES / f"{imagen.stem}.png",
+        )
+        if tiene_panel != (indicadores["pixeles_reales"] > 0):
+            raise ValueError(f"TXT y máscara real no coinciden: {imagen.name}")
 
         categoria = clasificar_imagen(tiene_panel, detecciones > 0)
         guardar_imagen(resultado, categoria, confianza_maxima, salida)
@@ -206,8 +331,16 @@ def guardar_predicciones(
             "tipo": categoria,
             "detecciones": detecciones,
             "confianza_maxima": confianza_csv,
+            **indicadores,
         }
         registros.append(registro)
+
+    esperadas = {ruta.stem for ruta in imagenes.glob("*.png")}
+    if procesadas != esperadas:
+        raise ValueError(
+            f"Faltan predicciones para {len(esperadas - procesadas)} imágenes "
+            f"y hay {len(procesadas - esperadas)} inesperadas"
+        )
 
     guardar_resumen(registros, salida)
 

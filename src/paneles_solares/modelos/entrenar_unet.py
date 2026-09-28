@@ -13,6 +13,8 @@ from torch.utils.data import DataLoader, Dataset
 from paneles_solares.rutas import ruta_proyecto
 
 DATASET = ruta_proyecto("data/datasets/unet")
+
+PESOS_INICIALES = ruta_proyecto("weights/unet_resnet34_anterior.pt")
 PESOS = ruta_proyecto("weights/unet_resnet34.pt")
 
 BATCH_SIZE = 4
@@ -21,7 +23,7 @@ NUM_WORKERS = 2
 EPOCHS = 300
 PACIENCIA = 30
 
-LEARNING_RATE = 0.0001
+LEARNING_RATE = 0.00003
 WEIGHT_DECAY = 0.0001
 
 UMBRAL = 0.5
@@ -451,6 +453,13 @@ def entrenar() -> None:
     modelo = crear_modelo()
     modelo = modelo.to(dispositivo)
 
+    pesos = torch.load(
+        PESOS_INICIALES,
+        map_location=dispositivo,
+        weights_only=True,
+    )
+    modelo.load_state_dict(pesos)
+
     criterio = PerdidaSegmentacion()
     criterio = criterio.to(dispositivo)
 
@@ -459,7 +468,6 @@ def entrenar() -> None:
         lr=LEARNING_RATE,
         weight_decay=WEIGHT_DECAY,
     )
-
     # Reduce el learning rate cuando la pérdida de validación se estanca.
     planificador = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizador,
@@ -532,7 +540,9 @@ def entrenar() -> None:
 
         # Terminamos si Dice lleva demasiadas épocas sin mejorar.
         if epocas_sin_mejora >= PACIENCIA:
-            print(f"Entrenamiento detenido porque Dice no mejoró durante {PACIENCIA} épocas.")
+            print(
+                f"Entrenamiento detenido porque Dice no mejoró durante {PACIENCIA} épocas."
+            )
             break
 
     print(f"Mejor Dice de validación: {mejor_dice:.4f}")

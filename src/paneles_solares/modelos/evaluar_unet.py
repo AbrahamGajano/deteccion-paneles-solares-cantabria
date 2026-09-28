@@ -16,8 +16,7 @@ from paneles_solares.rutas import ruta_proyecto
 DATASET = ruta_proyecto("data/datasets/unet")
 
 PESOS = ruta_proyecto("weights/unet_resnet34.pt")
-
-SALIDA = ruta_proyecto("runs/evaluacion/unet")
+SALIDA = ruta_proyecto("runs/evaluacion/unet_actual")
 
 UMBRAL = 0.5
 
@@ -164,7 +163,9 @@ def calcular_indicadores(
     diferencia_superficie = pixeles_predichos - pixeles_reales
 
     # Una imagen sin panel real no tiene sesgo relativo calculable.
-    sesgo_superficie = np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
+    sesgo_superficie = (
+        np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
+    )
 
     resultado = {
         "tile_id": tile_id,
@@ -363,7 +364,9 @@ def guardar_resultados(resultados: list[dict]) -> None:
 
     diferencia_superficie = pixeles_predichos - pixeles_reales
 
-    sesgo_superficie = np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
+    sesgo_superficie = (
+        np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
+    )
 
     resumen = {
         "imagenes": len(tabla),

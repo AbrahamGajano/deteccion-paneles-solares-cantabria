@@ -11,13 +11,13 @@ DATASET = ruta_proyecto("data/datasets/yolo/dataset.yaml")
 CARPETA_ENTRENOS = ruta_proyecto("runs/entrenamiento/cantabria")
 
 # Límites del entrenamiento.
-EPOCHS = 200
-HORAS_MAXIMAS = 3.0
+EPOCHS = 300
+HORAS_MAXIMAS = 5.0
 PATIENCE = 20
 
 # Tamaño de entrada y uso de la GPU.
-IMGSZ = 640  # Los pesos actuales se entrenaron a 640; los PNG siguen a 512.
-BATCH = 2
+IMGSZ = 512  # Los pesos actuales se entrenaron a 640; los PNG siguen a 512.
+BATCH = 0.8
 WORKERS = 2
 DEVICE = 0
 
@@ -70,7 +70,9 @@ def guardar_entrenamiento(temporal: Path, salida: Path) -> None:
         pesos = temporal / "weights" / nombre
 
         if not pesos.is_file():
-            raise RuntimeError(f"No se generó {nombre}; se conserva el entrenamiento anterior")
+            raise RuntimeError(
+                f"No se generó {nombre}; se conserva el entrenamiento anterior"
+            )
 
     # Algunas versiones de YOLO guardan muestras aunque plots sea False.
     for archivo in temporal.iterdir():
