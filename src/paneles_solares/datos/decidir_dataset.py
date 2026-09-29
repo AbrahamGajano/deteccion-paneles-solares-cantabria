@@ -11,7 +11,8 @@ from paneles_solares.datos.coleccion import (
     cargar_manifest,
     guardar_manifest,
 )
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.modelos.unet import cargar_modelo, normalizar_rgb
+from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
 
 # La validación solo sale de imágenes aleatorias para que sea representativa.
 FRACCION_VAL_ALEATORIAS = 0.25
@@ -26,20 +27,11 @@ UMBRAL_UNET = 0.30
 MINIMO_PIXELES = 10
 
 MODELO_YOLO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
-MODELO_UNET = ruta_proyecto("weights/unet_resnet34.pt")
+MODELO_UNET = PESOS_UNET
 
 IMGSZ = 640
 DEVICE_YOLO = 0
 SEMILLA = 42
-
-MEDIA_IMAGENET = np.array(
-    [0.485, 0.456, 0.406],
-    dtype=np.float32,
-)
-DESVIACION_IMAGENET = np.array(
-    [0.229, 0.224, 0.225],
-    dtype=np.float32,
-)
 
 MOTIVO_VALIDACION = "validacion aleatoria representativa"
 
@@ -111,21 +103,11 @@ def cargar_modelos() -> tuple[object, torch.nn.Module, torch.device]:
 
     from ultralytics import YOLO
 
-    from paneles_solares.modelos.entrenar_unet import crear_modelo
-
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     modelo_yolo = YOLO(str(MODELO_YOLO))
 
-    modelo_unet = crear_modelo()
-    pesos = torch.load(
-        MODELO_UNET,
-        map_location=dispositivo,
-        weights_only=True,
-    )
-    modelo_unet.load_state_dict(pesos)
-    modelo_unet.to(dispositivo)
-    modelo_unet.eval()
+    modelo_unet = cargar_modelo(MODELO_UNET, dispositivo)
 
     return modelo_yolo, modelo_unet, dispositivo
 
@@ -186,8 +168,7 @@ def predecir_unet(
         int: Número de píxeles predichos como panel.
     """
 
-    preparada = imagen.astype(np.float32) / 255.0
-    preparada = (preparada - MEDIA_IMAGENET) / DESVIACION_IMAGENET
+    preparada = normalizar_rgb(imagen)
     preparada = preparada.transpose(2, 0, 1).copy()
 
     tensor = torch.from_numpy(preparada).unsqueeze(0).to(dispositivo)

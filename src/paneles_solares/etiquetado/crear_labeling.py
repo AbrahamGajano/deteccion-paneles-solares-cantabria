@@ -16,7 +16,8 @@ from paneles_solares.datos.coleccion import (
     nueva_fila,
 )
 from paneles_solares.geografia.ortofotos import leer_tesela
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.modelos.unet import cargar_modelo, normalizar_rgb
+from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
 
 # Deja a cero las categorías que no quieras utilizar.
 CANTIDAD_ALEATORIAS = 3000
@@ -27,7 +28,7 @@ CANTIDAD_SIN_DETECCION = 0
 
 # Los modelos solo se cargan si alguna categoría los necesita.
 MODELO_YOLO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
-MODELO_UNET = ruta_proyecto("weights/unet_resnet34.pt")
+MODELO_UNET = PESOS_UNET
 
 CONFIANZA_MIN = 0.40
 CONFIANZA_MAX = 0.60
@@ -38,10 +39,6 @@ MINIMO_DETECCIONES = 4
 # Si el IoU entre ambas predicciones es menor, interesa revisar la imagen.
 IOU_MINIMO_ACUERDO = 0.50
 MINIMO_PIXELES_PREDICHOS = 10
-
-# Normalización utilizada por el encoder ResNet34 preentrenado en ImageNet.
-MEDIA_IMAGENET = (0.485, 0.456, 0.406)
-DESVIACION_IMAGENET = (0.229, 0.224, 0.225)
 
 IMGSZ = 640  # Entrada del modelo; los PNG originales se guardan a 512 × 512.
 DEVICE = 0
@@ -187,18 +184,8 @@ def cargar_modelo_unet(cantidades: dict):
 
     import torch
 
-    from paneles_solares.modelos.entrenar_unet import crear_modelo
-
     dispositivo = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    modelo = crear_modelo()
-    pesos = torch.load(
-        MODELO_UNET,
-        map_location=dispositivo,
-        weights_only=True,
-    )
-    modelo.load_state_dict(pesos)
-    modelo.to(dispositivo)
-    modelo.eval()
+    modelo = cargar_modelo(MODELO_UNET, dispositivo)
 
     return modelo, dispositivo
 
@@ -295,10 +282,7 @@ def predecir_unet(modelo, imagen, dispositivo) -> np.ndarray:
 
     import torch
 
-    imagen = imagen.astype(np.float32) / 255.0
-    media = np.asarray(MEDIA_IMAGENET, dtype=np.float32)
-    desviacion = np.asarray(DESVIACION_IMAGENET, dtype=np.float32)
-    imagen = (imagen - media) / desviacion
+    imagen = normalizar_rgb(imagen)
 
     # PyTorch espera canales × alto × ancho y una dimensión para el batch.
     tensor = np.transpose(imagen, (2, 0, 1)).copy()

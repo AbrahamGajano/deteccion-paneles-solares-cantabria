@@ -15,36 +15,8 @@ from paneles_solares.rutas import ruta_proyecto
 DATASETS = ruta_proyecto("data/datasets")
 
 
-def exportar_yolo(datos: dict, destino: Path) -> None:
-    """Pasa una anotación de LabelMe al formato de segmentación de YOLO.
-
-    Args:
-        datos (dict): Datos de la anotación.
-        destino (Path): Ruta del archivo TXT de destino.
-    """
-    destino.write_text(
-        texto_yolo(datos),
-        encoding="utf-8",
-    )
-
-
-def exportar_unet(datos: dict, destino: Path) -> None:
-    """Pasa una anotación de LabelMe a una máscara para U-Net.
-
-    Args:
-        datos (dict): Datos de la anotación.
-        destino (Path): Ruta de la máscara PNG de destino.
-    """
-    mascara = crear_mascara_unet(datos)
-    mascara.save(destino)
-
-
 def obtener_seleccion() -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Obtiene las imágenes asignadas a entrenamiento, validación y test.
-
-    Returns:
-        tuple[pd.Series, pd.Series, pd.Series]: IDs de train, val y test.
-    """
+    """Obtiene las imágenes asignadas a entrenamiento, validación y test."""
     # Cargamos el manifest que guarda el estado de cada imagen.
     manifest = cargar_manifest()
 
@@ -63,16 +35,7 @@ def buscar_cambios(
     carpeta: Path,
     extension: str,
 ) -> tuple[set[str], set[str]]:
-    """Busca los archivos que faltan y los que sobran en una carpeta.
-
-    Args:
-        ids (pd.Series): IDs que deberían existir.
-        carpeta (Path): Carpeta que se quiere comprobar.
-        extension (str): Extensión de los archivos.
-
-    Returns:
-        tuple[set[str], set[str]]: IDs que faltan y que sobran.
-    """
+    """Busca los archivos que faltan y los que sobran en una carpeta."""
     # Con conjuntos podemos calcular fácilmente las diferencias.
     deseados = set(ids)
     existentes = {archivo.stem for archivo in carpeta.glob(f"*{extension}")}
@@ -87,13 +50,7 @@ def sincronizar_imagenes(
     dataset: Path,
     seleccion: tuple[pd.Series, pd.Series, pd.Series],
 ) -> None:
-    """Añade las imágenes que faltan y elimina las que sobran.
-
-    Args:
-        dataset (Path): Ruta del dataset que se quiere sincronizar.
-        seleccion (tuple[pd.Series, pd.Series, pd.Series]):
-            IDs de train, val y test.
-    """
+    """Añade las imágenes que faltan y elimina las que sobran."""
     # Repetimos el proceso para cada división del dataset.
     for split, ids in zip(SPLITS, seleccion):
         carpeta = dataset / "images" / split
@@ -118,20 +75,12 @@ def sincronizar_imagenes(
 
 def sincronizar_anotaciones(
     dataset: Path,
-    modelo: dict,
+    formato: str,
     seleccion: tuple[pd.Series, pd.Series, pd.Series],
 ) -> None:
-    """Sincroniza las etiquetas o máscaras de un formato.
-
-    Args:
-        dataset (Path): Ruta principal del dataset.
-        modelo (dict): Configuración del formato que se quiere generar.
-        seleccion (tuple[pd.Series, pd.Series, pd.Series]):
-            IDs de train, val y test.
-    """
-    ruta = dataset / modelo["carpeta"]
-    extension = modelo["extension"]
-    exportar = modelo["exportar"]
+    """Regenera TXT de YOLO o máscaras U-Net desde los JSON originales."""
+    ruta = dataset / ("labels" if formato == "yolo" else "masks")
+    extension = ".txt" if formato == "yolo" else ".png"
 
     for split, ids in zip(SPLITS, seleccion):
         carpeta = ruta / split
@@ -149,15 +98,14 @@ def sincronizar_anotaciones(
             destino = carpeta / f"{tile_id}{extension}"
 
             datos = leer_anotacion(anotacion)
-            exportar(datos, destino)
+            if formato == "yolo":
+                destino.write_text(texto_yolo(datos), encoding="utf-8")
+            else:
+                crear_mascara_unet(datos).save(destino)
 
 
 def crear_yaml_yolo(dataset: Path) -> None:
-    """Crea el archivo de configuración que necesita YOLO.
-
-    Args:
-        dataset (Path): Ruta del dataset YOLO.
-    """
+    """Crea el archivo de configuración que necesita YOLO."""
     # Ultralytics utiliza este archivo para localizar los tres splits.
     contenido = [
         f'path: "{dataset.resolve().as_posix()}"',
@@ -175,49 +123,22 @@ def crear_yaml_yolo(dataset: Path) -> None:
     )
 
 
-# Cada formato define únicamente lo que cambia respecto a los demás.
-SINCRONIZADORES = [
-    {
-        "nombre": "yolo",
-        "carpeta": "labels",
-        "extension": ".txt",
-        "exportar": exportar_yolo,
-        "finalizar": crear_yaml_yolo,
-    },
-    {
-        "nombre": "unet",
-        "carpeta": "masks",
-        "extension": ".png",
-        "exportar": exportar_unet,
-        "finalizar": None,
-    },
-]
-
-
 def sincronizar() -> None:
     """Sincroniza todos los datasets conocidos."""
     seleccion = obtener_seleccion()
 
-    for modelo in SINCRONIZADORES:
-        dataset = DATASETS / modelo["nombre"]
+    for formato in ("yolo", "unet"):
+        dataset = DATASETS / formato
         dataset.mkdir(parents=True, exist_ok=True)
 
         sincronizar_imagenes(dataset, seleccion)
-        sincronizar_anotaciones(dataset, modelo, seleccion)
+        sincronizar_anotaciones(dataset, formato, seleccion)
 
-        # Algunos formatos necesitan archivos adicionales.
-        finalizar = modelo["finalizar"]
+        if formato == "yolo":
+            crear_yaml_yolo(dataset)
 
-        if finalizar is not None:
-            finalizar(dataset)
-
-        print(f"Dataset sincronizado: {modelo['nombre']}")
-
-
-def main() -> None:
-    """Ejecuta la sincronización de los datasets."""
-    sincronizar()
+        print(f"Dataset sincronizado: {formato}")
 
 
 if __name__ == "__main__":
-    main()
+    sincronizar()

@@ -15,7 +15,19 @@ outputs/
 # Archivos temporales de Python
 __pycache__/
 *.pyc
+.ruff_cache/
+.pytest_cache/
+*.tmp
 *.egg-info/
 build/
 dist/
 *.cache
+
+# Archivos auxiliares de LaTeX (el PDF final sí se conserva)
+docs/*.aux
+docs/*.log
+docs/*.out
+docs/*.xdv
+docs/*.synctex.gz
+docs/*.fdb_latexmk
+docs/*.fls

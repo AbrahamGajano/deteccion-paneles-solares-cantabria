@@ -1,7 +1,6 @@
 """Evalúa el modelo U-Net sobre el conjunto de test."""
 
 import shutil
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -10,15 +9,12 @@ from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader
 
-from paneles_solares.modelos.entrenar_unet import DatasetPaneles, crear_modelo
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.modelos.unet import DatasetPaneles, UMBRAL, cargar_modelo
+from paneles_solares.rutas import EVALUACION_UNET, PESOS_UNET, ruta_proyecto
 
 DATASET = ruta_proyecto("data/datasets/unet")
 
-PESOS = ruta_proyecto("weights/unet_resnet34.pt")
-SALIDA = ruta_proyecto("runs/evaluacion/unet_actual")
-
-UMBRAL = 0.5
+SALIDA = EVALUACION_UNET
 
 PX_UMBRAL = 10
 
@@ -41,43 +37,8 @@ CATEGORIAS_REVISION = (
 )
 
 
-def cargar_modelo(
-    ruta_pesos: Path,
-    dispositivo: torch.device,
-) -> nn.Module:
-    """Crea el modelo U-Net y carga los pesos entrenados.
-
-    Args:
-        ruta_pesos (Path): Ruta del archivo .pt.
-        dispositivo (torch.device): CPU o GPU utilizada.
-
-    Returns:
-        nn.Module: Modelo preparado para realizar predicciones.
-    """
-    # Creamos la misma arquitectura utilizada durante el entrenamiento.
-    modelo = crear_modelo()
-
-    # Cargamos los pesos en el dispositivo que vamos a utilizar.
-    pesos = torch.load(
-        ruta_pesos,
-        map_location=dispositivo,
-        weights_only=True,
-    )
-    modelo.load_state_dict(pesos)
-    modelo.to(dispositivo)
-
-    # Activamos el modo de evaluación.
-    modelo.eval()
-
-    return modelo
-
-
 def crear_cargador_test() -> DataLoader:
-    """Crea el cargador de datos para el conjunto de test.
-
-    Returns:
-        DataLoader: Cargador con las imágenes, máscaras e identificadores.
-    """
+    """Crea el cargador de datos para el conjunto de test."""
     dataset = DatasetPaneles(
         DATASET,
         split="test",
@@ -101,17 +62,7 @@ def predecir(
     tensor: torch.Tensor,
     dispositivo: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Obtiene el mapa de probabilidades y la máscara binaria.
-
-    Args:
-        modelo (nn.Module): Modelo U-Net entrenado.
-        tensor (torch.Tensor): Imagen preparada para el modelo.
-        dispositivo (torch.device): CPU o GPU utilizada.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]:
-            Probabilidades entre 0 y 1 y máscara binaria.
-    """
+    """Obtiene el mapa de probabilidades y la máscara binaria."""
     tensor = tensor.to(dispositivo)
 
     # No necesitamos calcular gradientes durante la evaluación.
@@ -134,16 +85,7 @@ def calcular_indicadores(
     predicha: np.ndarray,
     tile_id: str,
 ) -> dict:
-    """Calcula los aciertos y errores de segmentación de una imagen.
-
-    Args:
-        real (np.ndarray): Máscara real binaria.
-        predicha (np.ndarray): Máscara predicha binaria.
-        tile_id (str): Identificador de la imagen.
-
-    Returns:
-        dict: TP, FP, FN, métricas y superficies en píxeles.
-    """
+    """Calcula los aciertos y errores de segmentación de una imagen."""
     tp = np.count_nonzero(real & predicha)
     fp = np.count_nonzero(~real & predicha)
     fn = np.count_nonzero(real & ~predicha)
@@ -186,14 +128,7 @@ def calcular_indicadores(
 
 
 def clasificar_resultado(resultado: dict) -> str:
-    """Clasifica una predicción según sus errores de segmentación.
-
-    Args:
-        resultado (dict): Indicadores calculados para una imagen.
-
-    Returns:
-        str: Categoría utilizada para organizar la revisión.
-    """
+    """Clasifica una predicción según sus errores de segmentación."""
     tp = resultado["tp"]
     fp = resultado["fp"]
     fn = resultado["fn"]
@@ -222,16 +157,7 @@ def crear_visualizacion(
     real: np.ndarray,
     predicha: np.ndarray,
 ) -> Image.Image:
-    """Dibuja visualmente los aciertos y errores del modelo.
-
-    Args:
-        imagen (Image.Image): Imagen PNOA original.
-        real (np.ndarray): Máscara real binaria.
-        predicha (np.ndarray): Máscara predicha binaria.
-
-    Returns:
-        Image.Image: Imagen preparada para la revisión manual.
-    """
+    """Dibuja visualmente los aciertos y errores del modelo."""
     imagen = np.asarray(
         imagen.convert("RGB"),
         dtype=np.float32,
@@ -274,15 +200,7 @@ def evaluar_dataset(
     cargador: DataLoader,
     dispositivo: torch.device,
 ) -> list[dict]:
-    """Evalúa todas las imágenes del conjunto de test.
-
-    Args:
-        modelo (nn.Module): Modelo U-Net entrenado.
-        cargador (DataLoader): Cargador del conjunto de test.
-        dispositivo (torch.device): CPU o GPU utilizada.
-    Returns:
-        list[dict]: Resultados individuales de todas las imágenes.
-    """
+    """Evalúa todas las imágenes del conjunto de test."""
     resultados = []
 
     for indice, (imagenes, mascaras, tile_ids) in enumerate(cargador, start=1):
@@ -331,11 +249,7 @@ def evaluar_dataset(
 
 
 def guardar_resultados(resultados: list[dict]) -> None:
-    """Guarda los resultados individuales y calcula el resumen global.
-
-    Args:
-        resultados (list[dict]): Resultados individuales del conjunto de test.
-    """
+    """Guarda los resultados individuales y calcula el resumen global."""
     if not resultados:
         print("No hay imágenes en el conjunto de test.")
         return
@@ -412,7 +326,7 @@ def main() -> None:
     preparar_salida()
 
     modelo = cargar_modelo(
-        PESOS,
+        PESOS_UNET,
         dispositivo,
     )
 

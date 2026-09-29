@@ -32,12 +32,7 @@ CATEGORIAS = (
 
 
 def comprobar_etiquetas(imagenes: Path, labels: Path) -> None:
-    """Comprueba que todas las imágenes del test tienen su TXT.
-
-    Args:
-        imagenes (Path): Carpeta de imágenes.
-        labels (Path): Carpeta de etiquetas YOLO.
-    """
+    """Comprueba que todas las imágenes del test tienen su TXT."""
 
     cantidad = 0
 
@@ -127,15 +122,7 @@ def medir_mascara(resultado, ruta_real: Path) -> dict:
 
 
 def clasificar_imagen(tiene_panel: bool, tiene_deteccion: bool) -> str:
-    """Compara la presencia de paneles reales con la predicción.
-
-    Args:
-        tiene_panel (bool): La anotación contiene algún panel.
-        tiene_deteccion (bool): El modelo ha detectado algún panel.
-
-    Returns:
-        str: Categoría a la que pertenece la imagen.
-    """
+    """Compara la presencia de paneles reales con la predicción."""
 
     if tiene_panel and tiene_deteccion:
         return "positivas_detectadas"
@@ -150,14 +137,7 @@ def clasificar_imagen(tiene_panel: bool, tiene_deteccion: bool) -> str:
 
 
 def obtener_detecciones(resultado) -> tuple[int, float | None]:
-    """Resume las detecciones de una predicción de YOLO.
-
-    Args:
-        resultado: Predicción de una imagen.
-
-    Returns:
-        tuple[int, float | None]: Número de detecciones y confianza máxima.
-    """
+    """Resume las detecciones de una predicción de YOLO."""
 
     if resultado.boxes is None or len(resultado.boxes) == 0:
         return 0, None
@@ -174,14 +154,7 @@ def guardar_imagen(
     confianza: float | None,
     salida: Path,
 ) -> None:
-    """Guarda la imagen dibujada en su categoría de revisión.
-
-    Args:
-        resultado: Predicción con la imagen y las detecciones.
-        categoria (str): Categoría asignada a la imagen.
-        confianza (float | None): Confianza máxima encontrada.
-        salida (Path): Carpeta de la revisión.
-    """
+    """Guarda la imagen dibujada en su categoría de revisión."""
 
     # Los negativos correctos se incluyen en el CSV, sin copiar sus imágenes vacías.
     if categoria == "negativas_correctas":
@@ -199,12 +172,7 @@ def guardar_imagen(
 
 
 def guardar_resumen(registros: list[dict], salida: Path) -> None:
-    """Guarda el CSV de la revisión y muestra el número de casos de cada tipo.
-
-    Args:
-        registros (list[dict]): Resultados de todas las imágenes.
-        salida (Path): Carpeta de la revisión.
-    """
+    """Guarda el CSV de la revisión y muestra el número de casos de cada tipo."""
 
     resumen = pd.DataFrame(registros)
 
@@ -270,17 +238,7 @@ def guardar_predicciones(
     imgsz: int = 512,
     device: int | str = 0,
 ) -> None:
-    """Revisa el test y guarda las imágenes y el resumen.
-
-    Args:
-        modelo: Modelo YOLO cargado.
-        confianza (float): Umbral mínimo de detección.
-        imagenes (Path): Carpeta de imágenes del test.
-        labels (Path): Carpeta de etiquetas del test.
-        salida (Path): Carpeta temporal para esta revisión.
-        imgsz (int): Tamaño de entrada del modelo.
-        device (int | str): GPU o CPU que se utilizará.
-    """
+    """Revisa el test y guarda las imágenes y el resumen."""
 
     if salida.exists():
         raise FileExistsError(f"Quedó una revisión interrumpida: {salida}")

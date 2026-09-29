@@ -1,127 +1,138 @@
 # Paneles solares en Cantabria
 
-El proyecto busca paneles solares en las ortofotos PNOA de Cantabria. Catastro
-se utiliza para evitar recorrer zonas sin edificios y los resultados se pueden
-ver en mapas o convertir en una estimación aproximada de energía con PVGIS.
+Detección de superficies fotovoltaicas en ortofotos PNOA 2023, evaluación de
+U-Net frente a YOLO e indicadores por edificio y municipio. La potencia y la
+producción son estimaciones: no se conocen la potencia instalada ni la energía
+observada de cada cubierta.
 
-Cada archivo se puede ejecutar desde VS Code. Las opciones que normalmente
-querrás cambiar están al principio del archivo.
+## Entorno y datos
 
-## Preparación
-
-Crea un entorno con Python 3.10 o posterior e instala el proyecto:
+Python 3.10 o posterior. Desde la raíz del repositorio:
 
 ```powershell
-python -m pip install -e .
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-Esto instala las librerías de `requirements.txt` y permite que los archivos de
-`src` se importen entre sí.
+Se esperan ortofotos `.tif` en `data/pnoa/`. Los scripts de geografía descargan
+Catastro y límites municipales a `data/geografia/` y crean
+`data/manifests/teselas.csv`. Los JSON de LabelMe en
+`data/pool/annotations/` son las anotaciones originales; los TXT de YOLO y las
+máscaras de U-Net se regeneran desde ellos. `weights/unet_resnet34.pt` es el
+modelo U-Net actual. YOLO usa el `best.pt` de su entrenamiento.
 
-## Etiquetado y entrenamiento
+`data/`, `runs/`, `outputs/`, pesos, entornos y cachés de Python no se versionan.
+Las descargas, el etiquetado, entrenamientos, evaluaciones e inferencia completa
+pueden tardar bastante.
 
-El flujo normal es este:
+## Flujo recomendado
 
-1. `etiquetado/crear_labeling.py` extrae nuevas teselas de PNOA.
-2. Etiqueta sus polígonos en LabelMe con la clase `panel_solar`.
-   Una imagen sin paneles también necesita un JSON vacío.
-3. `etiquetado/incorporar_labeling.py` mueve lo terminado al pool.
-4. `datos/decidir_dataset.py` reparte las imágenes entre entrenamiento y
-   validación. También conserva los negativos en los que fallan los modelos.
-5. `datos/sincronizar.py` actualiza los datasets de YOLO y U-Net.
-6. Entrena con `modelos/entrenar_yolo.py` o `modelos/entrenar_unet.py`.
-7. Revisa el resultado con `modelos/evaluar_yolo.py` o
-   `modelos/evaluar_unet.py`.
+Prepara la geografía una vez, o cuando cambien los datos originales:
 
-Las anotaciones originales siempre son los JSON de `data/pool/annotations`.
-Los datasets se generan a partir de ellos, así que no conviene editar sus TXT o
-máscaras a mano.
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.geografia.catastro
+.\.venv\Scripts\python.exe -m paneles_solares.geografia.municipios
+.\.venv\Scripts\python.exe -m paneles_solares.geografia.teselas
+```
 
-## Cantabria completa
+Para ampliar el conjunto etiquetado, ejecuta los dos pasos alrededor de la
+anotación manual en LabelMe, clase `panel_solar`. Una imagen sin paneles
+necesita también su JSON vacío. Después decide train/val/test y reconstruye
+ambos datasets:
 
-`data/manifests/teselas.csv` contiene las teselas que intersectan edificios de
-Catastro. Para generar resultados de toda Cantabria:
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.crear_labeling
+# Etiquetar manualmente los PNG en data/labeling/images/
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.incorporar_labeling
+.\.venv\Scripts\python.exe -m paneles_solares.datos.decidir_dataset
+.\.venv\Scripts\python.exe -m paneles_solares.datos.sincronizar
+```
 
-1. Ejecuta `geografia/municipios.py` para descargar los límites municipales.
-2. Elige YOLO o U-Net al principio de `modelos/inferir_cantabria.py` y ejecútalo.
-3. Ejecuta `visualizacion/mapa_cantabria.py` para crear el mapa general y el
-   resumen por municipio.
+Entrena y evalúa ambos modelos por separado. U-Net es la fuente actual de los
+indicadores; YOLO se conserva para la comparación experimental:
 
-La inferencia se guarda por bloques en `runs/inferencia`. Si se interrumpe,
-continúa desde el último bloque terminado. Si cambias el modelo, los pesos o el
-umbral usando el mismo nombre, elimina los resultados anteriores y comienza de
-nuevo automáticamente.
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.entrenar_unet
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.evaluar_unet
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.entrenar_yolo
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.evaluar_yolo
+```
 
-`visualizacion/mapa_resultados.py` crea un mapa del conjunto de evaluación.
-Sirve para localizar aciertos y errores, pero no representa toda Cantabria.
+Los pesos U-Net se guardan en `weights/unet_resnet34.pt`; su evaluación en
+`runs/evaluacion/unet_actual/`. La de YOLO queda en
+`runs/evaluacion/cantabria/yolo11s/revision/`. El entrenamiento puede
+sobrescribir sus resultados anteriores: revisa las constantes de cada script
+antes de lanzarlo.
 
-## Indicadores U-Net por edificio y municipio
+Calcula los indicadores georreferenciados y, después, la producción. La segunda
+etapa consulta PVGIS 5.3 secuencialmente, unas 200 llamadas para los 100
+municipios con detecciones actuales. La caché fija `pvgis_municipios.jsonl`
+permite continuar sin repetir municipios terminados.
 
-`modelos/indicadores_unet.py` aplica `weights/unet_resnet34.pt` a las teselas
-PNOA del índice `data/manifests/teselas.csv`. Usa RGB, 512 × 512 píxeles,
-normalización ImageNet y umbral 0,5, como `evaluar_unet.py`. Las teselas de
-borde menores de 512 píxeles se completan con negro y se recortan tras inferir.
-Las máscaras se mantienen en el CRS original EPSG:25830 y se cuentan por
-píxel dentro de un único edificio. En los solapes entre ortofotos prevalece
-la primera por nombre. Solo entran en los indicadores los edificios con
-cobertura completa en las teselas procesadas.
-Los edificios cuyo punto interior cae fuera de los límites municipales se
-asignan al municipio más cercano (13 casos en los datos actuales).
-
-Ejecuta desde la raíz del proyecto:
+`indicadores_unet.py` realiza la inferencia sobre Cantabria y guarda
+`edificios.gpkg` y `municipios.gpkg`. `estimar_energia.py` lee esos GeoPackage y
+genera los CSV de producción. `panel_indicadores.py` lee `municipios.gpkg`,
+`edificios.gpkg` y el resumen municipal de producción; no repite la inferencia
+ni consulta PVGIS.
 
 ```powershell
 .\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_unet
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.estimar_energia
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores
 ```
 
-La ejecución sobrescribe tres archivos fijos en `runs/indicadores/unet_actual`:
+Prueba limitada de PVGIS, sin escribir resultados completos:
 
-- `edificios.gpkg`: geometría catastral original, `fid` local como
-  `id_edificio`, municipio, superficie de cubierta, superficie fotovoltaica
-  detectada, ocupación y presencia.
-- `municipios.csv`: conteos y tasas por edificio, superficies detectadas,
-  media y mediana entre edificios positivos y ocupación total de cubierta.
-- `municipios.gpkg`: los mismos indicadores municipales con sus límites para QGIS.
-
-La superficie detectada es planimétrica: píxeles positivos dentro de la
-huella catastral × 0,0225 m². La cubierta se aproxima mediante la huella
-catastral proyectada; no se calcula la superficie inclinada real de los
-módulos. `superficie_fv_corregida_test_m2` y
-`superficie_fv_corregida_test_total_m2` son una **calibración experimental**:
-superficie detectada / 0,9246, según el sesgo global de −7,54 % medido en
-el test. Siempre se conserva también la superficie sin corregir. Este sesgo
-global no garantiza una corrección válida para cada edificio o municipio.
-La presencia indica píxeles segmentados dentro de la huella, no el número
-de instalaciones; no se aplica un filtro de área mínima. Algunos porcentajes
-de ocupación pueden superar 100 % por errores de segmentación o por la
-aproximación de píxeles a los límites de Catastro.
-
-## Estimación de energía
-
-`visualizacion/estimar_energia.py` agrupa los paneles detectados en zonas de
-3 km y consulta PVGIS. Genera:
-
-- `energia_muestras.csv`, con las consultas individuales.
-- `energia_mensual.csv`, con el resumen por municipio y mes.
-- `energia_mensual.png`, con la gráfica mensual.
-- `mapa_energia.html`, con la energía anual por municipio.
-
-La cifra es un escenario aproximado. Actualmente supone 0,20 kWp por cada m²
-proyectado en la ortofoto, orientación sur, 30° de inclinación y 14 % de
-pérdidas. No conoce la potencia real de los paneles, su orientación ni las
-sombras cercanas.
-
-## Carpetas
-
-```text
-data/labeling/       imágenes pendientes de etiquetar
-data/pool/           imágenes y anotaciones ya revisadas
-data/datasets/       datasets generados para YOLO y U-Net
-data/pnoa/           ortofotos originales
-src/paneles_solares/ código del proyecto
-runs/                entrenamientos, evaluaciones, inferencias y mapas
-weights/             pesos de U-Net
+```powershell
+.\.venv\Scripts\python.exe -c "from paneles_solares.visualizacion.estimar_energia import prueba; prueba()"
 ```
 
-Los PNG de los datasets son enlaces a los del pool y no ocupan el espacio dos
-veces.
+El panel se puede regenerar sin repetir inferencia ni consultas PVGIS. El
+selector permite ver la producción anual y la potencia pico estimadas junto a
+los indicadores de detección. La evaluación U-Net guarda imágenes con errores
+del test en `runs/evaluacion/unet_actual/`.
+
+## Salidas y supuestos
+
+`runs/indicadores/unet_actual/` contiene `edificios.gpkg`, `municipios.gpkg`,
+`municipios.csv`, `panel_indicadores.html` y sus figuras. La producción añade
+`produccion_municipal.csv`, `produccion_mensual.csv`,
+`produccion_horaria_representativa.csv`, `produccion_config.json` y
+`resumen_produccion.png`. El CSV horario contiene 8.760 horas por municipio;
+el HTML utiliza solo resúmenes.
+
+La U-Net usa RGB de 512 × 512, normalización ImageNet y umbral 0,5, como su
+evaluación actual (Dice 0,856; sesgo global de superficie −7,54 %). La
+superficie detectada es **planimétrica**. La superficie corregida del test es
+`superficie_detectada / 0.9246`: una calibración experimental que no sustituye
+el valor original ni garantiza precisión por edificio.
+
+La potencia pico estimada es superficie × densidad efectiva: conservador,
+superficie detectada × 0,17 kWp/m²; central, superficie corregida × 0,20;
+superior, superficie corregida × 0,23. PVGIS usa 30° de inclinación,
+orientación 0° (sur) y pérdidas del 14 %. No se conocen aún inclinación,
+orientación o sombras reales de cada cubierta, y no se corrige la superficie
+por inclinación.
+
+`PVcalc` aporta rendimientos mensuales medios en kWh/kWp. `seriescalc` usa 2019
+para dar forma a un perfil horario representativo UTC; cada mes se normaliza a
+la media mensual. El perfil no es una medición de producción de 2019. La
+[documentación oficial de PVGIS 5.3](https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/using-pvgis-5/api-non-interactive-service_en)
+describe los endpoints, parámetros y unidades.
+
+La [memoria técnica](docs/memoria_tecnica.pdf) presenta los resultados, figuras
+y limitaciones. Su fuente editable está en `docs/memoria_tecnica.tex`; desde
+`docs/` se puede compilar con `latexmk -pdf memoria_tecnica.tex`. Los dos mapas
+estáticos se regeneran con:
+
+```powershell
+.\.venv\Scripts\python.exe docs/generar_mapas.py
+```
+
+## Código
+
+- `geografia/`: Catastro, municipios, ortofotos e índice de teselas.
+- `etiquetado/` y `datos/`: selección, anotaciones, manifiestos y datasets.
+- `modelos/unet.py`: arquitectura, preprocesamiento y carga compartidos.
+- `modelos/`: entrenamiento, evaluación e indicadores U-Net y YOLO.
+- `visualizacion/`: energía y panel central.

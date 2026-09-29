@@ -6,16 +6,15 @@ from pathlib import Path
 import numpy as np
 import segmentation_models_pytorch as smp
 import torch
-from PIL import Image
 from torch import nn
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.modelos.unet import DatasetPaneles, UMBRAL, crear_modelo
+from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
 
 DATASET = ruta_proyecto("data/datasets/unet")
 
 PESOS_INICIALES = ruta_proyecto("weights/unet_resnet34_anterior.pt")
-PESOS = ruta_proyecto("weights/unet_resnet34.pt")
 
 BATCH_SIZE = 4
 NUM_WORKERS = 2
@@ -26,151 +25,13 @@ PACIENCIA = 30
 LEARNING_RATE = 0.00003
 WEIGHT_DECAY = 0.0001
 
-UMBRAL = 0.5
 SEMILLA = 42
-
-# Normalización utilizada para entrenar ResNet34 con ImageNet.
-MEDIA_IMAGENET = np.array(
-    [0.485, 0.456, 0.406],
-    dtype=np.float32,
-)
-
-DESVIACION_IMAGENET = np.array(
-    [0.229, 0.224, 0.225],
-    dtype=np.float32,
-)
-
-
-class DatasetPaneles(Dataset):
-    """Carga las imágenes y máscaras utilizadas para entrenar U-Net."""
-
-    def __init__(
-        self,
-        dataset: Path,
-        split: str,
-        aumentar: bool = False,
-    ):
-        """Prepara las rutas de un split del dataset.
-
-        Args:
-            dataset (Path): Carpeta principal del dataset U-Net.
-            split (str): División que se quiere cargar: train, val o test.
-            aumentar (bool): Indica si se aplican aumentos aleatorios.
-        """
-        self.carpeta_imagenes = dataset / "images" / split
-        self.carpeta_mascaras = dataset / "masks" / split
-        self.aumentar = aumentar
-
-        self.imagenes = sorted(self.carpeta_imagenes.glob("*.png"))
-
-        if not self.imagenes:
-            raise ValueError(f"No hay imágenes en {self.carpeta_imagenes}")
-
-    def __len__(self) -> int:
-        """Devuelve el número de imágenes del dataset.
-
-        Returns:
-            int: Cantidad de imágenes disponibles.
-        """
-        return len(self.imagenes)
-
-    def __getitem__(
-        self,
-        indice: int,
-    ) -> tuple[torch.Tensor, torch.Tensor, str]:
-        """Carga una imagen y su máscara correspondiente.
-
-        Args:
-            indice (int): Posición de la muestra que se quiere cargar.
-
-        Returns:
-            tuple[torch.Tensor, torch.Tensor, str]:
-                Imagen y máscara convertidas en tensores e id_tile.
-        """
-        ruta_imagen = self.imagenes[indice]
-        ruta_mascara = self.carpeta_mascaras / ruta_imagen.name
-
-        imagen = Image.open(ruta_imagen).convert("RGB")
-        mascara = Image.open(ruta_mascara).convert("L")
-
-        imagen = np.array(imagen, dtype=np.float32)
-        mascara = np.array(mascara)
-
-        # Los aumentos espaciales deben aplicarse igual a imagen y máscara.
-        if self.aumentar:
-            imagen, mascara = aumentar_datos(imagen, mascara)
-
-        # La imagen pasa del intervalo 0-255 al intervalo 0-1.
-        imagen = imagen / 255.0
-
-        # Adaptamos los colores a la distribución usada por ImageNet.
-        imagen = (imagen - MEDIA_IMAGENET) / DESVIACION_IMAGENET
-
-        # La máscara queda formada únicamente por ceros y unos.
-        mascara = (mascara > 0).astype(np.float32)
-
-        # Pasamos de alto-ancho-canales a canales-alto-ancho.
-        imagen = np.transpose(imagen, (2, 0, 1))
-
-        # Añadimos a la máscara su único canal.
-        mascara = mascara[np.newaxis, :, :]
-
-        # Algunas transformaciones dejan los arrays no contiguos.
-        imagen = np.ascontiguousarray(imagen)
-        mascara = np.ascontiguousarray(mascara)
-
-        imagen = torch.from_numpy(imagen)
-        mascara = torch.from_numpy(mascara)
-
-        return imagen, mascara, ruta_imagen.stem
-
-
-def aumentar_datos(
-    imagen: np.ndarray,
-    mascara: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Aplica transformaciones aleatorias a una imagen y su máscara.
-
-    Args:
-        imagen (np.ndarray): Imagen RGB.
-        mascara (np.ndarray): Máscara correspondiente.
-
-    Returns:
-        tuple[np.ndarray, np.ndarray]:
-            Imagen y máscara transformadas.
-    """
-    # Volteo horizontal.
-    if random.random() < 0.5:
-        imagen = np.flip(imagen, axis=1)
-        mascara = np.flip(mascara, axis=1)
-
-    # Volteo vertical.
-    if random.random() < 0.5:
-        imagen = np.flip(imagen, axis=0)
-        mascara = np.flip(mascara, axis=0)
-
-    # Rotación de 0, 90, 180 o 270 grados.
-    giros = random.randint(0, 3)
-
-    if giros:
-        imagen = np.rot90(imagen, giros)
-        mascara = np.rot90(mascara, giros)
-
-    return imagen, mascara
 
 
 def crear_cargadores(
     dataset: Path,
 ) -> tuple[DataLoader, DataLoader]:
-    """Crea los cargadores de entrenamiento y validación.
-
-    Args:
-        dataset (Path): Ruta principal del dataset U-Net.
-
-    Returns:
-        tuple[DataLoader, DataLoader]:
-            Cargadores de entrenamiento y validación.
-    """
+    """Crea los cargadores de entrenamiento y validación."""
     dataset_train = DatasetPaneles(
         dataset,
         split="train",
@@ -202,23 +63,6 @@ def crear_cargadores(
     return cargador_train, cargador_val
 
 
-def crear_modelo() -> nn.Module:
-    """Crea una U-Net con encoder ResNet34 preentrenado.
-
-    Returns:
-        nn.Module: Modelo de segmentación.
-    """
-    modelo = smp.Unet(
-        encoder_name="resnet34",
-        encoder_weights="imagenet",
-        in_channels=3,
-        classes=1,
-        activation=None,
-    )
-
-    return modelo
-
-
 class PerdidaSegmentacion(nn.Module):
     """Combina BCE y Dice para entrenar segmentación binaria."""
 
@@ -238,15 +82,7 @@ class PerdidaSegmentacion(nn.Module):
         predicciones: torch.Tensor,
         mascaras: torch.Tensor,
     ) -> torch.Tensor:
-        """Calcula el error total de las predicciones.
-
-        Args:
-            predicciones (torch.Tensor): Salida producida por U-Net.
-            mascaras (torch.Tensor): Máscaras correctas.
-
-        Returns:
-            torch.Tensor: Pérdida total del lote.
-        """
+        """Calcula el error total de las predicciones."""
         perdida_bce = self.bce(
             predicciones,
             mascaras,
@@ -268,19 +104,7 @@ def entrenar_epoca(
     escalador: torch.amp.GradScaler,
     dispositivo: torch.device,
 ) -> float:
-    """Entrena el modelo durante una época completa.
-
-    Args:
-        modelo (nn.Module): Modelo que se quiere entrenar.
-        cargador (DataLoader): Cargador de entrenamiento.
-        criterio (nn.Module): Función de pérdida.
-        optimizador (torch.optim.Optimizer): Optimizador del modelo.
-        escalador (torch.amp.GradScaler): Escalador para precisión mixta.
-        dispositivo (torch.device): CPU o GPU utilizada.
-
-    Returns:
-        float: Pérdida media de entrenamiento.
-    """
+    """Entrena el modelo durante una época completa."""
     modelo.train()
 
     perdida_total = 0.0
@@ -327,17 +151,7 @@ def validar_epoca(
     criterio: nn.Module,
     dispositivo: torch.device,
 ) -> dict[str, float]:
-    """Evalúa el modelo utilizando el conjunto de validación.
-
-    Args:
-        modelo (nn.Module): Modelo que se quiere validar.
-        cargador (DataLoader): Cargador de validación.
-        criterio (nn.Module): Función de pérdida.
-        dispositivo (torch.device): CPU o GPU utilizada.
-
-    Returns:
-        dict[str, float]: Pérdida y métricas de validación.
-    """
+    """Evalúa el modelo utilizando el conjunto de validación."""
     modelo.eval()
 
     perdida_total = 0.0
@@ -414,12 +228,7 @@ def guardar_modelo(
     modelo: nn.Module,
     ruta: Path,
 ) -> None:
-    """Guarda los pesos entrenados del modelo.
-
-    Args:
-        modelo (nn.Module): Modelo cuyos pesos se quieren guardar.
-        ruta (Path): Archivo de destino.
-    """
+    """Guarda los pesos entrenados del modelo."""
     ruta.parent.mkdir(parents=True, exist_ok=True)
 
     torch.save(
@@ -429,11 +238,7 @@ def guardar_modelo(
 
 
 def fijar_semilla(semilla: int) -> None:
-    """Fija la semilla utilizada por los generadores aleatorios.
-
-    Args:
-        semilla (int): Semilla que se quiere utilizar.
-    """
+    """Fija la semilla utilizada por los generadores aleatorios."""
     random.seed(semilla)
     np.random.seed(semilla)
     torch.manual_seed(semilla)
@@ -530,10 +335,10 @@ def entrenar() -> None:
 
             guardar_modelo(
                 modelo,
-                PESOS,
+                PESOS_UNET,
             )
 
-            print(f"Mejor modelo guardado: {PESOS}")
+            print(f"Mejor modelo guardado: {PESOS_UNET}")
 
         else:
             epocas_sin_mejora += 1
@@ -548,10 +353,5 @@ def entrenar() -> None:
     print(f"Mejor Dice de validación: {mejor_dice:.4f}")
 
 
-def main() -> None:
-    """Ejecuta el entrenamiento de U-Net."""
-    entrenar()
-
-
 if __name__ == "__main__":
-    main()
+    entrenar()
