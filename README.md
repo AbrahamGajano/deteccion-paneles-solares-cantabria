@@ -131,6 +131,11 @@ estáticos se regeneran con:
 
 ## Código
 
+La [validación de otras resoluciones](docs/validacion_resoluciones.md) prepara una
+muestra pequeña del test de 2023, permite etiquetarla con LabelMe y evalúa el
+modelo congelado sobre otro producto nativo. Su configuración está en
+`validaciones.json`; no requiere descarga regional ni reentrenamiento.
+
 - `geografia/`: Catastro, municipios, ortofotos e índice de teselas.
 - `etiquetado/` y `datos/`: selección, anotaciones, manifiestos y datasets.
 - `modelos/unet.py`: arquitectura, preprocesamiento y carga compartidos.

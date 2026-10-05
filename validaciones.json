@@ -1,0 +1,22 @@
+{
+  "20cm": {
+    "anio": 2024,
+    "resolucion_m": 0.20,
+    "procedencia": "Gobierno de Cantabria: Ortofoto 2024 True Ortho, 20 cm nativos. https://geoservicios.cantabria.es/inspire/rest/services/Ortofoto_2024/MapServer",
+    "fuentes": [
+      {
+        "tipo": "wcs",
+        "url": "https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer",
+        "cobertura": "16",
+        "etiqueta": "Ortofoto_de_2024_True_Ortho",
+        "bandas": [1, 2, 3],
+        "divisor_rgb": 257.0
+      }
+    ],
+    "aleatorias": 219,
+    "positivas": 31,
+    "semilla": 42,
+    "bootstrap": 1000,
+    "ejemplos_por_categoria": 2
+  }
+}

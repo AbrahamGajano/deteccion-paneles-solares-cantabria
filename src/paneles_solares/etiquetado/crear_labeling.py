@@ -20,8 +20,8 @@ from paneles_solares.modelos.unet import cargar_modelo, normalizar_rgb
 from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
 
 # Deja a cero las categorías que no quieras utilizar.
-CANTIDAD_ALEATORIAS = 3000
-CANTIDAD_DISCREPANCIAS = 1000
+CANTIDAD_ALEATORIAS = 1000
+CANTIDAD_DISCREPANCIAS = 0
 CANTIDAD_INCIERTAS = 0
 CANTIDAD_MUCHAS_DETECCIONES = 0
 CANTIDAD_SIN_DETECCION = 0
@@ -40,7 +40,7 @@ MINIMO_DETECCIONES = 4
 IOU_MINIMO_ACUERDO = 0.50
 MINIMO_PIXELES_PREDICHOS = 10
 
-IMGSZ = 640  # Entrada del modelo; los PNG originales se guardan a 512 × 512.
+IMGSZ = 512  # Entrada del modelo; los PNG originales se guardan a 512 × 512.
 DEVICE = 0
 
 SEMILLA = 42
