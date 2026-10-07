@@ -136,6 +136,17 @@ muestra pequeña del test de 2023, permite etiquetarla con LabelMe y evalúa el
 modelo congelado sobre otro producto nativo. Su configuración está en
 `validaciones.json`; no requiere descarga regional ni reentrenamiento.
 
+La [revisión histórica](docs/seguimiento_historico.md) conserva el piloto, recupera
+predicciones completas sin filtro catastral y prepara las campañas 2014, 2017,
+2020 y 2023 por lotes pequeños. Las observaciones son independientes y se guardan
+inmediatamente en SQLite. Incluye auditoría visual, soportes corregibles y
+resultados por municipio; la recuperación regional sigue pendiente. Su única
+configuración está en `seguimiento.json`. Para preparar y continuar:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.seguimiento
+```
+
 - `geografia/`: Catastro, municipios, ortofotos e índice de teselas.
 - `etiquetado/` y `datos/`: selección, anotaciones, manifiestos y datasets.
 - `modelos/unet.py`: arquitectura, preprocesamiento y carga compartidos.

@@ -1,0 +1,18 @@
+{
+  "lote": 12,
+  "precarga": true,
+  "contexto_m": 20,
+  "corte_segmentacion_m": 0.6,
+  "extension_m": 76.8,
+  "muestra_previa": [
+    "PNOA_MA_OF_ETRS89_HU30_h25_0033_4_f41984_c33792",
+    "PNOA_MA_OF_ETRS89_HU30_h25_0033_3_f56832_c72704",
+    "PNOA_MA_OF_ETRS89_HU30_h25_0034_2_f36352_c81920"
+  ],
+  "campanias": [
+    {"anio": 2023, "resolucion_m": 0.15, "cobertura": "14", "etiqueta": "Ortofoto_de_2023", "divisor_rgb": 1.0},
+    {"anio": 2020, "resolucion_m": 0.15, "cobertura": "13", "etiqueta": "Ortofoto_de_2020", "divisor_rgb": 1.0},
+    {"anio": 2017, "resolucion_m": 0.25, "cobertura": "11", "etiqueta": "Ortofoto_de_2017", "divisor_rgb": 257.0},
+    {"anio": 2014, "resolucion_m": 0.25, "cobertura": "10", "etiqueta": "Ortofoto_de_2014", "divisor_rgb": 1.0}
+  ]
+}
