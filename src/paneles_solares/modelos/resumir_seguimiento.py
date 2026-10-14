@@ -18,13 +18,26 @@ from paneles_solares.datos.seguimiento import (
     guardar_csv,
     guardar_json,
 )
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.rutas import (
+    EDIFICIOS_CATASTRO,
+    EVALUACION_SEGUIMIENTO,
+)
 
-SALIDA = ruta_proyecto("runs/evaluacion/seguimiento")
+SALIDA = EVALUACION_SEGUIMIENTO
 
 
 def trazar_geometria(dibujo, geometria, limites, tamano, color, ancho=2):
-    """Dibuja contornos métricos sin modificar ninguna geometría original."""
+    """Dibuja contornos métricos sin modificar ninguna geometría original.
+
+    Args:
+        dibujo: Dibujo de Pillow sobre el que se trazan las geometrías.
+        geometria: Geometría original en EPSG:25830.
+        limites: Límites métricos del encuadre: xmin, ymin, xmax e ymax.
+        tamano: Ancho y alto del dibujo en píxeles.
+        color: Color del contorno.
+        ancho: Grosor del contorno en píxeles.
+    """
+
     xmin, ymin, xmax, ymax = limites
     partes = geometria.geoms if hasattr(geometria, "geoms") else [geometria]
     for parte in partes:
@@ -32,7 +45,10 @@ def trazar_geometria(dibujo, geometria, limites, tamano, color, ancho=2):
             continue
         for anillo in [parte.exterior, *parte.interiors]:
             puntos = [
-                ((x - xmin) / (xmax - xmin) * tamano[0], (ymax - y) / (ymax - ymin) * tamano[1])
+                (
+                    (x - xmin) / (xmax - xmin) * tamano[0],
+                    (ymax - y) / (ymax - ymin) * tamano[1],
+                )
                 for x, y in anillo.coords
             ]
             dibujo.line(puntos, fill=color, width=ancho)
@@ -46,8 +62,9 @@ def generar_auditoria(almacen, salida: Path = SALIDA) -> dict:
         salida: Carpeta fija de resultados.
 
     Returns:
-        Totales, superficies, municipio y límites de recuperación.
+        dict: Totales, superficies, municipio y límites de recuperación.
     """
+
     salida.mkdir(parents=True, exist_ok=True)
     componentes = almacen.filas("SELECT * FROM componentes WHERE anio=2023")
     columnas = [
@@ -63,7 +80,9 @@ def generar_auditoria(almacen, salida: Path = SALIDA) -> dict:
         "codigo_municipal",
         "origen",
     ]
-    tabla = pd.DataFrame([{c: f[c] for c in columnas} for f in componentes], columns=columnas)
+    tabla = pd.DataFrame(
+        [{c: f[c] for c in columnas} for f in componentes], columns=columnas
+    )
     intersectan = tabla.fraccion > 0
     proximos = tabla.relacion == "proximo"
     exteriores = ~intersectan & ~proximos
@@ -75,17 +94,29 @@ def generar_auditoria(almacen, salida: Path = SALIDA) -> dict:
         "descartados_antes": tabla[~intersectan],
     }
     cifras = {
-        nombre: {"componentes": len(filas), "superficie_m2": round(float(filas.area.sum()), 2)}
+        nombre: {
+            "componentes": len(filas),
+            "superficie_m2": round(float(filas.area.sum()), 2),
+        }
         for nombre, filas in grupos.items()
     }
     sin_interseccion = tabla[~intersectan].distancia.dropna()
     cifras["distancias_exteriores_m"] = (
-        {str(p): round(float(sin_interseccion.quantile(p)), 2) for p in [0.1, 0.5, 0.9, 0.95]}
+        {
+            str(p): round(float(sin_interseccion.quantile(p)), 2)
+            for p in [0.1, 0.5, 0.9, 0.95]
+        }
         if len(sin_interseccion)
         else {}
     )
     cifras["superficie_exterior_en_componentes_parciales_m2"] = round(
-        float((tabla.loc[intersectan, "area"] * (1 - tabla.loc[intersectan, "fraccion"])).sum()), 2
+        float(
+            (
+                tabla.loc[intersectan, "area"]
+                * (1 - tabla.loc[intersectan, "fraccion"])
+            ).sum()
+        ),
+        2,
     )
     cifras["cobertura"] = "recortes_preparados; no es auditoría regional completa"
     cifras["registros_anteriores_con_deteccion"] = 3188
@@ -94,17 +125,21 @@ def generar_auditoria(almacen, salida: Path = SALIDA) -> dict:
         "SELECT COUNT(*) n FROM recursos WHERE anio=2023 AND prediccion<>''"
     )[0]["n"]
     cifras["region"] = {
-        modo: almacen.meta("cursor_region_" + modo, {"completo": False, "procesadas": 0})
+        modo: almacen.meta(
+            "cursor_region_" + modo, {"completo": False, "procesadas": 0}
+        )
         for modo in ("indice", "fuera_indice", "todas")
     }
     cifras["mascaras_regionales_originales_disponibles"] = False
     cifras["recuperacion_pendiente"] = (
-        "Reinferir el índice original sin recorte y las ventanas locales sin edificios; los resúmenes antiguos no permiten recuperar máscaras."
+        "Reinferir el índice original sin recorte y las ventanas locales sin "
+        "edificios; los resúmenes antiguos no permiten recuperar máscaras."
     )
     cifras["proximidad_m"] = almacen.meta("proximidad_m")
     cifras["diagnostico_catastro"] = almacen.meta("diagnostico_catastro", {})
     cifras["estrategia_catastro"] = (
-        "Distancia y fracción originales; próximos sin asignación automática. La relación nunca filtra paneles."
+        "Distancia y fracción originales; próximos sin asignación automática. La "
+        "relación nunca filtra paneles."
     )
     cifras["por_origen"] = {
         origen: {
@@ -128,7 +163,8 @@ def generar_auditoria(almacen, salida: Path = SALIDA) -> dict:
     guardar_csv(tabla, salida / "auditoria_componentes.csv")
     guardar_csv(pd.DataFrame(distribucion), salida / "auditoria_municipios.csv")
     guardar_json(cifras, salida / "auditoria.json")
-    # Pequeños, grandes, bordes y municipios diversos por relación. No se certifica el soporte mirando Catastro.
+    # Muestra distintos tamaños, bordes y municipios por relación catastral.
+    # Catastro por sí solo no certifica el soporte físico.
     seleccion = []
     for relacion in RELACIONES:
         filas = tabla[tabla.relacion == relacion].sort_values("area")
@@ -151,8 +187,16 @@ def generar_auditoria(almacen, salida: Path = SALIDA) -> dict:
 
 
 def _galeria_auditoria(almacen, componentes, seleccion, salida):
-    """Crea una muestra visual offline con recortes existentes y sus contornos."""
-    edificios = gpd.read_file(ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg"))
+    """Crea una muestra visual offline con recortes existentes y sus contornos.
+
+    Args:
+        almacen: Base de seguimiento con sus observaciones y recursos.
+        componentes: Componentes originales de las predicciones.
+        seleccion: Identificadores de los componentes elegidos para la galería.
+        salida: Carpeta donde se guardan los resultados.
+    """
+
+    edificios = gpd.read_file(EDIFICIOS_CATASTRO)
     carpeta = salida / "muestra_auditoria"
     carpeta.mkdir(exist_ok=True)
     tarjetas = []
@@ -160,7 +204,10 @@ def _galeria_auditoria(almacen, componentes, seleccion, salida):
     for cid in seleccion:
         c = por_id[cid]
         recurso = almacen.filas(
-            "SELECT r.*,v.xmin,v.ymin,v.xmax,v.ymax FROM recursos r JOIN ventanas v ON v.id=r.ventana WHERE r.ventana=? AND r.anio=2023",
+            (
+                "SELECT r.*,v.xmin,v.ymin,v.xmax,v.ymax FROM recursos r JOIN ventanas v"
+                " ON v.id=r.ventana WHERE r.ventana=? AND r.anio=2023"
+            ),
             (c["ventana"],),
         )
         if not recurso or not Path(recurso[0]["imagen"]).exists():
@@ -173,14 +220,26 @@ def _galeria_auditoria(almacen, componentes, seleccion, salida):
             edificios.sindex.query(box(*limites), predicate="intersects")
         ]:
             trazar_geometria(dibujo, g, limites, imagen.size, "#ffd740", 1)
-        trazar_geometria(dibujo, from_wkb(c["geometria"]), limites, imagen.size, "#ff395e", 3)
+        trazar_geometria(
+            dibujo, from_wkb(c["geometria"]), limites, imagen.size, "#ff395e", 3
+        )
         imagen.save(carpeta / f"{cid}.png")
         distancia = f"{c['distancia']:.2f}" if c["distancia"] is not None else "?"
         tarjetas.append(
-            f'<article><img src="muestra_auditoria/{cid}.png"><p>{html.escape(c["municipio"])} · {c["relacion"]}<br>{c["area"]:.2f} m² · distancia {distancia} m · borde {c["borde"]}<br>{cid}</p></article>'
+            f"<article><img "
+            f'src="muestra_auditoria/{cid}.png"><p>{html.escape(c["municipio"])} · '
+            f"{c['relacion']}<br>{c['area']:.2f} m² · distancia {distancia} m · "
+            f"borde {c['borde']}<br>{cid}</p></article>"
         )
     documento = (
-        '<!doctype html><meta charset="utf-8"><title>Auditoría de detecciones</title><style>body{font:16px system-ui;background:#17232e;color:white;padding:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:16px}img{width:100%}article{background:#263746;padding:12px}p{overflow-wrap:anywhere}</style><h1>Auditoría de los recortes preparados</h1><p>Amarillo: Catastro. Rojo: componente original, sin recorte catastral. La existencia y el soporte requieren revisión visual. No representa cobertura regional completa.</p><main>'
+        (
+            '<!doctype html><meta charset="utf-8"><title>Auditoría de '
+            "detecciones</title><style>body{font:16px "
+            "system-ui;background:#17232e;color:white;padding:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(350px,1fr));gap:16px}img{width:100%}article{background:#263746;padding:12px}p{overflow-wrap:anywhere}</style><h1>Auditoría"
+            " de los recortes preparados</h1><p>Amarillo: Catastro. Rojo: componente "
+            "original, sin recorte catastral. La existencia y el soporte requieren "
+            "revisión visual. No representa cobertura regional completa.</p><main>"
+        )
         + "".join(tarjetas)
         + "</main>"
     )
@@ -196,8 +255,9 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
         geopackage: Incluye las geometrías originales y agrupadas.
 
     Returns:
-        Cifras observadas; sin extrapolación a un censo administrativo.
+        dict: Cifras observadas; sin extrapolación a un censo administrativo.
     """
+
     salida.mkdir(parents=True, exist_ok=True)
     sitios = almacen.filas("SELECT * FROM emplazamientos")
     activos = [s for s in sitios if s["activo"]]
@@ -215,7 +275,9 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
         }
         for s in sitios
     ]
-    actuales = [o for o in observaciones if o["emplazamiento"] in {s["id"] for s in activos}]
+    actuales = [
+        o for o in observaciones if o["emplazamiento"] in {s["id"] for s in activos}
+    ]
     validos = [
         s
         for s in activos
@@ -228,7 +290,10 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
     presentes_2023 = [
         s
         for s in validos
-        if any(o["anio"] == 2023 and o["decision"] == "presente" for o in por_id.get(s["id"], []))
+        if any(
+            o["anio"] == 2023 and o["decision"] == "presente"
+            for o in por_id.get(s["id"], [])
+        )
     ]
     historicos = [a for a in anios if a < 2023]
     observaciones_historicas = [o for o in actuales if o["anio"] in historicos]
@@ -242,17 +307,23 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
     componentes = almacen.filas("SELECT * FROM componentes")
     c2023 = [c for c in componentes if c["anio"] == 2023]
     resumen = {
-        "alcance": "Emplazamientos observados en el inventario preparado; no censo administrativo ni fecha exacta de instalación.",
+        "alcance": (
+            "Emplazamientos observados en el inventario preparado; no censo "
+            "administrativo ni fecha exacta de instalación."
+        ),
         "componentes_originales_2023": len(c2023),
         "componentes_todas_campanias": len(componentes),
         "agrupaciones_activas": len(activos),
         "agrupaciones_archivadas": len(sitios) - len(activos),
         "emplazamientos_validos_observados": len(validos),
         "candidatas_con_presencia_observada": sum(
-            any(o["decision"] == "presente" for o in por_id.get(s["id"], [])) for s in activos
+            any(o["decision"] == "presente" for o in por_id.get(s["id"], []))
+            for s in activos
         ),
         "emplazamientos_confirmados_2023": len(presentes_2023),
-        "agrupaciones_pendientes": sum(s["agrupacion"] != "confirmada" for s in activos),
+        "agrupaciones_pendientes": sum(
+            s["agrupacion"] != "confirmada" for s in activos
+        ),
         "soportes_confirmados": {
             tipo: sum(s["soporte"] == tipo for s in validos) for tipo in SOPORTES
         },
@@ -264,8 +335,13 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
                 for c in json.loads(s["cubiertas"])
             }
         ),
-        "cubiertas_no_catastrales": "Sin recuento automático: usa identificadores manuales de cubierta en la asociación.",
-        "emplazamientos_sin_asociacion": sum(not json.loads(s["edificios"]) for s in validos),
+        "cubiertas_no_catastrales": (
+            "Sin recuento automático: usa identificadores manuales de cubierta en la "
+            "asociación."
+        ),
+        "emplazamientos_sin_asociacion": sum(
+            not json.loads(s["edificios"]) for s in validos
+        ),
         "componentes_recuperados_exteriores": sum(c["fraccion"] == 0 for c in c2023),
         "falsos_positivos_descartados": sum(
             o["decision"] == "referencia_incorrecta" for o in actuales
@@ -283,17 +359,28 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
         else 0,
         "porcentaje_completado": round(100 * len(actuales) / total, 1) if total else 0,
         "segundos_medios_por_decision": round(media, 1) if media is not None else None,
-        "tiempo_medio_corresponde_a": "Respuesta histórica; incluye comprobar la referencia en el primer par y las pausas.",
+        "tiempo_medio_corresponde_a": (
+            "Respuesta histórica; incluye comprobar la referencia en el primer par y "
+            "las pausas."
+        ),
         "horas_restantes_estimadas": round(pendientes_historicos * media / 3600, 1)
         if media is not None
         else None,
         "tiempo_incluye_pausas": True,
-        "secuencias_anomalas": sum(c["secuencia_anomala"] for c in conclusiones if c["activo"]),
+        "secuencias_anomalas": sum(
+            c["secuencia_anomala"] for c in conclusiones if c["activo"]
+        ),
         "observaciones_dudosas": sum(o["decision"] == "dudosa" for o in actuales),
-        "observaciones_no_evaluables": sum(o["decision"] == "no_evaluable" for o in actuales),
-        "ampliaciones": sum("ampliacion" in json.loads(o["etiquetas"]) for o in actuales),
+        "observaciones_no_evaluables": sum(
+            o["decision"] == "no_evaluable" for o in actuales
+        ),
+        "ampliaciones": sum(
+            "ampliacion" in json.loads(o["etiquetas"]) for o in actuales
+        ),
         "reducciones": sum("reduccion" in json.loads(o["etiquetas"]) for o in actuales),
-        "region_completa": almacen.meta("cursor_region_todas", {}).get("completo", False)
+        "region_completa": almacen.meta("cursor_region_todas", {}).get(
+            "completo", False
+        )
         or all(
             almacen.meta("cursor_region_" + m, {}).get("completo", False)
             for m in ("indice", "fuera_indice")
@@ -306,7 +393,13 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
         filas = [o for o in actuales if o["anio"] == anio]
         resumen["campanias"][str(anio)] = {
             d: sum(o["decision"] == d for o in filas)
-            for d in ("presente", "ausente", "dudosa", "no_evaluable", "referencia_incorrecta")
+            for d in (
+                "presente",
+                "ausente",
+                "dudosa",
+                "no_evaluable",
+                "referencia_incorrecta",
+            )
         }
         resumen["campanias"][str(anio)]["pendientes"] = len(activos) - len(filas)
         for municipio in sorted({s["municipio"] for s in activos}):
@@ -359,14 +452,20 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
         salida / "observaciones.csv",
     )
     guardar_csv(
-        pd.DataFrame([{k: v for k, v in s.items() if k != "geometria"} for s in sitios]),
+        pd.DataFrame(
+            [{k: v for k, v in s.items() if k != "geometria"} for s in sitios]
+        ),
         salida / "emplazamientos.csv",
     )
     guardar_csv(pd.DataFrame(conclusiones), salida / "intervalos_aparicion.csv")
     guardar_csv(pd.DataFrame(municipal), salida / "resultados_municipales.csv")
-    guardar_csv(pd.DataFrame(almacen.filas("SELECT * FROM miembros")), salida / "agrupaciones.csv")
     guardar_csv(
-        pd.DataFrame(almacen.filas("SELECT * FROM acciones")), salida / "historial_acciones.csv"
+        pd.DataFrame(almacen.filas("SELECT * FROM miembros")),
+        salida / "agrupaciones.csv",
+    )
+    guardar_csv(
+        pd.DataFrame(almacen.filas("SELECT * FROM acciones")),
+        salida / "historial_acciones.csv",
     )
     guardar_json(resumen, salida / "resumen.json")
     texto = (
@@ -393,16 +492,29 @@ def generar_resumen(almacen, salida: Path = SALIDA, geopackage: bool = False) ->
         salida / "distribucion_aparicion.csv",
     )
     if geopackage:
-        _exportar_geopackage(sitios, componentes, conclusiones, salida / "seguimiento.gpkg")
+        _exportar_geopackage(
+            sitios, componentes, conclusiones, salida / "seguimiento.gpkg"
+        )
     return resumen
 
 
 def _exportar_geopackage(sitios, componentes, conclusiones, ruta):
-    """Publica geometrías por capas, separadas de observaciones y conclusiones."""
+    """Publica geometrías por capas, separadas de observaciones y conclusiones.
+
+    Args:
+        sitios: Emplazamientos con sus geometrías originales.
+        componentes: Componentes originales de las predicciones.
+        conclusiones: Conclusiones derivadas de las observaciones humanas.
+        ruta: Ruta del archivo que se utiliza.
+    """
+
     temporal = ruta.with_name(".seguimiento_exportando.gpkg")
     temporal.unlink(missing_ok=True)
     try:
-        for nombre, filas in (("emplazamientos", sitios), ("componentes_originales", componentes)):
+        for nombre, filas in (
+            ("emplazamientos", sitios),
+            ("componentes_originales", componentes),
+        ):
             if not filas:
                 continue
             datos = [

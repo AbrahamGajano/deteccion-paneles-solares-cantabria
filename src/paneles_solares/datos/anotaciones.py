@@ -6,17 +6,20 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 CLASE = "panel_solar"
-COL_BLANCO = 255
 
 
 def leer_anotacion(ruta: Path) -> dict:
     """Lee y comprueba una anotación de LabelMe.
 
     Args:
-        ruta (Path): Ruta del archivo JSON.
+        ruta: Ruta del archivo JSON.
 
     Returns:
         dict: Datos de la anotación.
+
+    Raises:
+        ValueError: La anotación está incompleta o contiene clases, polígonos o
+            coordenadas inválidos.
     """
 
     datos = json.loads(ruta.read_text(encoding="utf-8"))
@@ -52,7 +55,7 @@ def excluida(datos: dict) -> bool:
     """Comprueba si una anotación se marcó para excluir.
 
     Args:
-        datos (dict): Datos obtenidos del JSON de LabelMe.
+        datos: Datos obtenidos del JSON de LabelMe.
 
     Returns:
         bool: True si la imagen es dudosa o se debe descartar.
@@ -67,11 +70,14 @@ def revisar_par(imagen: Path, anotacion: Path) -> dict:
     """Comprueba que una imagen coincide con su anotación.
 
     Args:
-        imagen (Path): Ruta de la imagen PNG.
-        anotacion (Path): Ruta del JSON de LabelMe.
+        imagen: Ruta de la imagen PNG.
+        anotacion: Ruta del JSON de LabelMe.
 
     Returns:
         dict: Datos de la anotación validada.
+
+    Raises:
+        ValueError: Las dimensiones del PNG y del JSON son distintas.
     """
 
     datos = leer_anotacion(anotacion)
@@ -92,7 +98,7 @@ def texto_yolo(datos: dict) -> str:
     """Convierte los polígonos de LabelMe al formato YOLO.
 
     Args:
-        datos (dict): Datos de la anotación de LabelMe.
+        datos: Datos de la anotación de LabelMe.
 
     Returns:
         str: Contenido que se guardará en el archivo TXT.
@@ -118,7 +124,7 @@ def crear_mascara_unet(datos: dict) -> Image.Image:
     """Convierte los polígonos de LabelMe en una máscara binaria.
 
     Args:
-        datos (dict): Datos de la anotación de LabelMe.
+        datos: Datos de la anotación de LabelMe.
 
     Returns:
         Image.Image: Máscara con fondo negro y paneles blancos.

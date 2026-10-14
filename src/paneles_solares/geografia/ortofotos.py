@@ -1,7 +1,7 @@
 """Lectura de las ventanas RGB descritas en los manifiestos PNOA."""
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Mapping
 
 import numpy as np
 import rasterio
@@ -16,7 +16,7 @@ def leer_tesela(registro: Mapping, carpeta_pnoa: Path) -> np.ndarray:
         carpeta_pnoa: Carpeta que contiene las ortofotos originales.
 
     Returns:
-        Imagen RGB con dimensiones alto × ancho × canales.
+        np.ndarray: Imagen RGB con dimensiones alto × ancho × canales.
     """
 
     ruta = carpeta_pnoa / str(registro["tif"])

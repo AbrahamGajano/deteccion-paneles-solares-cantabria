@@ -40,7 +40,7 @@ def cargar_manifest(ruta: Path = MANIFEST) -> pd.DataFrame:
     """Carga un manifest o crea uno vacío si no existe.
 
     Args:
-        ruta (Path): Ruta del manifest que se quiere cargar.
+        ruta: Ruta del manifest que se quiere cargar.
 
     Returns:
         pd.DataFrame: Datos guardados en el manifest.
@@ -63,8 +63,8 @@ def guardar_manifest(
     """Guarda un manifest completo.
 
     Args:
-        manifest (pd.DataFrame): Datos que se quieren guardar.
-        ruta (Path): Ruta del archivo CSV.
+        manifest: Datos que se quieren guardar.
+        ruta: Ruta del archivo CSV.
     """
 
     ruta.parent.mkdir(parents=True, exist_ok=True)
@@ -80,8 +80,8 @@ def nueva_fila(registro: dict, origen: str) -> dict:
     """Crea una fila nueva con todos los campos del manifest.
 
     Args:
-        registro (dict): Información original de la tesela.
-        origen (str): Motivo por el que se seleccionó la imagen.
+        registro: Información original de la tesela.
+        origen: Motivo por el que se seleccionó la imagen.
 
     Returns:
         dict: Nueva fila preparada para añadir al manifest.
@@ -102,8 +102,8 @@ def rutas_muestra(carpeta: Path, tile_id: str) -> tuple[Path, Path]:
     """Obtiene las rutas de una imagen y su anotación.
 
     Args:
-        carpeta (Path): Carpeta que contiene images y annotations.
-        tile_id (str): Identificador de la muestra.
+        carpeta: Carpeta que contiene images y annotations.
+        tile_id: Identificador de la muestra.
 
     Returns:
         tuple[Path, Path]: Ruta del PNG y ruta del JSON.

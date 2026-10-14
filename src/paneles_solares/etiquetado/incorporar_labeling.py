@@ -20,7 +20,7 @@ def cargar_pendientes(labeling: Path) -> pd.DataFrame:
     """Carga labeling y registra los PNG que se hayan añadido manualmente.
 
     Args:
-        labeling (Path): Carpeta temporal de etiquetado.
+        labeling: Carpeta temporal de etiquetado.
 
     Returns:
         pd.DataFrame: Manifest de las imágenes pendientes.
@@ -50,9 +50,9 @@ def localizar_par(
     """Localiza el par aunque una incorporación anterior quedara interrumpida.
 
     Args:
-        tile_id (str): Identificador de la imagen.
-        labeling (Path): Carpeta de origen.
-        pool (Path): Colección global.
+        tile_id: Identificador de la imagen.
+        labeling: Carpeta de origen.
+        pool: Colección global.
 
     Returns:
         tuple[Path, Path]: Ubicación actual del PNG y del JSON.
@@ -74,8 +74,8 @@ def actualizar_estado(fila: pd.Series, datos: dict) -> pd.Series:
     """Marca la muestra como válida o descartada según LabelMe.
 
     Args:
-        fila (pd.Series): Registro de la imagen.
-        datos (dict): Anotación revisada de LabelMe.
+        fila: Registro de la imagen.
+        datos: Anotación revisada de LabelMe.
 
     Returns:
         pd.Series: Registro preparado para incorporarlo al pool.
@@ -110,10 +110,13 @@ def mover_al_pool(
     """Mueve el par al pool y actualiza la ruta de la imagen dentro del JSON.
 
     Args:
-        tile_id (str): Identificador de la muestra.
-        datos (dict): Anotación revisada.
-        labeling (Path): Carpeta de origen.
-        pool (Path): Carpeta de destino.
+        tile_id: Identificador de la muestra.
+        datos: Anotación revisada.
+        labeling: Carpeta de origen.
+        pool: Carpeta de destino.
+
+    Raises:
+        FileExistsError: El destino ya contiene una imagen o anotación original.
     """
 
     imagen, anotacion = rutas_muestra(labeling, tile_id)
@@ -153,11 +156,15 @@ def incorporar(
     """Incorpora las revisadas y mantiene las incompletas o incorrectas en labeling.
 
     Args:
-        labeling (Path): Carpeta con las imágenes que se están etiquetando.
-        pool (Path): Colección global de imágenes revisadas.
+        labeling: Carpeta con las imágenes que se están etiquetando.
+        pool: Colección global de imágenes revisadas.
 
     Returns:
         tuple[int, int]: Cantidad incorporada y cantidad que sigue pendiente.
+
+    Raises:
+        ValueError: Un identificador ya incorporado conserva archivos duplicados en
+            labeling.
     """
 
     pendientes = cargar_pendientes(labeling)

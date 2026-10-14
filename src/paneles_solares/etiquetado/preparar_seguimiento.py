@@ -33,11 +33,26 @@ from paneles_solares.etiquetado.preparar_validacion import (
 )
 from paneles_solares.modelos.evaluar_unet import predecir
 from paneles_solares.modelos.unet import cargar_modelo, normalizar_rgb
-from paneles_solares.rutas import INDICADORES_UNET, PESOS_UNET, ruta_proyecto
+from paneles_solares.rutas import (
+    EDIFICIOS_CATASTRO,
+    INDICADORES_UNET,
+    INDICE_TESELAS,
+    MUNICIPIOS_CANTABRIA,
+    PESOS_UNET,
+    PNOA,
+    huella_archivo,
+    ruta_proyecto,
+)
 
 
 def guardar_png(imagen: Image.Image, ruta: Path):
-    """Publica un PNG verificado, sin TIFF ni temporales permanentes."""
+    """Publica un PNG verificado, sin TIFF ni temporales permanentes.
+
+    Args:
+        imagen: Imagen RGB que se procesa.
+        ruta: Ruta del archivo que se utiliza.
+    """
+
     ruta.parent.mkdir(parents=True, exist_ok=True)
     temporal = ruta.with_suffix(".png.part")
     try:
@@ -55,12 +70,17 @@ def importar_piloto(almacen, config: dict):
     Args:
         almacen: Base única de seguimiento.
         config: Campañas independientes configuradas.
+
+    Raises:
+        ValueError: Se ha cambiado el origen de una campaña ya incorporada.
     """
+
     anteriores = {c["anio"]: c for c in almacen.meta("campanias", [])}
     actuales = {c["anio"]: c for c in config["campanias"]}
     if anteriores and any(c != actuales.get(a) for a, c in anteriores.items()):
         raise ValueError(
-            "Conserva el origen de las campañas existentes; puedes añadir nuevas sin modificar las observadas"
+            "Conserva el origen de las campañas existentes; puedes añadir nuevas "
+            "sin modificar las observadas"
         )
     almacen.poner_meta("campanias", config["campanias"])
     if almacen.meta("piloto_importado"):
@@ -77,13 +97,21 @@ def importar_piloto(almacen, config: dict):
             sitio, ventana = fila["id_instalacion"], fila["id_ventana"]
             almacen.db.execute(
                 "INSERT OR IGNORE INTO ventanas VALUES (?,?,?,?,?,?)",
-                (ventana, *(fila[c] for c in ("xmin", "ymin", "xmax", "ymax")), "piloto"),
+                (
+                    ventana,
+                    *(fila[c] for c in ("xmin", "ymin", "xmax", "ymax")),
+                    "piloto",
+                ),
             )
             etiquetas = ["agrupacion_pendiente"]
             if fila["fraccion_edificio_en_ventana"] < 0.99:
                 etiquetas.append("borde_recorte")
             almacen.db.execute(
-                "INSERT OR IGNORE INTO emplazamientos(id,ventana,geometria,municipio,codigo_municipal,edificios,origen,etiquetas) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "INSERT OR IGNORE INTO "
+                    "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,edificios,origen,etiquetas)"
+                    " VALUES (?,?,?,?,?,?,?,?)"
+                ),
                 (
                     sitio,
                     ventana,
@@ -159,7 +187,8 @@ def importar_piloto(almacen, config: dict):
             ).hexdigest(),
         }
         almacen.db.execute(
-            "INSERT OR REPLACE INTO metadatos VALUES ('piloto_importado',?)", (json.dumps(datos),)
+            "INSERT OR REPLACE INTO metadatos VALUES ('piloto_importado',?)",
+            (json.dumps(datos),),
         )
 
 
@@ -167,11 +196,15 @@ class GeografiaSeguimiento:
     """Catastro describe la detección; su relación no confirma ni excluye paneles."""
 
     def __init__(self, proximidad: float | None = None):
-        self.edificios = gpd.read_file(
-            ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg"), fid_as_index=True
-        )
+        """Carga Catastro y los límites municipales para describir predicciones.
+
+        Args:
+            proximidad: Distancia descriptiva en metros, o None si no se ha estimado.
+        """
+
+        self.edificios = gpd.read_file(EDIFICIOS_CATASTRO, fid_as_index=True)
         self.edificios = self.edificios[~self.edificios.geometry.to_wkb().duplicated()]
-        self.municipios = gpd.read_file(ruta_proyecto("data/geografia/municipios_cantabria.gpkg"))
+        self.municipios = gpd.read_file(MUNICIPIOS_CANTABRIA)
         self.proximidad = proximidad
 
     def describir(self, geometria) -> dict:
@@ -181,12 +214,14 @@ class GeografiaSeguimiento:
             geometria: Componente original en EPSG:25830.
 
         Returns:
-            Municipio, relación, fracción, distancia y asociaciones candidatas.
+            dict: Municipio, relación, fracción, distancia y asociaciones candidatas.
         """
+
         posiciones = self.edificios.sindex.query(geometria, predicate="intersects")
         coincidentes = self.edificios.iloc[posiciones]
         fraccion = (
-            geometria.intersection(union_all(coincidentes.geometry)).area / geometria.area
+            geometria.intersection(union_all(coincidentes.geometry)).area
+            / geometria.area
             if len(posiciones)
             else 0
         )
@@ -198,7 +233,9 @@ class GeografiaSeguimiento:
         cubiertas = []
         for idx, fila in coincidentes.iterrows():
             partes = (
-                list(fila.geometry.geoms) if hasattr(fila.geometry, "geoms") else [fila.geometry]
+                list(fila.geometry.geoms)
+                if hasattr(fila.geometry, "geoms")
+                else [fila.geometry]
             )
             for n, parte in enumerate(sorted(partes, key=lambda g: g.bounds), 1):
                 if parte.intersection(geometria).area > 0:
@@ -207,7 +244,11 @@ class GeografiaSeguimiento:
             relacion = "interseccion_clara" if len(edificios) == 1 else "ambigua"
         elif fraccion > 0:
             relacion = "parcial_desplazado" if len(edificios) == 1 else "ambigua"
-        elif self.proximidad is not None and distancia is not None and distancia <= self.proximidad:
+        elif (
+            self.proximidad is not None
+            and distancia is not None
+            and distancia <= self.proximidad
+        ):
             relacion = "proximo"
         else:
             relacion = "exterior" if distancia is not None else "sin_asociacion"
@@ -221,7 +262,9 @@ class GeografiaSeguimiento:
             "cubiertas": cubiertas,
             "fraccion": float(fraccion),
             "distancia": distancia,
-            "municipio": municipio.municipio if municipio is not None else "Sin municipio resuelto",
+            "municipio": municipio.municipio
+            if municipio is not None
+            else "Sin municipio resuelto",
             "codigo_municipal": str(municipio.codigo) if municipio is not None else "",
         }
 
@@ -248,6 +291,7 @@ def registrar_componentes(
         origen: Recorte recuperado o regional.
         corte_m: Máxima separación para pequeños cortes, independiente de Catastro.
     """
+
     componentes = geometria_mascara(
         probabilidades >= 0.5,
         transformacion(ventana, probabilidades.shape[1], probabilidades.shape[0]),
@@ -257,7 +301,9 @@ def registrar_componentes(
         cid = identificador(
             "componente", f"{ventana['id']}|{anio}|{firma}|".encode() + geometria.wkb
         )
-        if almacen.db.execute("SELECT 1 FROM componentes WHERE id=?", (cid,)).fetchone():
+        if almacen.db.execute(
+            "SELECT 1 FROM componentes WHERE id=?", (cid,)
+        ).fetchone():
             continue
         info = geografia.describir(geometria)
         borde = geometria.distance(limite.boundary) < 0.16
@@ -265,7 +311,9 @@ def registrar_componentes(
         if anio == 2023:
             revisados = {
                 o["emplazamiento"]
-                for o in almacen.filas("SELECT DISTINCT emplazamiento FROM observaciones")
+                for o in almacen.filas(
+                    "SELECT DISTINCT emplazamiento FROM observaciones"
+                )
             }
             for sitio in almacen.filas("SELECT * FROM emplazamientos WHERE activo=1"):
                 grupo = from_wkb(sitio["geometria"])
@@ -280,19 +328,44 @@ def registrar_componentes(
                 if (legado and geometria.intersection(grupo).area > 0) or (
                     not legado and distancia <= corte_m
                 ):
-                    candidatos.append((sitio, geometria.intersection(grupo).area, distancia))
+                    candidatos.append(
+                        (sitio, geometria.intersection(grupo).area, distancia)
+                    )
         # La geografía y la búsqueda de vecinos no retienen el bloqueo de escritura.
         # Una transacción breve publica cada componente y sus asociaciones juntos.
         with almacen.db:
             _guardar_componente(
-                almacen, ventana, anio, geometria, cid, info, borde, firma, origen, candidatos
+                almacen,
+                ventana,
+                anio,
+                geometria,
+                cid,
+                info,
+                borde,
+                firma,
+                origen,
+                candidatos,
             )
 
 
 def _guardar_componente(
     almacen, ventana, anio, geometria, cid, info, borde, firma, origen, candidatos
 ):
-    """Publica un componente sin cálculos costosos dentro de la transacción."""
+    """Publica un componente sin cálculos costosos dentro de la transacción.
+
+    Args:
+        almacen: Base de seguimiento con sus observaciones y recursos.
+        ventana: Encuadre original con sus límites en EPSG:25830.
+        anio: Año de la campaña observada.
+        geometria: Geometría original en EPSG:25830.
+        cid: Identificador estable del componente original.
+        info: Descripción catastral y municipal de la geometría.
+        borde: Indica si el componente toca el borde de la ventana.
+        firma: Huella SHA256 del modelo congelado.
+        origen: Procedencia del componente: recorte recuperado o recorrido regional.
+        candidatos: Emplazamientos vecinos con su solape y distancia.
+    """
+
     if almacen.db.execute("SELECT 1 FROM componentes WHERE id=?", (cid,)).fetchone():
         return
     almacen.db.execute(
@@ -341,7 +414,9 @@ def _guardar_componente(
         sid = elegido["id"]
         if elegido["origen"] not in ("piloto", "inventario_2023"):
             grupo = union_all([from_wkb(elegido["geometria"]), geometria])
-            almacen.db.execute("UPDATE emplazamientos SET geometria=? WHERE id=?", (grupo.wkb, sid))
+            almacen.db.execute(
+                "UPDATE emplazamientos SET geometria=? WHERE id=?", (grupo.wkb, sid)
+            )
         etiquetas = set(json.loads(elegido["etiquetas"]))
         if len(candidatos) > 1:
             etiquetas.add("agrupacion_pendiente")
@@ -355,7 +430,11 @@ def _guardar_componente(
         sid = identificador("emplazamiento", cid.encode())
         etiquetas = ["agrupacion_pendiente"] + (["borde_recorte"] if borde else [])
         almacen.db.execute(
-            "INSERT INTO emplazamientos(id,ventana,geometria,municipio,codigo_municipal,relacion,edificios,cubiertas,origen,etiquetas) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                "INSERT INTO "
+                "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,relacion,edificios,cubiertas,origen,etiquetas)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?)"
+            ),
             (
                 sid,
                 ventana["id"],
@@ -375,7 +454,10 @@ def _guardar_componente(
     ).fetchone()
     if not corregido:
         asociados = almacen.filas(
-            "SELECT c.* FROM componentes c JOIN miembros m ON m.componente=c.id WHERE m.emplazamiento=?",
+            (
+                "SELECT c.* FROM componentes c JOIN miembros m ON m.componente=c.id "
+                "WHERE m.emplazamiento=?"
+            ),
             (sid,),
         )
         edificios = sorted({e for c in asociados for e in json.loads(c["edificios"])})
@@ -409,20 +491,29 @@ def preparar_lote(
         recuperar: Solo 2023 de los recortes existentes para la auditoría inicial.
         progreso: Recibe el espacio estimado y el avance para mostrarlos en el visor.
         al_completar: Notifica cada ventana disponible sin esperar al final del lote.
-        solo_localizados: Evita históricos de ubicaciones sin objetivo localizado en 2023.
+        solo_localizados: Evita históricos de ubicaciones sin objetivo localizado en
+            2023.
         detener: Evento opcional para detener la precarga al cerrar el visor.
+
+    Raises:
+        ValueError: El modelo ya no coincide con los pesos congelados del inventario.
+        OSError: No hay espacio suficiente para las imágenes y predicciones del lote.
     """
+
     importar_piloto(almacen, config)
-    firma = hashlib.sha256(PESOS_UNET.read_bytes()).hexdigest()
+    firma = huella_archivo(PESOS_UNET)
     previos = almacen.filas("SELECT DISTINCT modelo FROM recursos WHERE prediccion<>''")
     if any(f["modelo"] and f["modelo"] != firma for f in previos):
         raise ValueError("El modelo difiere del congelado del inventario")
     campanias = (
-        [c for c in config["campanias"] if c["anio"] == 2023] if recuperar else config["campanias"]
+        [c for c in config["campanias"] if c["anio"] == 2023]
+        if recuperar
+        else config["campanias"]
     )
     campanias = sorted(campanias, key=lambda c: c["anio"], reverse=True)
     candidatas = almacen.filas(
-        "SELECT DISTINCT v.* FROM ventanas v JOIN emplazamientos e ON e.ventana=v.id WHERE e.activo=1 ORDER BY v.id"
+        "SELECT DISTINCT v.* FROM ventanas v JOIN emplazamientos e ON "
+        "e.ventana=v.id WHERE e.activo=1 ORDER BY v.id"
     )
     if sitios:
         ids = {
@@ -439,10 +530,13 @@ def preparar_lote(
         historicos = [c["anio"] for c in config["campanias"] if c["anio"] < 2023]
         pendientes = {
             s["ventana"]
-            for s in almacen.filas("SELECT id,ventana FROM emplazamientos WHERE activo=1")
+            for s in almacen.filas(
+                "SELECT id,ventana FROM emplazamientos WHERE activo=1"
+            )
             if any(
                 not almacen.db.execute(
-                    "SELECT 1 FROM observaciones WHERE emplazamiento=? AND anio=?", (s["id"], a)
+                    "SELECT 1 FROM observaciones WHERE emplazamiento=? AND anio=?",
+                    (s["id"], a),
                 ).fetchone()
                 for a in historicos
             )
@@ -454,7 +548,9 @@ def preparar_lote(
             continue
         recursos = {
             r["anio"]: r
-            for r in almacen.filas("SELECT * FROM recursos WHERE ventana=?", (ventana["id"],))
+            for r in almacen.filas(
+                "SELECT * FROM recursos WHERE ventana=?", (ventana["id"],)
+            )
         }
         if any(
             not recursos.get(c["anio"], {}).get("prediccion")
@@ -473,12 +569,14 @@ def preparar_lote(
         if not any(
             r["imagen"] and Path(r["imagen"]).exists()
             for r in almacen.filas(
-                "SELECT imagen FROM recursos WHERE ventana=? AND anio=?", (v["id"], c["anio"])
+                "SELECT imagen FROM recursos WHERE ventana=? AND anio=?",
+                (v["id"], c["anio"]),
             )
         )
     ]
     estimados = sum(
-        round((v["xmax"] - v["xmin"]) / c["resolucion_m"]) ** 2 * 3 for v, c in faltantes
+        round((v["xmax"] - v["xmin"]) / c["resolucion_m"]) ** 2 * 3
+        for v, c in faltantes
     )
     libre = shutil.disk_usage(almacen.ruta.parent).free
     estimacion = (
@@ -512,7 +610,8 @@ def preparar_lote(
             ):
                 continue
             recursos = almacen.filas(
-                "SELECT * FROM recursos WHERE ventana=? AND anio=?", (ventana["id"], anio)
+                "SELECT * FROM recursos WHERE ventana=? AND anio=?",
+                (ventana["id"], anio),
             )
             recurso = recursos[0] if recursos else {}
             imagen = Path(
@@ -533,9 +632,14 @@ def preparar_lote(
                         "tipo": "wcs",
                         "url": URL_WCS,
                         "bandas": [1, 2, 3],
-                        **{c: campania[c] for c in ("cobertura", "etiqueta", "divisor_rgb")},
+                        **{
+                            c: campania[c]
+                            for c in ("cobertura", "etiqueta", "divisor_rgb")
+                        },
                     }
-                    n = round((ventana["xmax"] - ventana["xmin"]) / campania["resolucion_m"])
+                    n = round(
+                        (ventana["xmax"] - ventana["xmin"]) / campania["resolucion_m"]
+                    )
                     fila_descarga = {
                         **ventana,
                         "tile_id": ventana["id"],
@@ -553,7 +657,10 @@ def preparar_lote(
                 if prediccion_existente:
                     with almacen.db:
                         almacen.db.execute(
-                            "UPDATE recursos SET imagen=?,fuente=?,error='' WHERE ventana=? AND anio=?",
+                            (
+                                "UPDATE recursos SET imagen=?,fuente=?,error='' WHERE "
+                                "ventana=? AND anio=?"
+                            ),
                             (str(imagen), fuente, ventana["id"], anio),
                         )
                     continue
@@ -574,7 +681,9 @@ def preparar_lote(
                 if modelo is None:
                     modelo = cargar_modelo(PESOS_UNET, dispositivo)
                 rgb = np.asarray(
-                    Image.open(imagen).convert("RGB").resize((512, 512), Image.Resampling.BILINEAR)
+                    Image.open(imagen)
+                    .convert("RGB")
+                    .resize((512, 512), Image.Resampling.BILINEAR)
                 )
                 tensor = torch.from_numpy(
                     np.ascontiguousarray(normalizar_rgb(rgb).transpose(2, 0, 1))
@@ -587,7 +696,8 @@ def preparar_lote(
                     / f"{ventana['id']}_completa.png"
                 )
                 guardar_png(
-                    Image.fromarray(np.rint(probabilidades * 65535).astype("uint16")), prediccion
+                    Image.fromarray(np.rint(probabilidades * 65535).astype("uint16")),
+                    prediccion,
                 )
                 registrar_componentes(
                     almacen,
@@ -596,7 +706,9 @@ def preparar_lote(
                     probabilidades,
                     firma,
                     geografia,
-                    "piloto_recuperado" if ventana["origen"] == "piloto" else ventana["origen"],
+                    "piloto_recuperado"
+                    if ventana["origen"] == "piloto"
+                    else ventana["origen"],
                     config.get("corte_segmentacion_m", 0.6),
                 )
                 with almacen.db:
@@ -627,10 +739,16 @@ def preparar_lote(
 
 
 def incorporar_predicciones_existentes(almacen):
-    """Registra probabilidades históricas existentes sin inferencia ni descarga."""
+    """Registra probabilidades históricas existentes sin inferencia ni descarga.
+
+    Args:
+        almacen: Base de seguimiento con sus observaciones y recursos.
+    """
+
     geografia = GeografiaSeguimiento(almacen.meta("proximidad_m"))
     recursos = almacen.filas(
-        "SELECT r.*,v.xmin,v.ymin,v.xmax,v.ymax,v.id FROM recursos r JOIN ventanas v ON v.id=r.ventana WHERE r.prediccion<>''"
+        "SELECT r.*,v.xmin,v.ymin,v.xmax,v.ymax,v.id FROM recursos r JOIN ventanas "
+        "v ON v.id=r.ventana WHERE r.prediccion<>''"
     )
     for r in recursos:
         if almacen.db.execute(
@@ -639,7 +757,13 @@ def incorporar_predicciones_existentes(almacen):
             continue
         probabilidades = np.array(Image.open(r["prediccion"]), dtype=float) / 65535
         registrar_componentes(
-            almacen, r, r["anio"], probabilidades, r["modelo"], geografia, "piloto_probabilidad"
+            almacen,
+            r,
+            r["anio"],
+            probabilidades,
+            r["modelo"],
+            geografia,
+            "piloto_probabilidad",
         )
 
 
@@ -651,12 +775,15 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
         config: Configuración del seguimiento.
         lote: Máximo de ventanas para esta ejecución.
         modo: fuera_indice, indice o todas; ningún modo descarta paneles por Catastro.
+
+    Raises:
+        ValueError: Han cambiado el modelo o las ortofotos desde el inicio del
+            recorrido.
     """
-    indice = pd.read_csv(ruta_proyecto("data/manifests/teselas.csv"))
+
+    indice = pd.read_csv(INDICE_TESELAS)
     incluidas = set(zip(indice.tif, indice.fila, indice.columna))
-    territorio = union_all(
-        gpd.read_file(ruta_proyecto("data/geografia/municipios_cantabria.gpkg")).geometry
-    )
+    territorio = union_all(gpd.read_file(MUNICIPIOS_CANTABRIA).geometry)
     clave = "cursor_region_" + modo
     cursor = almacen.meta(
         clave, {"hoja": 0, "fila": 0, "columna": 0, "completo": False, "procesadas": 0}
@@ -666,9 +793,9 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
         return
     modelo = None
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    firma = hashlib.sha256(PESOS_UNET.read_bytes()).hexdigest()
+    firma = huella_archivo(PESOS_UNET)
     geografia = GeografiaSeguimiento(almacen.meta("proximidad_m"))
-    hojas = sorted(ruta_proyecto("data/pnoa").glob("*.tif"))
+    hojas = sorted(PNOA.glob("*.tif"))
     modelos = almacen.filas("SELECT DISTINCT modelo FROM recursos WHERE prediccion<>''")
     if any(m["modelo"] and m["modelo"] != firma for m in modelos):
         raise ValueError("El modelo difiere del congelado del inventario")
@@ -676,12 +803,17 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
     previa = almacen.meta("ortofotos_region")
     if previa and previa != firma_hojas:
         raise ValueError(
-            "Las ortofotos cambiaron desde el comienzo del recorrido; comprueba la procedencia antes de continuar"
+            "Las ortofotos cambiaron desde el comienzo del recorrido; comprueba la "
+            "procedencia antes de continuar"
         )
     almacen.poner_meta("ortofotos_region", firma_hojas)
     terminadas = 0
     print(
-        f"Recuperación regional: hasta {lote} ventanas locales; solo se conservan PNG con detecciones. Máximo RGB ≈ {lote * 0.75:.1f} MB. Sin descargas de hojas.",
+        (
+            f"Recuperación regional: hasta {lote} ventanas locales; solo se conservan "
+            f"PNG con detecciones. Máximo RGB ≈ {lote * 0.75:.1f} MB. Sin descargas de "
+            f"hojas."
+        ),
         flush=True,
     )
     for numero in range(cursor["hoja"], len(hojas)):
@@ -695,7 +827,9 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
             fila_inicial = cursor["fila"] if numero == cursor["hoja"] else 0
             for fila in range(fila_inicial, tif.height, 512):
                 inicio = (
-                    cursor["columna"] if numero == cursor["hoja"] and fila == cursor["fila"] else 0
+                    cursor["columna"]
+                    if numero == cursor["hoja"] and fila == cursor["fila"]
+                    else 0
                 )
                 for columna in range(inicio, tif.width, 512):
                     posicion = (hojas[numero].name, fila, columna)
@@ -707,13 +841,18 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
                     ):
                         continue
                     v = Window(
-                        columna, fila, min(512, tif.width - columna), min(512, tif.height - fila)
+                        columna,
+                        fila,
+                        min(512, tif.width - columna),
+                        min(512, tif.height - fila),
                     )
                     limites = tif.window_bounds(v)
                     if not box(*limites).intersects(territorio):
                         continue
                     wid = f"{hojas[numero].stem}_f{fila}_c{columna}"
-                    tarea = almacen.filas("SELECT estado FROM tareas WHERE id=?", (wid,))
+                    tarea = almacen.filas(
+                        "SELECT estado FROM tareas WHERE id=?", (wid,)
+                    )
                     if not tarea or tarea[0]["estado"] != "completa":
                         if modelo is None:
                             modelo = cargar_modelo(PESOS_UNET, dispositivo)
@@ -721,7 +860,9 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
                         entrada = np.zeros((512, 512, 3), dtype="uint8")
                         entrada[: rgb.shape[0], : rgb.shape[1]] = rgb
                         tensor = torch.from_numpy(
-                            np.ascontiguousarray(normalizar_rgb(entrada).transpose(2, 0, 1))
+                            np.ascontiguousarray(
+                                normalizar_rgb(entrada).transpose(2, 0, 1)
+                            )
                         ).unsqueeze(0)
                         probabilidades, _ = predecir(modelo, tensor, dispositivo)
                         probabilidades = probabilidades[: rgb.shape[0], : rgb.shape[1]]
@@ -734,11 +875,15 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
                         if (probabilidades >= 0.5).any():
                             imagen = almacen.ruta.parent / "images/2023" / f"{wid}.png"
                             prediccion = (
-                                almacen.ruta.parent / "predicciones/2023" / f"{wid}_completa.png"
+                                almacen.ruta.parent
+                                / "predicciones/2023"
+                                / f"{wid}_completa.png"
                             )
                             guardar_png(Image.fromarray(rgb), imagen)
                             guardar_png(
-                                Image.fromarray(np.rint(probabilidades * 65535).astype("uint16")),
+                                Image.fromarray(
+                                    np.rint(probabilidades * 65535).astype("uint16")
+                                ),
                                 prediccion,
                             )
                             registrar_componentes(
@@ -767,7 +912,14 @@ def preparar_region(almacen, config: dict, lote: int, modo: str):
                         with almacen.db:
                             almacen.db.execute(
                                 "INSERT OR REPLACE INTO tareas VALUES (?,?,?,?,?,?)",
-                                (wid, "regional", json.dumps(registro), "completa", "", ahora()),
+                                (
+                                    wid,
+                                    "regional",
+                                    json.dumps(registro),
+                                    "completa",
+                                    "",
+                                    ahora(),
+                                ),
                             )
                     terminadas += 1
                     cursor["procesadas"] += 1
@@ -798,10 +950,18 @@ def ampliar_contexto(almacen, config: dict, sitio: str, progreso=None):
         config: Campañas oficiales y contexto en metros.
         sitio: Grupo que necesita contexto adicional.
         progreso: Recibe el espacio estimado y cada campaña pendiente.
+
+    Raises:
+        ValueError: El contexto requiere más de 64 ventanas.
+        OSError: No hay espacio suficiente para las imágenes y predicciones del lote.
     """
+
     s = almacen.filas("SELECT * FROM emplazamientos WHERE id=?", (sitio,))[0]
     componentes = almacen.filas(
-        "SELECT c.geometria FROM componentes c JOIN miembros m ON m.componente=c.id WHERE m.emplazamiento=? AND c.anio=2023",
+        (
+            "SELECT c.geometria FROM componentes c JOIN miembros m ON m.componente=c.id"
+            " WHERE m.emplazamiento=? AND c.anio=2023"
+        ),
         (sitio,),
     )
     geometria = (
@@ -815,20 +975,34 @@ def ampliar_contexto(almacen, config: dict, sitio: str, progreso=None):
     )
     if vinculadas:
         geometria = union_all(
-            [geometria, *[box(v["xmin"], v["ymin"], v["xmax"], v["ymax"]) for v in vinculadas]]
+            [
+                geometria,
+                *[box(v["xmin"], v["ymin"], v["xmax"], v["ymax"]) for v in vinculadas],
+            ]
         )
     xmin, ymin, xmax, ymax = geometria.buffer(config.get("contexto_m", 20)).bounds
     paso = config.get("extension_m", 76.8)
-    nx, ny = max(1, int(np.ceil((xmax - xmin) / paso))), max(1, int(np.ceil((ymax - ymin) / paso)))
+    nx, ny = (
+        max(1, int(np.ceil((xmax - xmin) / paso))),
+        max(1, int(np.ceil((ymax - ymin) / paso))),
+    )
     centro = geometria.centroid
     xmin, ymin = centro.x - nx * paso / 2, centro.y - ny * paso / 2
     cuadros = [
-        (xmin + ix * paso, ymin + iy * paso, xmin + (ix + 1) * paso, ymin + (iy + 1) * paso)
+        (
+            xmin + ix * paso,
+            ymin + iy * paso,
+            xmin + (ix + 1) * paso,
+            ymin + (iy + 1) * paso,
+        )
         for ix in range(nx)
         for iy in range(ny)
     ]
     recursos = almacen.filas(
-        "SELECT r.* FROM recursos r JOIN contextos c ON c.ventana=r.ventana WHERE c.emplazamiento=?",
+        (
+            "SELECT r.* FROM recursos r JOIN contextos c ON c.ventana=r.ventana WHERE "
+            "c.emplazamiento=?"
+        ),
         (sitio,),
     )
     if vinculadas and any(
@@ -842,10 +1016,13 @@ def ampliar_contexto(almacen, config: dict, sitio: str, progreso=None):
         for v in vinculadas
         for c in config["campanias"]
     ):
-        cuadros = [tuple(v[k] for k in ("xmin", "ymin", "xmax", "ymax")) for v in vinculadas]
+        cuadros = [
+            tuple(v[k] for k in ("xmin", "ymin", "xmax", "ymax")) for v in vinculadas
+        ]
     if len(cuadros) > 64:
         raise ValueError(
-            "Contexto muy grande: revisa las partes con sus recortes y conserva alcance zona_visible"
+            "Contexto muy grande: revisa las partes con sus recortes y conserva "
+            "alcance zona_visible"
         )
     estimados = len(cuadros) * len(config["campanias"]) * 0.75 * 1024**2
     if estimados * 2 > shutil.disk_usage(almacen.ruta.parent).free:
@@ -864,7 +1041,9 @@ def ampliar_contexto(almacen, config: dict, sitio: str, progreso=None):
                 "INSERT OR IGNORE INTO ventanas VALUES (?,?,?,?,?,?)",
                 (wid, *limites, "contexto_visual"),
             )
-            almacen.db.execute("INSERT OR IGNORE INTO contextos VALUES (?,?)", (sitio, wid))
+            almacen.db.execute(
+                "INSERT OR IGNORE INTO contextos VALUES (?,?)", (sitio, wid)
+            )
     for numero, limites in enumerate(cuadros, 1):
         wid = identificador("contexto", repr(limites).encode())
         for campania in config["campanias"]:
@@ -892,7 +1071,16 @@ def ampliar_contexto(almacen, config: dict, sitio: str, progreso=None):
             with almacen.db:
                 almacen.db.execute(
                     "INSERT OR REPLACE INTO recursos VALUES (?,?,?,?,?,?,?,?)",
-                    (wid, anio, str(ruta), "", fuente, "", campania["resolucion_m"], ""),
+                    (
+                        wid,
+                        anio,
+                        str(ruta),
+                        "",
+                        fuente,
+                        "",
+                        campania["resolucion_m"],
+                        "",
+                    ),
                 )
 
 
@@ -903,11 +1091,14 @@ def anadir_candidato(almacen, x: float, y: float, ventana: str | None = None) ->
         almacen: Base persistente.
         x: Coordenada este en EPSG:25830.
         y: Coordenada norte en EPSG:25830.
-        ventana: Recorte visible que contiene el punto; reutiliza sus fotos si se indica.
+        ventana: Recorte visible que contiene el punto; reutiliza sus fotos si se
+            indica.
 
     Returns:
-        Identificador estable para una instalación retirada antes de 2023 o no detectada.
+        str: Identificador estable para una instalación retirada antes de 2023 o no
+            detectada.
     """
+
     sid = identificador("manual", f"{x:.3f}|{y:.3f}".encode())
     wid = ventana or "ventana_" + sid
     geometria = box(x - 5, y - 5, x + 5, y + 5)
@@ -919,7 +1110,11 @@ def anadir_candidato(almacen, x: float, y: float, ventana: str | None = None) ->
                 (wid, x - 38.4, y - 38.4, x + 38.4, y + 38.4, "candidato_manual"),
             )
         almacen.db.execute(
-            "INSERT OR IGNORE INTO emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas) VALUES (?,?,?,?,?,?,?)",
+            (
+                "INSERT OR IGNORE INTO "
+                "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas)"
+                " VALUES (?,?,?,?,?,?,?)"
+            ),
             (
                 sid,
                 wid,
@@ -940,8 +1135,9 @@ def analizar_desbordes(almacen):
         almacen: Predicciones completas recuperadas.
 
     Returns:
-        Distribución de distancias; no estima una traslación física de Catastro.
+        dict: Distribución de distancias; no estima una traslación física de Catastro.
     """
+
     geografia = GeografiaSeguimiento()
     distancias = []
     for c in almacen.filas(
@@ -963,14 +1159,24 @@ def analizar_desbordes(almacen):
         "componentes_parciales_analizados": len(distancias),
         "mediana_m": float(np.median(distancias)),
         "percentil_95_m": radio,
-        "interpretacion": "Distancia del punto interior del desborde al edificio; mezcla segmentación, relieve, posición de paneles y desplazamiento. No es una corrección geométrica.",
-        "estrategia": "Próximo si distancia <= percentil 95 observado; clasificación descriptiva, sin asignación ni filtro.",
+        "interpretacion": (
+            "Distancia del punto interior del desborde al edificio; mezcla "
+            "segmentación, relieve, posición de paneles y desplazamiento. No es una "
+            "corrección geométrica."
+        ),
+        "estrategia": (
+            "Próximo si distancia <= percentil 95 observado; clasificación descriptiva,"
+            " sin asignación ni filtro."
+        ),
     }
     almacen.poner_meta("proximidad_m", radio)
     almacen.poner_meta("diagnostico_catastro", resultado)
     with almacen.db:
         almacen.db.execute(
-            "UPDATE componentes SET relacion=CASE WHEN distancia<=? THEN 'proximo' ELSE 'exterior' END WHERE fraccion=0",
+            (
+                "UPDATE componentes SET relacion=CASE WHEN distancia<=? THEN 'proximo' "
+                "ELSE 'exterior' END WHERE fraccion=0"
+            ),
             (radio,),
         )
         for s in almacen.filas(
@@ -981,7 +1187,10 @@ def analizar_desbordes(almacen):
             ).fetchone():
                 continue
             c = almacen.filas(
-                "SELECT c.* FROM componentes c JOIN miembros m ON c.id=m.componente WHERE m.emplazamiento=?",
+                (
+                    "SELECT c.* FROM componentes c JOIN miembros m ON c.id=m.componente"
+                    " WHERE m.emplazamiento=?"
+                ),
                 (s["id"],),
             )
             relaciones = {r["relacion"] for r in c}
@@ -1000,9 +1209,12 @@ def incorporar_inventario(almacen, config):
         almacen: Base con la muestra y decisiones ya importadas.
         config: Extensión de contexto inicial.
     """
+
     if almacen.meta("inventario_importado"):
         return
-    edificios = gpd.read_file(INDICADORES_UNET / "edificios.gpkg", where="presencia_fotovoltaica=1")
+    edificios = gpd.read_file(
+        INDICADORES_UNET / "edificios.gpkg", where="presencia_fotovoltaica=1"
+    )
     existentes = {v["id"] for v in almacen.filas("SELECT id FROM ventanas")}
     cantidad = 0
     with almacen.db:
@@ -1024,7 +1236,11 @@ def incorporar_inventario(almacen, config):
                 ),
             )
             almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,municipio,codigo_municipal,edificios,origen,etiquetas) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    "INSERT INTO "
+                    "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,edificios,origen,etiquetas)"
+                    " VALUES (?,?,?,?,?,?,?,?)"
+                ),
                 (
                     wid,
                     wid,
@@ -1051,11 +1267,19 @@ def incorporar_inventario(almacen, config):
 
 
 def leer_referencia_local(fila):
-    """Lee solo la ventana de los TIFF de 2023 existentes, incluidos bordes entre hojas."""
+    """Lee solo la ventana de los TIFF de 2023 existentes, incluidos bordes entre hojas.
+
+    Args:
+        fila: Metadatos de la tesela o ventana.
+
+    Returns:
+        tuple[Image.Image, str]: Recorte RGB de 2023 y origen de sus píxeles.
+    """
+
     limites = box(*(fila[k] for k in ("xmin", "ymin", "xmax", "ymax")))
     with ExitStack() as pila:
         fuentes = []
-        for ruta in sorted(ruta_proyecto("data/pnoa").glob("*.tif")):
+        for ruta in sorted(PNOA.glob("*.tif")):
             tif = pila.enter_context(rasterio.open(ruta))
             if box(*tif.bounds).intersects(limites):
                 fuentes.append(tif)
@@ -1069,22 +1293,32 @@ def incorporar_muestra_previa(almacen, teselas: list[str]):
         almacen: Base común del seguimiento.
         teselas: Casos deliberadamente elegidos tras inspección visual del pool.
     """
+
     pool = leer_csv(ruta_proyecto("data/pool/manifest.csv")).set_index("tile_id")
     geografia = GeografiaSeguimiento(almacen.meta("proximidad_m"))
     sitios = []
     for tid in teselas:
         sid = identificador("muestra_previa", tid.encode())
         sitios.append(sid)
-        if almacen.db.execute("SELECT 1 FROM emplazamientos WHERE id=?", (sid,)).fetchone():
+        if almacen.db.execute(
+            "SELECT 1 FROM emplazamientos WHERE id=?", (sid,)
+        ).fetchone():
             continue
         f = pool.loc[tid]
         anotacion = json.loads(
-            (ruta_proyecto("data/pool/annotations") / f"{tid}.json").read_text(encoding="utf-8")
+            (ruta_proyecto("data/pool/annotations") / f"{tid}.json").read_text(
+                encoding="utf-8"
+            )
         )
-        with rasterio.open(ruta_proyecto("data/pnoa") / f.tif) as tif:
+        with rasterio.open(PNOA / f.tif) as tif:
             limites = tif.window_bounds(Window(f.columna, f.fila, f.ancho, f.alto))
             poligonos = [
-                Polygon([tif.transform * (x + f.columna, y + f.fila) for x, y in sh["points"]])
+                Polygon(
+                    [
+                        tif.transform * (x + f.columna, y + f.fila)
+                        for x, y in sh["points"]
+                    ]
+                )
                 for sh in anotacion["shapes"]
                 if sh["label"] == "panel_solar" and len(sh["points"]) >= 3
             ]
@@ -1096,7 +1330,11 @@ def incorporar_muestra_previa(almacen, teselas: list[str]):
                 (tid, *limites, "muestra_previa"),
             )
             almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas) VALUES (?,?,?,?,?,?,?)",
+                (
+                    "INSERT INTO "
+                    "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas)"
+                    " VALUES (?,?,?,?,?,?,?)"
+                ),
                 (
                     sid,
                     tid,

@@ -10,17 +10,21 @@ from paneles_solares.datos.anotaciones import (
     texto_yolo,
 )
 from paneles_solares.datos.coleccion import POOL, SPLITS, cargar_manifest
-from paneles_solares.rutas import ruta_proyecto
-
-DATASETS = ruta_proyecto("data/datasets")
+from paneles_solares.rutas import (
+    DATASETS,
+)
 
 
 def obtener_seleccion() -> tuple[pd.Series, pd.Series, pd.Series]:
-    """Obtiene las imágenes asignadas a entrenamiento, validación y test."""
-    # Cargamos el manifest que guarda el estado de cada imagen.
+    """Obtiene las imágenes asignadas a entrenamiento, validación y test.
+
+    Returns:
+        tuple[pd.Series, pd.Series, pd.Series]: Identificadores para train, val y test,
+            en ese orden.
+    """
+
     manifest = cargar_manifest()
 
-    # Nos quedamos solo con las imágenes válidas.
     manifest = manifest[manifest["estado"] == "valida"]
 
     entreno = manifest.loc[manifest["uso"] == "train", "tile_id"]
@@ -35,8 +39,18 @@ def buscar_cambios(
     carpeta: Path,
     extension: str,
 ) -> tuple[set[str], set[str]]:
-    """Busca los archivos que faltan y los que sobran en una carpeta."""
-    # Con conjuntos podemos calcular fácilmente las diferencias.
+    """Busca los archivos que faltan y los que sobran en una carpeta.
+
+    Args:
+        ids: Identificadores de las imágenes deseadas.
+        carpeta: Carpeta cuyos archivos se comparan con los identificadores deseados.
+        extension: Extensión de los archivos, incluido el punto.
+
+    Returns:
+        tuple[set[str], set[str]]: Identificadores que faltan y que sobran, en ese
+            orden.
+    """
+
     deseados = set(ids)
     existentes = {archivo.stem for archivo in carpeta.glob(f"*{extension}")}
 
@@ -50,15 +64,22 @@ def sincronizar_imagenes(
     dataset: Path,
     seleccion: tuple[pd.Series, pd.Series, pd.Series],
 ) -> None:
-    """Añade las imágenes que faltan y elimina las que sobran."""
-    # Repetimos el proceso para cada división del dataset.
+    """Añade las imágenes que faltan y elimina las que sobran.
+
+    Args:
+        dataset: Carpeta del dataset de destino.
+        seleccion: Identificadores de train, val y test, en ese orden.
+
+    Raises:
+        FileNotFoundError: Falta una imagen original del pool.
+    """
+
     for split, ids in zip(SPLITS, seleccion):
         carpeta = dataset / "images" / split
         carpeta.mkdir(parents=True, exist_ok=True)
 
         faltan, sobran = buscar_cambios(ids, carpeta, ".png")
 
-        # Quitamos las imágenes que ya no pertenecen a este split.
         for tile_id in sobran:
             (carpeta / f"{tile_id}.png").unlink()
 
@@ -78,7 +99,14 @@ def sincronizar_anotaciones(
     formato: str,
     seleccion: tuple[pd.Series, pd.Series, pd.Series],
 ) -> None:
-    """Regenera TXT de YOLO o máscaras U-Net desde los JSON originales."""
+    """Regenera TXT de YOLO o máscaras U-Net desde los JSON originales.
+
+    Args:
+        dataset: Carpeta del dataset de destino.
+        formato: Formato de destino: yolo o unet.
+        seleccion: Identificadores de train, val y test, en ese orden.
+    """
+
     ruta = dataset / ("labels" if formato == "yolo" else "masks")
     extension = ".txt" if formato == "yolo" else ".png"
 
@@ -88,7 +116,6 @@ def sincronizar_anotaciones(
 
         _, sobrantes = buscar_cambios(ids, carpeta, extension)
 
-        # Eliminamos las anotaciones que ya no pertenecen al split.
         for tile_id in sobrantes:
             (carpeta / f"{tile_id}{extension}").unlink()
 
@@ -105,8 +132,12 @@ def sincronizar_anotaciones(
 
 
 def crear_yaml_yolo(dataset: Path) -> None:
-    """Crea el archivo de configuración que necesita YOLO."""
-    # Ultralytics utiliza este archivo para localizar los tres splits.
+    """Crea el archivo de configuración que necesita YOLO.
+
+    Args:
+        dataset: Carpeta del dataset YOLO.
+    """
+
     contenido = [
         f'path: "{dataset.resolve().as_posix()}"',
         "train: images/train",
@@ -125,6 +156,7 @@ def crear_yaml_yolo(dataset: Path) -> None:
 
 def sincronizar() -> None:
     """Sincroniza todos los datasets conocidos."""
+
     seleccion = obtener_seleccion()
 
     for formato in ("yolo", "unet"):

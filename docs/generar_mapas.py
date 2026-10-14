@@ -23,7 +23,19 @@ def guardar_mapa(
     gamma: float,
     archivo: str,
 ) -> None:
-    """Dibuja los municipios con una escala que distingue los valores bajos."""
+    """Dibuja los municipios con una escala que distingue los valores bajos.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+        columna: Campo numérico que se representa.
+        titulo: Título visible del mapa.
+        leyenda: Etiqueta y unidades de la escala de color.
+        subtitulo: Texto breve sobre los datos y supuestos del mapa.
+        colores: Nombre de la paleta de Matplotlib.
+        gamma: Exponente de la escala de color para distinguir valores bajos.
+        archivo: Nombre del PNG dentro de docs/figuras.
+    """
+
     figura, eje = plt.subplots(figsize=(11, 6.2))
     municipios.plot(
         ax=eje,
@@ -45,6 +57,7 @@ def guardar_mapa(
 
 def main() -> None:
     """Lee los indicadores definitivos y sobrescribe los mapas de la memoria."""
+
     FIGURAS.mkdir(parents=True, exist_ok=True)
     municipios = gpd.read_file(INDICADORES_UNET / "municipios.gpkg")
     guardar_mapa(

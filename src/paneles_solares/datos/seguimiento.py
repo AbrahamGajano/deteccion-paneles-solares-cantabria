@@ -18,9 +18,7 @@ from paneles_solares.rutas import ruta_proyecto
 
 CARPETA = ruta_proyecto("data/datasets/seguimiento")
 BASE = CARPETA / "seguimiento.sqlite"
-URL_WCS = (
-    "https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer"
-)
+URL_WCS = "https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer"
 DECISIONES = ("presente", "ausente", "dudosa", "no_evaluable", "referencia_incorrecta")
 SOPORTES = (
     "cubierta",
@@ -65,12 +63,25 @@ ETIQUETAS = (
 
 
 def ahora() -> str:
-    """Devuelve la fecha UTC para las acciones persistentes."""
+    """Devuelve la fecha UTC para las acciones persistentes.
+
+    Returns:
+        str: Fecha y hora actuales en UTC, en formato ISO 8601.
+    """
+
     return datetime.now(timezone.utc).isoformat()
 
 
 def id_ventana(identificador: str) -> str:
-    """Recupera el recorte compartido por las cubiertas del piloto."""
+    """Recupera el recorte compartido por las cubiertas del piloto.
+
+    Args:
+        identificador: Identificador de una cubierta o de su recorte original.
+
+    Returns:
+        str: Identificador del recorte compartido del piloto.
+    """
+
     return str(identificador).split("_cubierta_")[0]
 
 
@@ -81,11 +92,12 @@ def cargar_config(archivo: str = "seguimiento.json") -> dict:
         archivo: Ruta relativa al proyecto o absoluta.
 
     Returns:
-        Campañas y tamaño de los lotes.
+        dict: Campañas y tamaño de los lotes.
 
     Raises:
         ValueError: Si las campañas se repiten o no incluyen la referencia.
     """
+
     config = json.loads(ruta_proyecto(archivo).read_text(encoding="utf-8"))
     anios = [c["anio"] for c in config["campanias"]]
     if len(set(anios)) != len(anios) or 2023 not in anios:
@@ -94,7 +106,16 @@ def cargar_config(archivo: str = "seguimiento.json") -> dict:
 
 
 def sustituir_archivo(temporal: Path, destino: Path) -> None:
-    """Publica un archivo cerrado y reintenta bloqueos breves de Windows."""
+    """Publica un archivo cerrado y reintenta bloqueos breves de Windows.
+
+    Args:
+        temporal: Archivo o carpeta completa pendiente de publicar.
+        destino: Ruta definitiva de la salida.
+
+    Raises:
+        PermissionError: Si el destino sigue bloqueado tras tres intentos.
+    """
+
     for intento in range(3):
         try:
             temporal.replace(destino)
@@ -106,7 +127,13 @@ def sustituir_archivo(temporal: Path, destino: Path) -> None:
 
 
 def guardar_csv(tabla: pd.DataFrame, ruta: Path) -> None:
-    """Publica una exportación completa sin retirar antes la anterior."""
+    """Publica una exportación completa sin retirar antes la anterior.
+
+    Args:
+        tabla: Tabla completa que se exporta.
+        ruta: Ruta del CSV de salida.
+    """
+
     ruta.parent.mkdir(parents=True, exist_ok=True)
     temporal = ruta.with_suffix(".csv.part")
     try:
@@ -117,18 +144,34 @@ def guardar_csv(tabla: pd.DataFrame, ruta: Path) -> None:
 
 
 def guardar_json(datos: dict, ruta: Path) -> None:
-    """Publica un resumen JSON mediante un temporal retirado al terminar."""
+    """Publica un resumen JSON mediante un temporal retirado al terminar.
+
+    Args:
+        datos: Datos que se guardan como JSON.
+        ruta: Ruta del JSON de salida.
+    """
+
     ruta.parent.mkdir(parents=True, exist_ok=True)
     temporal = ruta.with_suffix(".json.part")
     try:
-        temporal.write_text(json.dumps(datos, indent=2, ensure_ascii=False), encoding="utf-8")
+        temporal.write_text(
+            json.dumps(datos, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
         sustituir_archivo(temporal, ruta)
     finally:
         temporal.unlink(missing_ok=True)
 
 
 def leer_csv(ruta: Path) -> pd.DataFrame:
-    """Lee los datos del piloto conservando identificadores y campos vacíos."""
+    """Lee los datos del piloto conservando identificadores y campos vacíos.
+
+    Args:
+        ruta: Ruta del archivo que se utiliza.
+
+    Returns:
+        pd.DataFrame: Datos del piloto, o tabla vacía si no existe el archivo.
+    """
+
     if not ruta.exists():
         return pd.DataFrame()
     return pd.read_csv(
@@ -139,22 +182,55 @@ def leer_csv(ruta: Path) -> pd.DataFrame:
 
 
 def transformacion(fila: dict, ancho: int = 512, alto: int = 512):
-    """Relaciona píxeles con el encuadre métrico original, sin ajustes a Catastro."""
-    return from_bounds(*(fila[c] for c in ("xmin", "ymin", "xmax", "ymax")), ancho, alto)
+    """Relaciona píxeles con el encuadre métrico original, sin ajustes a Catastro.
+
+    Args:
+        fila: Metadatos de la tesela o ventana.
+        ancho: Ancho de la imagen en píxeles.
+        alto: Alto de la imagen en píxeles.
+
+    Returns:
+        Affine: Transformación afín del encuadre métrico.
+    """
+
+    return from_bounds(
+        *(fila[c] for c in ("xmin", "ymin", "xmax", "ymax")), ancho, alto
+    )
 
 
 def geometria_mascara(mascara: np.ndarray, transformacion_pixel) -> list:
-    """Conserva todos los componentes de ocho vecinos, incluidos los pequeños."""
+    """Conserva todos los componentes de ocho vecinos, incluidos los pequeños.
+
+    Args:
+        mascara: Máscara binaria de paneles.
+        transformacion_pixel: Transformación afín de píxeles a coordenadas métricas.
+
+    Returns:
+        list: Geometrías válidas de todos los componentes de ocho vecinos.
+    """
+
     return [
         make_valid(shape(g))
         for g, _ in shapes(
-            mascara.astype("uint8"), mask=mascara, connectivity=8, transform=transformacion_pixel
+            mascara.astype("uint8"),
+            mask=mascara,
+            connectivity=8,
+            transform=transformacion_pixel,
         )
     ]
 
 
 def identificador(prefijo: str, contenido: bytes) -> str:
-    """Crea un identificador reproducible a partir del origen inmutable."""
+    """Crea un identificador reproducible a partir del origen inmutable.
+
+    Args:
+        prefijo: Texto que identifica el tipo de registro.
+        contenido: Contenido inmutable usado para calcular el identificador.
+
+    Returns:
+        str: Identificador estable con prefijo y huella del contenido.
+    """
+
     return prefijo + "_" + hashlib.sha256(contenido).hexdigest()[:20]
 
 
@@ -166,14 +242,19 @@ def derivar_historia(observaciones: list[dict], anios: list[int]) -> dict:
         anios: Campañas esperadas, en cualquier orden.
 
     Returns:
-        Primera presencia, límites e incertidumbres; sin fecha exacta inventada.
+        dict: Primera presencia, límites e incertidumbres; sin fecha exacta inventada.
     """
+
     por_anio = {o["anio"]: o for o in observaciones}
     presentes = sorted(a for a, o in por_anio.items() if o["decision"] == "presente")
     ausentes = sorted(
         a
         for a, o in por_anio.items()
-        if (o["decision"] == "ausente" or a == 2023 and o["decision"] == "referencia_incorrecta")
+        if (
+            o["decision"] == "ausente"
+            or a == 2023
+            and o["decision"] == "referencia_incorrecta"
+        )
         and o.get("alcance", "emplazamiento_completo") == "emplazamiento_completo"
     )
     agrupacion = any(o.get("alcance") == "agrupacion_cubiertas" for o in observaciones)
@@ -216,9 +297,15 @@ def derivar_historia(observaciones: list[dict], anios: list[int]) -> dict:
 
 
 class AlmacenSeguimiento:
-    """Único origen de verdad, con transacciones y registro reversible de acciones."""
+    """Base persistente con transacciones y registro reversible de acciones."""
 
     def __init__(self, ruta: Path = BASE):
+        """Abre la base persistente y crea las tablas que falten.
+
+        Args:
+            ruta: Ruta del archivo que se utiliza.
+        """
+
         self.ruta = Path(ruta)
         self.ruta.parent.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.ruta, timeout=30)
@@ -268,19 +355,46 @@ class AlmacenSeguimiento:
 
     def cerrar(self):
         """Cierra una base cuyos cambios ya se han confirmado después de cada acción."""
+
         self.db.close()
 
     def filas(self, sql: str, parametros: tuple = ()) -> list[dict]:
-        """Lee filas como diccionarios para la interfaz y las exportaciones."""
+        """Lee filas como diccionarios para la interfaz y las exportaciones.
+
+        Args:
+            sql: Consulta SQL de lectura.
+            parametros: Valores que se pasan a la consulta.
+
+        Returns:
+            list[dict]: Filas de la consulta como diccionarios.
+        """
+
         return [dict(f) for f in self.db.execute(sql, parametros)]
 
     def meta(self, clave: str, defecto=None):
-        """Lee un metadato JSON opcional."""
-        fila = self.db.execute("SELECT valor FROM metadatos WHERE clave=?", (clave,)).fetchone()
+        """Lee un metadato JSON opcional.
+
+        Args:
+            clave: Nombre del metadato.
+            defecto: Valor devuelto cuando el metadato no existe.
+
+        Returns:
+            object: Metadato decodificado o valor predeterminado.
+        """
+
+        fila = self.db.execute(
+            "SELECT valor FROM metadatos WHERE clave=?", (clave,)
+        ).fetchone()
         return json.loads(fila[0]) if fila else defecto
 
     def poner_meta(self, clave: str, valor):
-        """Confirma inmediatamente un metadato de preparación o navegación."""
+        """Confirma inmediatamente un metadato de preparación o navegación.
+
+        Args:
+            clave: Nombre del metadato.
+            valor: Valor que se conserva en formato JSON.
+        """
+
         with self.db:
             self.db.execute(
                 "INSERT OR REPLACE INTO metadatos VALUES (?,?)",
@@ -310,15 +424,20 @@ class AlmacenSeguimiento:
             etiquetas: Indicadores secundarios extensibles.
             notas: Comentario libre.
             original: Fila del piloto, conservada sin reinterpretarla.
-            referencia: Respuesta explícita de 2023 incluida en el primer clic histórico.
+            referencia: Respuesta explícita de 2023 incluida en el primer clic
+                histórico.
 
         Raises:
             ValueError: Si la decisión no es válida para esta campaña.
         """
-        if decision not in DECISIONES or (decision == "referencia_incorrecta" and anio != 2023):
+
+        if decision not in DECISIONES or (
+            decision == "referencia_incorrecta" and anio != 2023
+        ):
             raise ValueError("La referencia incorrecta solo se aplica a 2023")
         anterior = self.filas(
-            "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=?", (sitio, anio)
+            "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=?",
+            (sitio, anio),
         )
         registro = {
             "emplazamiento": sitio,
@@ -336,7 +455,11 @@ class AlmacenSeguimiento:
         ref_previa = self.filas(
             "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=2023", (sitio,)
         )
-        if referencia and anio != 2023 and (not ref_previa or referencia.get("corregir")):
+        if (
+            referencia
+            and anio != 2023
+            and (not ref_previa or referencia.get("corregir"))
+        ):
             if referencia["decision"] not in DECISIONES:
                 raise ValueError("Respuesta de referencia no válida")
             ref = {
@@ -344,7 +467,9 @@ class AlmacenSeguimiento:
                 "anio": 2023,
                 "decision": referencia["decision"],
                 "alcance": referencia["alcance"],
-                "etiquetas": json.dumps(referencia.get("etiquetas", []), ensure_ascii=False),
+                "etiquetas": json.dumps(
+                    referencia.get("etiquetas", []), ensure_ascii=False
+                ),
                 "notas": referencia.get("notas", ""),
                 "segundos": 0,
                 "original": ref_previa[0]["original"] if ref_previa else None,
@@ -365,9 +490,17 @@ class AlmacenSeguimiento:
             return
         with self.db:
             self._escribir_observacion(registro)
-            self._accion("observacion", sitio, anio, anterior[0] if anterior else None, registro)
+            self._accion(
+                "observacion", sitio, anio, anterior[0] if anterior else None, registro
+            )
 
     def _escribir_observacion(self, registro: dict):
+        """Escribe una observación dentro de la transacción de quien la llama.
+
+        Args:
+            registro: Datos de la observación que se guarda.
+        """
+
         self.db.execute(
             "INSERT OR REPLACE INTO observaciones VALUES (?,?,?,?,?,?,?,?,?)",
             tuple(
@@ -387,8 +520,21 @@ class AlmacenSeguimiento:
         )
 
     def _accion(self, tipo, sitio, anio, anterior, posterior):
+        """Registra el cambio para permitir su consulta y deshacerlo.
+
+        Args:
+            tipo: Tipo de acción que se registra.
+            sitio: Identificador del emplazamiento que se revisa.
+            anio: Año de la campaña observada.
+            anterior: Estado previo de la acción, o None si no existía.
+            posterior: Estado resultante de la acción.
+        """
+
         self.db.execute(
-            "INSERT INTO acciones(tipo,objetivo,anio,anterior,posterior,fecha_utc) VALUES (?,?,?,?,?,?)",
+            (
+                "INSERT INTO acciones(tipo,objetivo,anio,anterior,posterior,fecha_utc) "
+                "VALUES (?,?,?,?,?,?)"
+            ),
             (
                 tipo,
                 sitio,
@@ -400,7 +546,17 @@ class AlmacenSeguimiento:
         )
 
     def modificar_sitio(self, sitio: str, **cambios):
-        """Corrige soporte, asociación o notas sin cambiar las observaciones."""
+        """Corrige soporte, asociación o notas sin cambiar las observaciones.
+
+        Args:
+            sitio: Identificador del emplazamiento que se revisa.
+            cambios: Campos del emplazamiento y sus nuevos valores.
+
+        Raises:
+            ValueError: Se indican campos, soportes o relaciones catastrales no
+                permitidos.
+        """
+
         permitidos = {
             "soporte",
             "relacion",
@@ -434,9 +590,16 @@ class AlmacenSeguimiento:
             self._accion("sitio", sitio, None, anterior, posterior)
 
     def deshacer(self) -> dict | None:
-        """Revierte la última acción humana manteniendo su registro y el resto del trabajo."""
+        """Revierte la última acción humana manteniendo su registro y el resto del trabajo.
+
+        Returns:
+            dict | None: Acción revertida, o None si no quedan acciones reversibles.
+        """
+
         filas = self.filas(
-            "SELECT * FROM acciones WHERE deshecha=0 AND tipo IN ('observacion','comparacion','sitio','agrupacion') ORDER BY id DESC LIMIT 1"
+            "SELECT * FROM acciones WHERE deshecha=0 AND tipo IN "
+            "('observacion','comparacion','sitio','agrupacion') ORDER BY id DESC "
+            "LIMIT 1"
         )
         if not filas:
             return None
@@ -444,7 +607,10 @@ class AlmacenSeguimiento:
         anterior = json.loads(accion["anterior"])
         with self.db:
             if accion["tipo"] == "comparacion":
-                for anio, campo in ((2023, "referencia"), (accion["anio"], "historica")):
+                for anio, campo in (
+                    (2023, "referencia"),
+                    (accion["anio"], "historica"),
+                ):
                     self.db.execute(
                         "DELETE FROM observaciones WHERE emplazamiento=? AND anio=?",
                         (accion["objetivo"], anio),
@@ -476,8 +642,12 @@ class AlmacenSeguimiento:
                         (sitio, componente),
                     )
                 for nuevo in anterior["nuevos"]:
-                    self.db.execute("UPDATE emplazamientos SET activo=0 WHERE id=?", (nuevo,))
-            self.db.execute("UPDATE acciones SET deshecha=1 WHERE id=?", (accion["id"],))
+                    self.db.execute(
+                        "UPDATE emplazamientos SET activo=0 WHERE id=?", (nuevo,)
+                    )
+            self.db.execute(
+                "UPDATE acciones SET deshecha=1 WHERE id=?", (accion["id"],)
+            )
         return accion
 
     def reorganizar(self, sitios: list[str], grupos: list[list[str]]) -> list[str]:
@@ -488,14 +658,18 @@ class AlmacenSeguimiento:
             grupos: Componentes para cada nuevo emplazamiento, sin duplicarlos.
 
         Returns:
-            Identificadores nuevos pendientes de validación; los anteriores quedan consultables.
+            list[str]: Identificadores nuevos pendientes de validación; los anteriores
+                quedan consultables.
 
         Raises:
-            ValueError: Si la distribución pierde componentes o mezcla campañas.
+        ValueError: Si la distribución pierde o repite componentes, o deja grupos
+            vacíos.
         """
+
         interrogantes = ",".join("?" for _ in sitios)
         miembros = self.filas(
-            f"SELECT * FROM miembros WHERE emplazamiento IN ({interrogantes})", tuple(sitios)
+            f"SELECT * FROM miembros WHERE emplazamiento IN ({interrogantes})",
+            tuple(sitios),
         )
         originales = {m["componente"]: m["emplazamiento"] for m in miembros}
         propuestos = [c for grupo in grupos for c in grupo]
@@ -513,15 +687,22 @@ class AlmacenSeguimiento:
         with self.db:
             for grupo in grupos:
                 nuevo = identificador(
-                    "emplazamiento", ("|".join(sorted(grupo)) + "|manual|" + ahora()).encode()
+                    "emplazamiento",
+                    ("|".join(sorted(grupo)) + "|manual|" + ahora()).encode(),
                 )
                 datos = self.filas(
-                    "SELECT * FROM componentes WHERE id IN (" + ",".join("?" for _ in grupo) + ")",
+                    "SELECT * FROM componentes WHERE id IN ("
+                    + ",".join("?" for _ in grupo)
+                    + ")",
                     tuple(grupo),
                 )
                 geometria = union_all([from_wkb(c["geometria"]) for c in datos])
                 self.db.execute(
-                    "INSERT INTO emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas) VALUES (?,?,?,?,?,?,?)",
+                    (
+                        "INSERT INTO "
+                        "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas)"
+                        " VALUES (?,?,?,?,?,?,?)"
+                    ),
                     (
                         nuevo,
                         datos[0]["ventana"],
@@ -529,7 +710,9 @@ class AlmacenSeguimiento:
                         datos[0]["municipio"],
                         datos[0]["codigo_municipal"],
                         "reagrupacion_manual",
-                        json.dumps(["agrupacion_pendiente", "observaciones_en_originales"]),
+                        json.dumps(
+                            ["agrupacion_pendiente", "observaciones_en_originales"]
+                        ),
                     ),
                 )
                 self.db.executemany(

@@ -1,6 +1,7 @@
 """Visor local de campañas independientes, con capas y navegación sincronizadas."""
 
 import json
+import sqlite3
 import time
 import tkinter as tk
 import webbrowser
@@ -11,6 +12,7 @@ from tkinter import messagebox, simpledialog, ttk
 
 import geopandas as gpd
 import numpy as np
+import requests
 from PIL import Image, ImageDraw, ImageTk
 from shapely import from_wkb, union_all
 from shapely.geometry import Point, box
@@ -27,7 +29,9 @@ from paneles_solares.modelos.resumir_seguimiento import (
     generar_resumen,
     trazar_geometria,
 )
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.rutas import (
+    EDIFICIOS_CATASTRO,
+)
 
 NOMBRES = {
     "presente": "Presencia clara",
@@ -51,7 +55,8 @@ CAMBIOS = {
 
 
 def objetivos_visuales(almacen, sitio, ventanas):
-    """Localiza el caso con sus componentes originales y distingue ubicaciones provisionales.
+    """Localiza el caso con sus componentes originales y distingue ubicaciones
+    provisionales.
 
     Args:
         almacen: Base de revisión, consultada sin cambiar geometrías ni observaciones.
@@ -59,8 +64,10 @@ def objetivos_visuales(almacen, sitio, ventanas):
         ventanas: Recortes visibles, incluidos los de contexto.
 
     Returns:
-        Objetivo seleccionado y candidatos vecinos con su geometría de localización.
+        list[dict]: Objetivo seleccionado y candidatos vecinos con su geometría de
+            localización.
     """
+
     marcas = ",".join("?" for _ in ventanas)
     sitios = almacen.filas(
         f"""SELECT DISTINCT e.id,e.geometria,e.origen FROM emplazamientos e
@@ -78,17 +85,24 @@ def objetivos_visuales(almacen, sitio, ventanas):
     )
     grupos = {}
     for componente in miembros:
-        grupos.setdefault(componente["emplazamiento"], []).append(from_wkb(componente["geometria"]))
+        grupos.setdefault(componente["emplazamiento"], []).append(
+            from_wkb(componente["geometria"])
+        )
     objetivos = []
     for fila in sitios:
         componentes = grupos.get(fila["id"], [])
-        provisional = not componentes and fila["origen"] in ("piloto", "inventario_2023")
+        provisional = not componentes and fila["origen"] in (
+            "piloto",
+            "inventario_2023",
+        )
         if fila["id"] != sitio and provisional:
             continue
         objetivos.append(
             {
                 "id": fila["id"],
-                "geometria": union_all(componentes) if componentes else from_wkb(fila["geometria"]),
+                "geometria": union_all(componentes)
+                if componentes
+                else from_wkb(fila["geometria"]),
                 "seleccionado": fila["id"] == sitio,
                 "provisional": provisional,
                 "componentes": len(componentes),
@@ -101,13 +115,20 @@ class VisorSeguimiento:
     """Adapta el visor del piloto, manteniendo Tkinter, Pillow y los recortes existentes."""
 
     def __init__(self, raiz, almacen, config: dict, limite: int = 12):
+        """Prepara el visor y recupera la posición guardada de la revisión.
+
+        Args:
+            raiz: Ventana principal de Tkinter.
+            almacen: Base de seguimiento con sus observaciones y recursos.
+            config: Configuración de campañas y procesamiento.
+            limite: Máximo de ventanas compartidas por lote.
+        """
+
         self.raiz, self.almacen, self.config = raiz, almacen, config
         self.limite = limite
         self.anios = sorted((c["anio"] for c in config["campanias"]), reverse=True)
         self.historicos = [a for a in self.anios if a < 2023]
-        self.edificios = gpd.read_file(
-            ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg"), fid_as_index=True
-        )
+        self.edificios = gpd.read_file(EDIFICIOS_CATASTRO, fid_as_index=True)
         self.actual = None
         self.fotos = []
         self.zoom = 1.0
@@ -131,7 +152,8 @@ class VisorSeguimiento:
             for k in ("Predicción", "Agrupación", "Catastro")
         }
         self.filtros = {
-            k: tk.StringVar(value="Todos") for k in ("Municipio", "Estado", "Soporte", "Catastro")
+            k: tk.StringVar(value="Todos")
+            for k in ("Municipio", "Estado", "Soporte", "Catastro")
         }
         self.solo_muestra = tk.BooleanVar(value=False)
         self.incluir_archivados = tk.BooleanVar(value=False)
@@ -158,7 +180,9 @@ class VisorSeguimiento:
             sitio = cursor["sitio"]
             if sitio not in self.cola:
                 self.cola.insert(0, sitio)
-            pendientes = [a for a in self.historicos if (sitio, a) not in self.observaciones]
+            pendientes = [
+                a for a in self.historicos if (sitio, a) not in self.observaciones
+            ]
             anio = cursor.get("anio")
             self.mostrar(sitio, anio if anio in pendientes else pendientes[0])
         else:
@@ -166,6 +190,8 @@ class VisorSeguimiento:
         self.programar_reserva()
 
     def _construir(self):
+        """Crea los controles, paneles de imagen y atajos del visor."""
+
         self.raiz.title("Revisión histórica fotovoltaica · Cantabria")
         self.raiz.geometry("1380x930")
         self.titulo = ttk.Label(self.raiz, font=("Segoe UI", 12), wraplength=1320)
@@ -178,26 +204,30 @@ class VisorSeguimiento:
         filtros.pack(fill="x", padx=10)
         for nombre, variable in self.filtros.items():
             ttk.Label(filtros, text=nombre).pack(side="left", padx=3)
-            valores = (
-                ("Todos", "Pendiente", "Revisado", "Especial", *DECISIONES)
-                if nombre == "Estado"
-                else (
-                    ("Todos", *SOPORTES)
-                    if nombre == "Soporte"
-                    else ("Todos", *RELACIONES)
-                    if nombre == "Catastro"
-                    else ("Todos",)
-                )
-            )
+            if nombre == "Estado":
+                valores = ("Todos", "Pendiente", "Revisado", "Especial", *DECISIONES)
+            elif nombre == "Soporte":
+                valores = ("Todos", *SOPORTES)
+            elif nombre == "Catastro":
+                valores = ("Todos", *RELACIONES)
+            else:
+                valores = ("Todos",)
             combo = ttk.Combobox(
-                filtros, textvariable=variable, values=valores, state="readonly", width=20
+                filtros,
+                textvariable=variable,
+                values=valores,
+                state="readonly",
+                width=20,
             )
             combo.pack(side="left", padx=3)
             combo.bind("<<ComboboxSelected>>", lambda _: self.recargar())
             if nombre == "Municipio":
                 self.selector_municipio = combo
         ttk.Checkbutton(
-            filtros, text="Muestra previa", variable=self.solo_muestra, command=self.recargar
+            filtros,
+            text="Muestra previa",
+            variable=self.solo_muestra,
+            command=self.recargar,
         ).pack(side="left")
         cuerpo = ttk.Panedwindow(self.raiz, orient="horizontal")
         cuerpo.pack(fill="both", expand=True, padx=10, pady=6)
@@ -237,10 +267,12 @@ class VisorSeguimiento:
                 variable=variable,
                 command=self.dibujar,
             ).pack(side="left", padx=4)
-        ttk.Button(controles, text="Restablecer vista", command=self.restablecer).pack(side="left")
-        ttk.Button(controles, text="Centrar objetivo", command=self.centrar_objetivo).pack(
+        ttk.Button(controles, text="Restablecer vista", command=self.restablecer).pack(
             side="left"
         )
+        ttk.Button(
+            controles, text="Centrar objetivo", command=self.centrar_objetivo
+        ).pack(side="left")
         self.indicacion_objetivo = ttk.Label(
             derecha, wraplength=1080, font=("Segoe UI", 10, "bold")
         )
@@ -250,7 +282,11 @@ class VisorSeguimiento:
         self.paneles = []
         for n in range(2):
             panel = tk.Canvas(
-                imagenes, background="#17232e", highlightthickness=0, width=500, height=480
+                imagenes,
+                background="#17232e",
+                highlightthickness=0,
+                width=500,
+                height=480,
             )
             panel.pack(side="left", fill="both", expand=True, padx=3)
             panel.bind("<Configure>", lambda _: self.dibujar())
@@ -288,14 +324,20 @@ class VisorSeguimiento:
         ):
             ttk.Label(campos, text=nombre).pack(side="left", padx=3)
             combo = ttk.Combobox(
-                campos, textvariable=variable, values=valores, width=24, state="readonly"
+                campos,
+                textvariable=variable,
+                values=valores,
+                width=24,
+                state="readonly",
             )
             combo.pack(side="left", padx=3)
             combo.bind("<<ComboboxSelected>>", self.guardar_campos)
         entradas = ttk.Frame(derecha)
         entradas.pack(fill="x", pady=3)
         ttk.Label(entradas, text="Etiquetas (comas):").grid(row=0, column=0, sticky="w")
-        ttk.Label(entradas, text="Notas de esta campaña:").grid(row=1, column=0, sticky="w")
+        ttk.Label(entradas, text="Notas de esta campaña:").grid(
+            row=1, column=0, sticky="w"
+        )
         for fila, variable in enumerate((self.etiquetas, self.notas)):
             entrada = ttk.Entry(entradas, textvariable=variable, width=60)
             entrada.grid(row=fila, column=1, sticky="ew")
@@ -308,12 +350,15 @@ class VisorSeguimiento:
                         label=etiqueta.replace("_", " "),
                         command=lambda t=etiqueta: self.anadir_etiqueta(t),
                     )
-                entrada.bind("<Button-3>", lambda e, m=menu: m.tk_popup(e.x_root, e.y_root))
+                entrada.bind(
+                    "<Button-3>", lambda e, m=menu: m.tk_popup(e.x_root, e.y_root)
+                )
         entradas.columnconfigure(1, weight=1)
         self.menu_cambios = tk.Menu(entradas, tearoff=False)
         for etiqueta, nombre in CAMBIOS.items():
             self.menu_cambios.add_command(
-                label=nombre, command=lambda t=etiqueta: self.marcar_cambio_referencia(t)
+                label=nombre,
+                command=lambda t=etiqueta: self.marcar_cambio_referencia(t),
             )
         self.boton_cambios = ttk.Button(
             entradas, text="Cambio entre las fotos…", command=self.abrir_cambios
@@ -334,18 +379,28 @@ class VisorSeguimiento:
         ttk.Button(botones, text="← Anterior / corregir", command=self.anterior).pack(
             side="left", padx=3
         )
-        self.boton_siguiente = ttk.Button(botones, text="Siguiente →", command=self.siguiente)
+        self.boton_siguiente = ttk.Button(
+            botones, text="Siguiente →", command=self.siguiente
+        )
         self.boton_siguiente.pack(side="left", padx=3)
-        ttk.Button(botones, text="Deshacer", command=self.deshacer).pack(side="left", padx=3)
-        acciones = ttk.Frame(self.raiz)
-        acciones.pack(fill="x", padx=10, pady=3)
-        ttk.Button(acciones, text="Confirmar agrupación", command=self.confirmar_grupo).pack(
+        ttk.Button(botones, text="Deshacer", command=self.deshacer).pack(
             side="left", padx=3
         )
-        self.boton_contexto = ttk.Button(acciones, text="Más contexto", command=self.contexto)
+        acciones = ttk.Frame(self.raiz)
+        acciones.pack(fill="x", padx=10, pady=3)
+        ttk.Button(
+            acciones, text="Confirmar agrupación", command=self.confirmar_grupo
+        ).pack(side="left", padx=3)
+        self.boton_contexto = ttk.Button(
+            acciones, text="Más contexto", command=self.contexto
+        )
         self.boton_contexto.pack(side="left", padx=3)
-        ttk.Button(acciones, text="Resumen", command=self.resumen).pack(side="left", padx=3)
-        ttk.Button(acciones, text="Cómo revisar (F1)", command=self.ayuda).pack(side="left", padx=3)
+        ttk.Button(acciones, text="Resumen", command=self.resumen).pack(
+            side="left", padx=3
+        )
+        ttk.Button(acciones, text="Cómo revisar (F1)", command=self.ayuda).pack(
+            side="left", padx=3
+        )
         ttk.Checkbutton(
             acciones,
             text="Herramientas avanzadas",
@@ -353,19 +408,25 @@ class VisorSeguimiento:
             command=self.mostrar_avanzadas,
         ).pack(side="left", padx=3)
         self.acciones_avanzadas = ttk.Frame(self.raiz)
-        ttk.Button(self.acciones_avanzadas, text="Dividir / fusionar", command=self.reagrupar).pack(
-            side="left", padx=3
-        )
         ttk.Button(
-            self.acciones_avanzadas, text="Corregir asociación / cubiertas", command=self.asociar
+            self.acciones_avanzadas, text="Dividir / fusionar", command=self.reagrupar
         ).pack(side="left", padx=3)
         ttk.Button(
-            self.acciones_avanzadas, text="Añadir candidato histórico", command=self.anadir
+            self.acciones_avanzadas,
+            text="Corregir asociación / cubiertas",
+            command=self.asociar,
+        ).pack(side="left", padx=3)
+        ttk.Button(
+            self.acciones_avanzadas,
+            text="Añadir candidato histórico",
+            command=self.anadir,
         ).pack(side="left", padx=3)
         ttk.Button(
             self.acciones_avanzadas,
             text="Auditoría visual",
-            command=lambda: webbrowser.open((SALIDA / "auditoria_visual.html").as_uri()),
+            command=lambda: webbrowser.open(
+                (SALIDA / "auditoria_visual.html").as_uri()
+            ),
         ).pack(side="left", padx=3)
         ttk.Checkbutton(
             self.acciones_avanzadas,
@@ -384,10 +445,12 @@ class VisorSeguimiento:
         self.progreso = ttk.Label(self.raiz, wraplength=1340)
         self.progreso.pack(fill="x", padx=10, pady=6)
         self.raiz.bind(
-            "<Left>", lambda e: self.anterior() if not isinstance(e.widget, ttk.Entry) else None
+            "<Left>",
+            lambda e: self.anterior() if not isinstance(e.widget, ttk.Entry) else None,
         )
         self.raiz.bind(
-            "<Right>", lambda e: self.siguiente() if not isinstance(e.widget, ttk.Entry) else None
+            "<Right>",
+            lambda e: self.siguiente() if not isinstance(e.widget, ttk.Entry) else None,
         )
         self.raiz.bind("<Control-z>", lambda _: self.deshacer())
         self.raiz.bind("<F1>", lambda _: self.ayuda())
@@ -395,13 +458,19 @@ class VisorSeguimiento:
         self.raiz.protocol("WM_DELETE_WINDOW", self.cerrar)
 
     def mostrar_avanzadas(self):
+        """Muestra u oculta las herramientas de agrupación y auditoría."""
+
         if self.avanzadas.get():
-            self.acciones_avanzadas.pack(fill="x", padx=10, pady=3, before=self.progreso)
+            self.acciones_avanzadas.pack(
+                fill="x", padx=10, pady=3, before=self.progreso
+            )
         else:
             self.acciones_avanzadas.pack_forget()
         self.dibujar()
 
     def ayuda(self):
+        """Explica cómo revisar las campañas y corregir una respuesta."""
+
         messagebox.showinfo(
             "Una respuesta por año",
             "El orden es 2020 → 2017 → 2014 → siguiente emplazamiento. "
@@ -443,9 +512,13 @@ class VisorSeguimiento:
         )
 
     def recargar(self):
+        """Actualiza los casos y observaciones visibles según los filtros."""
+
         self.sitios = {
             s["id"]: s
-            for s in self.almacen.filas("SELECT * FROM emplazamientos ORDER BY municipio,id")
+            for s in self.almacen.filas(
+                "SELECT * FROM emplazamientos ORDER BY municipio,id"
+            )
         }
         self.observaciones = {
             (o["emplazamiento"], o["anio"]): o
@@ -497,7 +570,9 @@ class VisorSeguimiento:
             if sid in self.provisionales and not self.incluir_provisionales.get():
                 continue
             self.filtrados.append(sid)
-            decision = self.observaciones.get((sid, anio), {}).get("decision", "Pendiente")
+            decision = self.observaciones.get((sid, anio), {}).get(
+                "decision", "Pendiente"
+            )
             estado = self.filtros["Estado"].get()
             if (
                 estado == "Pendiente"
@@ -516,18 +591,31 @@ class VisorSeguimiento:
             ):
                 continue
             self.visibles.append(sid)
-            self.tabla.insert("", "end", iid=sid, text=sid, values=(s["municipio"], decision))
+            self.tabla.insert(
+                "", "end", iid=sid, text=sid, values=(s["municipio"], decision)
+            )
         principales = {
-            sid for sid, s in self.sitios.items() if s["activo"] and sid not in self.provisionales
+            sid
+            for sid, s in self.sitios.items()
+            if s["activo"] and sid not in self.provisionales
         }
         total = len(principales) * len(self.historicos)
-        hechas = sum(s in principales for s, a in self.observaciones if a in self.historicos)
-        referencias = sum(self.sitios[s]["activo"] for s, a in self.observaciones if a == 2023)
+        hechas = sum(
+            s in principales for s, a in self.observaciones if a in self.historicos
+        )
+        referencias = sum(
+            self.sitios[s]["activo"] for s, a in self.observaciones if a == 2023
+        )
         self.progreso.config(
-            text=f"Históricos localizados: {hechas}/{total} guardados ({100 * hechas / total if total else 0:.1f} %). Pendientes: {total - hechas}. Referencias 2023 revisadas: {referencias}. "
-            f"Zonas provisionales apartadas: {sum(self.sitios[s]['activo'] for s in self.provisionales)}. "
-            "OBJETIVO naranja; otros casos azules; Catastro amarillo opcional. Rueda: ampliar. Arrastrar: desplazar ambas fotos. "
-            "La ausencia de predicción no significa ausencia de paneles. La recuperación regional sigue pendiente."
+            text=f"Históricos localizados: {hechas}/{total} guardados "
+            f"({100 * hechas / total if total else 0:.1f} %). "
+            f"Pendientes: {total - hechas}. Referencias 2023 revisadas: {referencias}. "
+            "Zonas provisionales apartadas: "
+            f"{sum(self.sitios[s]['activo'] for s in self.provisionales)}. "
+            "OBJETIVO naranja; otros casos azules; Catastro amarillo opcional. "
+            "Rueda: ampliar. Arrastrar: desplazar ambas fotos. "
+            "La ausencia de predicción no significa ausencia de paneles. "
+            "La recuperación regional sigue pendiente."
         )
         if self.lote_terminado and not self.preparando:
             self.anunciar_fin_lote()
@@ -535,8 +623,17 @@ class VisorSeguimiento:
             self.programar_reserva()
 
     def candidatas_pendientes(self):
-        """Selecciona casos activos con históricos pendientes respetando los filtros."""
-        visibles = self.filtrados if self.filtros["Estado"].get() == "Pendiente" else self.visibles
+        """Selecciona casos activos con históricos pendientes respetando los filtros.
+
+        Returns:
+            list[str]: Emplazamientos con alguna campaña histórica pendiente.
+        """
+
+        visibles = (
+            self.filtrados
+            if self.filtros["Estado"].get() == "Pendiente"
+            else self.visibles
+        )
         muestra = self.almacen.meta("muestra_auditoria", [])
         preferidos = {
             m["emplazamiento"]
@@ -550,7 +647,9 @@ class VisorSeguimiento:
             if self.sitios[s]["activo"]
             and any((s, a) not in self.observaciones for a in self.historicos)
         ]
-        ventanas_preferidas = {self.sitios[s]["ventana"] for s in preferidos if s in self.sitios}
+        ventanas_preferidas = {
+            self.sitios[s]["ventana"] for s in preferidos if s in self.sitios
+        }
         return sorted(
             candidatas,
             key=lambda s: (
@@ -561,34 +660,78 @@ class VisorSeguimiento:
         )
 
     def candidatas_preparadas(self):
-        """Reutiliza fotos existentes; los errores conservados se pueden marcar no evaluables."""
+        """Reutiliza fotos existentes; los errores conservados se pueden marcar no
+        evaluables.
+
+        Returns:
+            list[str]: Casos pendientes con recursos o errores registrados en cada
+                campaña.
+        """
+
         recursos = {
             (r["ventana"], r["anio"]): r
-            for r in self.almacen.filas("SELECT ventana,anio,imagen,error FROM recursos")
-        }
-        return [
-            s
-            for s in self.candidatas_pendientes()
-            if all(
-                r and (r["imagen"] and Path(r["imagen"]).exists() or r["error"])
-                for a in self.anios
-                for r in (recursos.get((self.sitios[s]["ventana"], a)),)
+            for r in self.almacen.filas(
+                "SELECT ventana,anio,imagen,error FROM recursos"
             )
-        ]
+        }
+        preparadas = []
+        for sitio in self.candidatas_pendientes():
+            ventana = self.sitios[sitio]["ventana"]
+            if self._ventana_preparada(ventana, recursos):
+                preparadas.append(sitio)
+        return preparadas
+
+    def _ventana_preparada(self, ventana: str, recursos: dict) -> bool:
+        """Comprueba si cada campaña tiene una foto disponible o un error registrado.
+
+        Args:
+            ventana: Identificador del recorte compartido.
+            recursos: Recursos consultados por ventana y año.
+
+        Returns:
+            bool: True si la ventana está lista para la revisión de todas las campañas.
+        """
+
+        for anio in self.anios:
+            recurso = recursos.get((ventana, anio))
+            if not recurso:
+                return False
+            foto_disponible = recurso["imagen"] and Path(recurso["imagen"]).exists()
+            if not foto_disponible and not recurso["error"]:
+                return False
+        return True
 
     def renovar_cola(self):
-        """Continúa otro lote preparado sin repetir casos terminados ni descargar fotos."""
+        """Continúa otro lote preparado sin repetir casos terminados ni descargar fotos.
+
+        Returns:
+            bool: True si quedan casos preparados para revisar.
+        """
+
         candidatas = self.candidatas_preparadas()
         ventanas = set(
-            list(dict.fromkeys(self.sitios[s]["ventana"] for s in candidatas))[: self.limite]
+            list(dict.fromkeys(self.sitios[s]["ventana"] for s in candidatas))[
+                : self.limite
+            ]
         )
         self.cola = [s for s in candidatas if self.sitios[s]["ventana"] in ventanas]
         return bool(self.cola)
 
     def sitios_sin_fotos(self, incluir_fallidos=True):
-        """Incluye ubicaciones sin procesar para descubrir objetivos, sin revisar negativos."""
+        """Incluye ubicaciones sin procesar para descubrir objetivos, sin revisar
+        negativos.
+
+        Args:
+            incluir_fallidos: Incluye recortes con errores para permitir reintentos.
+
+        Returns:
+            list[str]: Emplazamientos que necesitan fotos dentro de los filtros
+                actuales.
+        """
+
         recursos = {
-            (r["ventana"], r["anio"]): r for r in self.almacen.filas("SELECT * FROM recursos")
+            (r["ventana"], r["anio"]): r
+            for r in self.almacen.filas("SELECT * FROM recursos")
         }
         candidatas = set(self.candidatas_pendientes())
         if self.filtros["Estado"].get() in ("Todos", "Pendiente"):
@@ -597,28 +740,30 @@ class VisorSeguimiento:
         for sid in sorted(candidatas, key=lambda s: (self.sitios[s]["ventana"], s)):
             sitio = self.sitios[sid]
             ventana = sitio["ventana"]
-            if not sitio["activo"] or all((sid, a) in self.observaciones for a in self.historicos):
+            if not sitio["activo"] or all(
+                (sid, a) in self.observaciones for a in self.historicos
+            ):
                 continue
             if not incluir_fallidos and ventana in self.fallos_anticipacion:
                 continue
             referencia = recursos.get((ventana, 2023), {})
             if sid in self.provisionales and not self.incluir_provisionales.get():
                 procesada = referencia.get("error") or (
-                    referencia.get("prediccion") and Path(referencia["prediccion"]).exists()
+                    referencia.get("prediccion")
+                    and Path(referencia["prediccion"]).exists()
                 )
                 if procesada:
                     continue
             # Un legado sin componentes necesita localizar primero el objetivo de 2023.
-            if (sid not in self.provisionales or referencia.get("prediccion")) and all(
-                r and (r["imagen"] and Path(r["imagen"]).exists() or r["error"])
-                for a in self.anios
-                for r in (recursos.get((ventana, a)),)
-            ):
+            localizado = sid not in self.provisionales or referencia.get("prediccion")
+            if localizado and self._ventana_preparada(ventana, recursos):
                 continue
             pendientes.append(sid)
         return pendientes
 
     def programar_reserva(self):
+        """Programa la preparación anticipada cuando queda capacidad en la reserva."""
+
         if (
             self.config.get("precarga", True)
             and not self.anticipando
@@ -629,6 +774,7 @@ class VisorSeguimiento:
 
     def mantener_reserva(self):
         """Prepara un máximo de un lote por delante sin bloquear la revisión actual."""
+
         self.evento_anticipacion = None
         if self.detener_anticipacion.is_set() or self.anticipando or self.preparando:
             return
@@ -659,6 +805,8 @@ class VisorSeguimiento:
         solo_localizados = not self.incluir_provisionales.get()
 
         def anticipar():
+            """Prepara la reserva de fotos con una conexión SQLite propia."""
+
             try:
                 from paneles_solares.etiquetado.preparar_seguimiento import (
                     preparar_lote,
@@ -678,7 +826,13 @@ class VisorSeguimiento:
                     )
                 finally:
                     almacen.cerrar()
-            except Exception as error:  # noqa: BLE001 -- Recuperar el control sin perder respuestas.
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                sqlite3.Error,
+                requests.RequestException,
+            ) as error:
                 mensajes.put(("error", str(error)))
             else:
                 mensajes.put(("fin", None))
@@ -689,13 +843,16 @@ class VisorSeguimiento:
 
     def comprobar_anticipacion(self):
         """Publica ventanas completas sin mover el caso que el usuario está revisando."""
+
         self.evento_anticipacion = None
         refrescar, terminado, error = False, False, None
         try:
             while True:
                 tipo, texto = self.mensajes_anticipacion.get_nowait()
                 if tipo == "estado":
-                    self.estado_carga.config(text=f"Preparando siguientes fotos: {texto}")
+                    self.estado_carga.config(
+                        text=f"Preparando siguientes fotos: {texto}"
+                    )
                 elif tipo == "ventana":
                     refrescar = True
                 else:
@@ -709,11 +866,16 @@ class VisorSeguimiento:
         if refrescar:
             self.recargar()
             if terminado:
-                incompletas = {self.sitios[s]["ventana"] for s in self.sitios_sin_fotos()}
+                incompletas = {
+                    self.sitios[s]["ventana"] for s in self.sitios_sin_fotos()
+                }
                 self.fallos_anticipacion.update(self.ventanas_anticipadas & incompletas)
                 self.estado_carga.config(
                     text=(
-                        f"Carga pendiente: {error}. Puedes seguir con las fotos disponibles; Siguiente reintenta al llegar al final."
+                        (
+                            f"Carga pendiente: {error}. Puedes seguir con las fotos "
+                            f"disponibles; Siguiente reintenta al llegar al final."
+                        )
                         if error
                         else "Siguientes fotos preparadas."
                     )
@@ -729,19 +891,37 @@ class VisorSeguimiento:
             self.programar_reserva()
 
     def seleccionar(self, _):
+        """Abre el emplazamiento seleccionado en la tabla.
+
+        Args:
+            _: Evento de Tkinter que no se utiliza.
+        """
+
         seleccion = self.tabla.selection()
         if seleccion and (self.actual is None or seleccion[0] != self.actual):
             sitio = seleccion[0]
-            pendientes = [a for a in self.historicos if (sitio, a) not in self.observaciones]
+            pendientes = [
+                a for a in self.historicos if (sitio, a) not in self.observaciones
+            ]
             self.mostrar(sitio, pendientes[0] if pendientes else int(self.anio.get()))
 
     def mostrar(self, sitio, anio, guardar_actual=True):
+        """Carga el emplazamiento y la campaña sin mezclar sus borradores.
+
+        Args:
+            sitio: Identificador del emplazamiento que se revisa.
+            anio: Año de la campaña observada.
+            guardar_actual: Guarda el borrador del caso anterior antes de cambiar.
+        """
+
         self.seleccionando_candidato = False
         if guardar_actual:
             self.guardar_borrador()
         cambio_sitio = self.actual != sitio
         if anio == 2023:
-            pendientes = [a for a in self.historicos if (sitio, a) not in self.observaciones]
+            pendientes = [
+                a for a in self.historicos if (sitio, a) not in self.observaciones
+            ]
             anio = pendientes[0] if pendientes else self.historicos[0]
         self.lote_terminado = False
         self.boton_siguiente.config(text="Siguiente →")
@@ -779,9 +959,20 @@ class VisorSeguimiento:
             self.programar_reserva()
 
     def alcance_inicial(self, sitio):
-        """Distingue paneles cortados del antiguo aviso de edificio fuera del recorte."""
+        """Distingue paneles cortados del antiguo aviso de edificio fuera del recorte.
+
+        Args:
+            sitio: Identificador del emplazamiento que se revisa.
+
+        Returns:
+            str: Alcance inicial según la cobertura del objetivo localizado.
+        """
+
         componentes = self.almacen.filas(
-            "SELECT c.borde,c.geometria FROM componentes c JOIN miembros m ON m.componente=c.id WHERE m.emplazamiento=? AND c.anio=2023",
+            (
+                "SELECT c.borde,c.geometria FROM componentes c JOIN miembros m ON "
+                "m.componente=c.id WHERE m.emplazamiento=? AND c.anio=2023"
+            ),
             (sitio,),
         )
         parcial = (
@@ -811,10 +1002,19 @@ class VisorSeguimiento:
 
     def cambiar_anio(self):
         # El borrador del año anterior ya quedó guardado después de cada edición.
+        """Cambia de campaña conservando el zoom y el borrador anterior."""
+
         if self.actual:
             self.mostrar(self.actual, int(self.anio.get()), guardar_actual=False)
 
     def siguiente(self, tras_respuesta=False, cargar=True):
+        """Abre la siguiente campaña o emplazamiento pendiente de la cola.
+
+        Args:
+            tras_respuesta: Indica que se acaba de guardar una decisión.
+            cargar: Permite preparar otro lote si faltan fotos.
+        """
+
         if self.preparando:
             return
         self.cancelar_candidato()
@@ -825,12 +1025,18 @@ class VisorSeguimiento:
                     self.mostrar(self.actual, anio)
                     return
         # Termina los históricos de cada sitio antes de pasar al siguiente.
-        visibles = self.filtrados if self.filtros["Estado"].get() == "Pendiente" else self.visibles
+        visibles = (
+            self.filtrados
+            if self.filtros["Estado"].get() == "Pendiente"
+            else self.visibles
+        )
         orden = [s for s in self.cola if s in visibles]
         if self.actual:
             ventana = self.sitios[self.actual]["ventana"]
             vecinos = [
-                s for s in self.candidatas_preparadas() if self.sitios[s]["ventana"] == ventana
+                s
+                for s in self.candidatas_preparadas()
+                if self.sitios[s]["ventana"] == ventana
             ]
             orden = (
                 ([self.actual] if self.actual in orden else [])
@@ -852,7 +1058,9 @@ class VisorSeguimiento:
             return
         if self.renovar_cola():
             sitio = self.cola[0]
-            anio = next(a for a in self.historicos if (sitio, a) not in self.observaciones)
+            anio = next(
+                a for a in self.historicos if (sitio, a) not in self.observaciones
+            )
             self.mostrar(sitio, anio)
             return
         self.lote_terminado = True
@@ -869,12 +1077,21 @@ class VisorSeguimiento:
             self.cargar_siguiente_lote()
 
     def anunciar_fin_lote(self):
-        if self.config.get("precarga", True) and (self.anticipando or self.sitios_sin_fotos()):
-            texto = "Preparando las siguientes fotos… Se abrirán automáticamente; tus respuestas están guardadas."
+        """Indica el estado del lote y cómo continuar con los filtros actuales."""
+
+        if self.config.get("precarga", True) and (
+            self.anticipando or self.sitios_sin_fotos()
+        ):
+            texto = (
+                "Preparando las siguientes fotos… Se abrirán automáticamente; tus "
+                "respuestas están guardadas."
+            )
             self.boton_siguiente.config(
                 text="Preparando…" if self.anticipando else "Reintentar carga →"
             )
-            self.boton_siguiente.state(["disabled"] if self.anticipando else ["!disabled"])
+            self.boton_siguiente.state(
+                ["disabled"] if self.anticipando else ["!disabled"]
+            )
             self.paso.config(text=texto)
             return
         if self.candidatas_pendientes():
@@ -890,20 +1107,33 @@ class VisorSeguimiento:
             texto = "No quedan casos pendientes con estos filtros. Cambia los filtros para seguir."
             self.boton_siguiente.state(["disabled"])
         else:
-            texto = "Revisión de los casos localizados terminada. Las zonas provisionales siguen apartadas."
+            texto = (
+                "Revisión de los casos localizados terminada. Las zonas provisionales "
+                "siguen apartadas."
+            )
             self.boton_siguiente.state(["disabled"])
         self.paso.config(text=texto)
 
     def cargar_siguiente_lote(self):
         """Prepara un lote pequeño en segundo plano y abre su primer histórico pendiente."""
+
         self.guardar_borrador()
         candidatas = self.candidatas_pendientes()
-        ventanas = list(dict.fromkeys(self.sitios[s]["ventana"] for s in candidatas))[: self.limite]
+        ventanas = list(dict.fromkeys(self.sitios[s]["ventana"] for s in candidatas))[
+            : self.limite
+        ]
         sitios = [s for s in candidatas if self.sitios[s]["ventana"] in ventanas]
         if not sitios:
             return
 
         def preparar(almacen, informar):
+            """Ejecuta la preparación solicitada y comunica su avance al visor.
+
+            Args:
+                almacen: Base de seguimiento con sus observaciones y recursos.
+                informar: Función que recibe los mensajes de avance.
+            """
+
             from paneles_solares.etiquetado.preparar_seguimiento import preparar_lote
 
             preparar_lote(almacen, self.config, self.limite, sitios, progreso=informar)
@@ -911,7 +1141,14 @@ class VisorSeguimiento:
         self.iniciar_carga(preparar, "Cargando siguientes fotos…")
 
     def iniciar_carga(self, tarea, descripcion, conservar_caso=False):
-        """Mantiene el visor disponible durante descargas y conserva cada avance en SQLite."""
+        """Mantiene el visor disponible durante descargas y conserva cada avance en SQLite.
+
+        Args:
+            tarea: Función que prepara recursos con una conexión propia.
+            descripcion: Texto de avance que se muestra durante la preparación.
+            conservar_caso: Mantiene el emplazamiento y la campaña al terminar.
+        """
+
         self.guardar_borrador()
         self.preparando = True
         self.conservar_caso = conservar_caso
@@ -924,13 +1161,24 @@ class VisorSeguimiento:
             boton.state(["disabled"])
 
         def preparar():
+            """Ejecuta la preparación solicitada y comunica su avance al visor."""
+
             try:
                 almacen = AlmacenSeguimiento(self.almacen.ruta)
                 try:
-                    tarea(almacen, lambda texto: self.mensajes_preparacion.put(("estado", texto)))
+                    tarea(
+                        almacen,
+                        lambda texto: self.mensajes_preparacion.put(("estado", texto)),
+                    )
                 finally:
                     almacen.cerrar()
-            except Exception as error:  # noqa: BLE001 -- El visor debe recuperar el control del hilo.
+            except (
+                OSError,
+                ValueError,
+                RuntimeError,
+                sqlite3.Error,
+                requests.RequestException,
+            ) as error:
                 self.mensajes_preparacion.put(("error", str(error)))
             else:
                 self.mensajes_preparacion.put(("fin", None))
@@ -939,6 +1187,8 @@ class VisorSeguimiento:
         self.evento_preparacion = self.raiz.after(100, self.comprobar_preparacion)
 
     def comprobar_preparacion(self):
+        """Recoge el resultado de la preparación y restablece los controles del visor."""
+
         self.evento_preparacion = None
         try:
             while True:
@@ -959,7 +1209,9 @@ class VisorSeguimiento:
                 else:
                     self.siguiente(cargar=False)
                 if tipo == "error":
-                    messagebox.showerror("No se pudieron cargar las fotos", texto, parent=self.raiz)
+                    messagebox.showerror(
+                        "No se pudieron cargar las fotos", texto, parent=self.raiz
+                    )
                 self.raiz.focus_set()
                 self.programar_reserva()
                 return
@@ -967,8 +1219,11 @@ class VisorSeguimiento:
             self.evento_preparacion = self.raiz.after(100, self.comprobar_preparacion)
 
     def anterior(self):
+        """Abre el emplazamiento anterior para consultar o corregir respuestas."""
+
         acciones = self.almacen.filas(
-            "SELECT objetivo,anio FROM acciones WHERE tipo IN ('observacion','comparacion') AND deshecha=0 ORDER BY id DESC"
+            "SELECT objetivo,anio FROM acciones WHERE tipo IN "
+            "('observacion','comparacion') AND deshecha=0 ORDER BY id DESC"
         )
         for a in acciones:
             if (a["objetivo"], a["anio"]) != (self.actual, int(self.anio.get())) and a[
@@ -978,10 +1233,18 @@ class VisorSeguimiento:
                 return
         if self.actual in self.visibles:
             self.mostrar(
-                self.visibles[max(0, self.visibles.index(self.actual) - 1)], int(self.anio.get())
+                self.visibles[max(0, self.visibles.index(self.actual) - 1)],
+                int(self.anio.get()),
             )
 
     def _recursos_sitio(self):
+        """Lee las fotos y predicciones del emplazamiento y su contexto.
+
+        Returns:
+            list[dict]: Fotos y predicciones del caso actual y de sus recortes de
+                contexto.
+        """
+
         s = self.sitios[self.actual]
         ids = {s["ventana"]}
         ids.update(
@@ -993,35 +1256,51 @@ class VisorSeguimiento:
         ids.update(
             c["ventana"]
             for c in self.almacen.filas(
-                "SELECT c.ventana FROM componentes c JOIN miembros m ON c.id=m.componente WHERE m.emplazamiento=?",
+                (
+                    "SELECT c.ventana FROM componentes c JOIN miembros m ON "
+                    "c.id=m.componente WHERE m.emplazamiento=?"
+                ),
                 (self.actual,),
             )
         )
         return self.almacen.filas(
-            "SELECT r.*,v.xmin,v.ymin,v.xmax,v.ymax FROM recursos r JOIN ventanas v ON r.ventana=v.id WHERE r.ventana IN ("
+            (
+                "SELECT r.*,v.xmin,v.ymin,v.xmax,v.ymax FROM recursos r JOIN ventanas v"
+                " ON r.ventana=v.id WHERE r.ventana IN ("
+            )
             + ",".join("?" for _ in ids)
             + ")",
             tuple(ids),
         )
 
     def dibujar(self):
+        """Dibuja ambas campañas con el mismo encuadre y las capas elegidas."""
+
         if self.actual is None:
             return
         s = self.sitios[self.actual]
         anio = int(self.anio.get())
         o = self.observaciones.get((self.actual, anio), {})
         self.titulo.config(
-            text=f"{self.actual} · {s['municipio']} · OBSERVAR {anio} · {NOMBRES.get(o.get('decision'), 'Pendiente')} · agrupación {s['agrupacion']}"
+            text=(
+                f"{self.actual} · {s['municipio']} · OBSERVAR {anio} · "
+                f"{NOMBRES.get(o.get('decision'), 'Pendiente')} · agrupación "
+                f"{s['agrupacion']}"
+            )
         )
         ref = self.observaciones.get((self.actual, 2023))
         recursos = self._recursos_sitio()
         foto_ref = any(
-            r["anio"] == 2023 and r["imagen"] and Path(r["imagen"]).exists() for r in recursos
+            r["anio"] == 2023 and r["imagen"] and Path(r["imagen"]).exists()
+            for r in recursos
         )
         provisional = (
             s["origen"] in ("piloto", "inventario_2023")
             and not self.almacen.db.execute(
-                "SELECT 1 FROM miembros m JOIN componentes c ON c.id=m.componente WHERE m.emplazamiento=? AND c.anio=2023",
+                (
+                    "SELECT 1 FROM miembros m JOIN componentes c ON c.id=m.componente "
+                    "WHERE m.emplazamiento=? AND c.anio=2023"
+                ),
                 (self.actual,),
             ).fetchone()
         )
@@ -1038,22 +1317,34 @@ class VisorSeguimiento:
         self.aviso_referencia.config(
             text="Guardado. Cámbialo solo si necesitas corregirlo."
             if ref
-            else "El primer clic confirma esta respuesta de 2023; cámbiala si no coincide con la foto."
+            else (
+                "El primer clic confirma esta respuesta de 2023; cámbiala si no "
+                "coincide con la foto."
+            )
         )
-        if not self.lote_terminado and not self.preparando and not self.seleccionando_candidato:
+        if (
+            not self.lote_terminado
+            and not self.preparando
+            and not self.seleccionando_candidato
+        ):
             texto = f"Responde a {anio}: ¿hay paneles? · Un clic guarda y pasa al año anterior"
             if ref is None:
                 texto = f"Este clic guarda 2023: {NOMBRES[estado_ref]} + tu respuesta a {anio}"
             self.paso.config(text=texto)
         estados = " · ".join(
-            f"{a}: {NOMBRES.get(self.observaciones.get((self.actual, a), {}).get('decision'), 'pendiente')}"
+            (
+                f"{a}: "
+                f"{NOMBRES.get(self.observaciones.get((self.actual, a), {}).get('decision'), 'pendiente')}"
+            )
             for a in self.anios
         )
         self.aviso.config(text=f"{self.ultimo_guardado}\n{estados}".strip())
         for boton in self.botones_decision.values():
             boton.state(
                 ["disabled"]
-                if self.lote_terminado or self.preparando or self.seleccionando_candidato
+                if self.lote_terminado
+                or self.preparando
+                or self.seleccionando_candidato
                 else ["!disabled"]
             )
         self.boton_cambios.state(["disabled"] if anio == 2023 else ["!disabled"])
@@ -1062,18 +1353,28 @@ class VisorSeguimiento:
             "Si la instalación sigue fuera de la foto, usa Más contexto o guarda alcance zona_visible. "
             "5: no hay paneles en ambas fotos. Para corregir solo 2023, usa su selector."
             + (
-                " Estás revisando zona_visible; si ya ves todo el emplazamiento, cambia Alcance a emplazamiento_completo."
+                (
+                    " Estás revisando zona_visible; si ya ves todo el emplazamiento, "
+                    "cambia Alcance a emplazamiento_completo."
+                )
                 if self.alcance.get() == "zona_visible"
                 else ""
             )
             + (
-                f" Referencias Catastro: {s['edificios']}; cubiertas: {s['cubiertas']}; avisos: {s['etiquetas']}."
+                (
+                    f" Referencias Catastro: {s['edificios']}; cubiertas: "
+                    f"{s['cubiertas']}; avisos: {s['etiquetas']}."
+                )
                 if self.avanzadas.get()
                 else ""
             )
             + (
-                " Sugerencia por posición: cubierta catastrada; compruébala en la foto antes de cambiar el soporte."
-                if s["soporte"] == "desconocido" and s["relacion"] == "interseccion_clara"
+                (
+                    " Sugerencia por posición: cubierta catastrada; compruébala en la "
+                    "foto antes de cambiar el soporte."
+                )
+                if s["soporte"] == "desconocido"
+                and s["relacion"] == "interseccion_clara"
                 else ""
             )
         )
@@ -1123,8 +1424,12 @@ class VisorSeguimiento:
                     and Path(r["prediccion"]).exists()
                 ):
                     mascara = np.asarray(Image.open(r["prediccion"])) >= 32768
-                    capa = Image.fromarray(mascara.astype("uint8") * 100).resize(imagen.size)
-                    imagen = Image.composite(Image.new("RGB", imagen.size, "#35ff93"), imagen, capa)
+                    capa = Image.fromarray(mascara.astype("uint8") * 100).resize(
+                        imagen.size
+                    )
+                    imagen = Image.composite(
+                        Image.new("RGB", imagen.size, "#35ff93"), imagen, capa
+                    )
                 base.paste(
                     imagen.resize((w, h), Image.Resampling.BILINEAR),
                     (
@@ -1143,21 +1448,29 @@ class VisorSeguimiento:
                     dibujo, from_wkb(s["geometria"]), extension, base.size, "#9da8b2", 2
                 )
                 componentes = self.almacen.filas(
-                    "SELECT c.* FROM componentes c JOIN miembros m ON c.id=m.componente WHERE m.emplazamiento=?",
+                    (
+                        "SELECT c.* FROM componentes c JOIN miembros m ON "
+                        "c.id=m.componente WHERE m.emplazamiento=?"
+                    ),
                     (self.actual,),
                 )
                 for c in componentes:
                     trazar_geometria(
-                        dibujo, from_wkb(c["geometria"]), extension, base.size, "#ff923e", 3
+                        dibujo,
+                        from_wkb(c["geometria"]),
+                        extension,
+                        base.size,
+                        "#ff923e",
+                        3,
                     )
             ancho, alto = max(panel.winfo_width(), 100), max(panel.winfo_height(), 100)
             lado = min(ancho, alto - 30)
             paso = 900 / self.zoom
             cx, cy = self.centro[0] * 900, self.centro[1] * 900
             foto = ImageTk.PhotoImage(
-                base.crop((cx - paso / 2, cy - paso / 2, cx + paso / 2, cy + paso / 2)).resize(
-                    (lado, lado), Image.Resampling.BILINEAR
-                )
+                base.crop(
+                    (cx - paso / 2, cy - paso / 2, cx + paso / 2, cy + paso / 2)
+                ).resize((lado, lado), Image.Resampling.BILINEAR)
             )
             self.fotos.append(foto)
             panel.delete("all")
@@ -1166,7 +1479,10 @@ class VisorSeguimiento:
             panel.create_text(
                 12,
                 14,
-                text=f"{campania} · {'RESPONDE A ESTA FOTO' if panel == self.paneles[1] else 'Referencia para comparar'}"
+                text=(
+                    f"{campania} · "
+                    f"{'RESPONDE A ESTA FOTO' if panel == self.paneles[1] else 'Referencia para comparar'}"
+                )
                 + (" · IMAGEN NO DISPONIBLE" if not disponibles else ""),
                 fill="white",
                 anchor="w",
@@ -1174,7 +1490,19 @@ class VisorSeguimiento:
             )
 
     def marcar_objetivos(self, panel, extension, paso, cx, cy, lado, ancho, alto):
-        """Dibuja marcos y rótulos constantes, compartiendo coordenadas entre campañas."""
+        """Dibuja marcos y rótulos constantes, compartiendo coordenadas entre campañas.
+
+        Args:
+            panel: Canvas donde se representa la campaña.
+        extension: Límites métricos del mosaico: xmin, ymin, xmax e ymax.
+            paso: Metros representados por píxel del mosaico.
+            cx: Coordenada horizontal del centro visible en el mosaico.
+            cy: Coordenada vertical del centro visible en el mosaico.
+            lado: Lado del recorte visible antes de redimensionarlo.
+        ancho: Ancho del canvas en píxeles.
+        alto: Alto del canvas en píxeles.
+        """
+
         xmin, ymin, xmax, ymax = extension
         izquierda, arriba = (ancho - lado) / 2, (alto + 30 - lado) / 2
         visibles = box(
@@ -1189,25 +1517,44 @@ class VisorSeguimiento:
             if geometria.is_empty:
                 continue
             partes = geometria.geoms if hasattr(geometria, "geoms") else [geometria]
-            for indice, parte in enumerate(sorted(partes, key=lambda g: g.area, reverse=True)):
+            for indice, parte in enumerate(
+                sorted(partes, key=lambda g: g.area, reverse=True)
+            ):
                 x0, y0, x1, y1 = parte.bounds
-                x0 = izquierda + ((x0 - xmin) / (xmax - xmin) * 900 - cx + paso / 2) / paso * lado
-                x1 = izquierda + ((x1 - xmin) / (xmax - xmin) * 900 - cx + paso / 2) / paso * lado
-                top = arriba + ((ymax - y1) / (ymax - ymin) * 900 - cy + paso / 2) / paso * lado
-                bottom = arriba + ((ymax - y0) / (ymax - ymin) * 900 - cy + paso / 2) / paso * lado
+                x0 = (
+                    izquierda
+                    + ((x0 - xmin) / (xmax - xmin) * 900 - cx + paso / 2) / paso * lado
+                )
+                x1 = (
+                    izquierda
+                    + ((x1 - xmin) / (xmax - xmin) * 900 - cx + paso / 2) / paso * lado
+                )
+                top = (
+                    arriba
+                    + ((ymax - y1) / (ymax - ymin) * 900 - cy + paso / 2) / paso * lado
+                )
+                bottom = (
+                    arriba
+                    + ((ymax - y0) / (ymax - ymin) * 900 - cy + paso / 2) / paso * lado
+                )
                 x0, x1 = max(izquierda, x0 - 5), min(izquierda + lado, x1 + 5)
                 top, bottom = max(arriba, top - 5), min(arriba + lado, bottom + 5)
                 seleccionado = objetivo["seleccionado"]
                 provisional = objetivo["provisional"]
-                color = "#9da8b2" if provisional else "#ff923e" if seleccionado else "#40d9ff"
-                etiqueta = (
-                    "ZONA PROVISIONAL"
-                    if provisional
-                    else "OBJETIVO"
-                    if seleccionado
-                    else "OTRO CASO"
+                if provisional:
+                    color = "#9da8b2"
+                    etiqueta = "ZONA PROVISIONAL"
+                elif seleccionado:
+                    color = "#ff923e"
+                    etiqueta = "OBJETIVO"
+                else:
+                    color = "#40d9ff"
+                    etiqueta = "OTRO CASO"
+                tags = (
+                    "localizador",
+                    "objetivo" if seleccionado else "otro_caso",
+                    objetivo["id"],
                 )
-                tags = ("localizador", "objetivo" if seleccionado else "otro_caso", objetivo["id"])
                 panel.create_rectangle(
                     x0,
                     top,
@@ -1257,6 +1604,8 @@ class VisorSeguimiento:
             )
 
     def centrar_objetivo(self):
+        """Ajusta el encuadre para mantener visible el objetivo seleccionado."""
+
         if not self.actual or not self.objetivos:
             return
         objetivo = next(o for o in self.objetivos if o["seleccionado"])
@@ -1275,10 +1624,22 @@ class VisorSeguimiento:
         self.dibujar()
 
     def iniciar_arrastre(self, evento):
+        """Registra el inicio de un posible desplazamiento de la imagen.
+
+        Args:
+            evento: Evento de ratón o teclado de Tkinter.
+        """
+
         self.arrastre = self.inicio_arrastre = (evento.x, evento.y)
         self.movimiento_arrastre = False
 
     def elegir_objetivo(self, evento):
+        """Selecciona el objetivo pulsado sin confundir el clic con un arrastre.
+
+        Args:
+            evento: Evento de ratón o teclado de Tkinter.
+        """
+
         self.arrastre = None
         if self.movimiento_arrastre:
             return
@@ -1291,31 +1652,57 @@ class VisorSeguimiento:
             zonas = [marca["rectangulo"]]
             if marca["rotulo"]:
                 zonas.append(marca["rotulo"])
-            if any(x0 <= evento.x <= x1 and y0 <= evento.y <= y1 for x0, y0, x1, y1 in zonas):
+            if any(
+                x0 <= evento.x <= x1 and y0 <= evento.y <= y1
+                for x0, y0, x1, y1 in zonas
+            ):
                 sitio = marca["id"]
                 if sitio not in self.cola:
-                    posicion = self.cola.index(self.actual) + 1 if self.actual in self.cola else 0
+                    posicion = (
+                        self.cola.index(self.actual) + 1
+                        if self.actual in self.cola
+                        else 0
+                    )
                     self.cola.insert(posicion, sitio)
-                pendientes = [a for a in self.historicos if (sitio, a) not in self.observaciones]
-                self.mostrar(sitio, pendientes[0] if pendientes else int(self.anio.get()))
+                pendientes = [
+                    a for a in self.historicos if (sitio, a) not in self.observaciones
+                ]
+                self.mostrar(
+                    sitio, pendientes[0] if pendientes else int(self.anio.get())
+                )
                 self.raiz.focus_set()
                 return
 
     def ampliar(self, evento):
+        """Ajusta el zoom de ambas imágenes con la rueda del ratón.
+
+        Args:
+            evento: Evento de ratón o teclado de Tkinter.
+        """
+
         self.zoom = min(8.0, max(1.0, self.zoom * (1.25 if evento.delta > 0 else 0.8)))
         self.dibujar()
 
     def desplazar(self, evento):
+        """Desplaza el centro visible de ambas campañas durante el arrastre.
+
+        Args:
+            evento: Evento de ratón o teclado de Tkinter.
+        """
+
         if self.arrastre:
             if (
                 self.inicio_arrastre
                 and max(
-                    abs(evento.x - self.inicio_arrastre[0]), abs(evento.y - self.inicio_arrastre[1])
+                    abs(evento.x - self.inicio_arrastre[0]),
+                    abs(evento.y - self.inicio_arrastre[1]),
                 )
                 > 4
             ):
                 self.movimiento_arrastre = True
-            lado = max(100, min(evento.widget.winfo_width(), evento.widget.winfo_height() - 30))
+            lado = max(
+                100, min(evento.widget.winfo_width(), evento.widget.winfo_height() - 30)
+            )
             self.centro = [
                 self.centro[0] - (evento.x - self.arrastre[0]) / lado / self.zoom,
                 self.centro[1] - (evento.y - self.arrastre[1]) / lado / self.zoom,
@@ -1324,15 +1711,30 @@ class VisorSeguimiento:
             self.dibujar()
 
     def restablecer(self):
+        """Restablece el zoom y el centro de las imágenes."""
+
         self.zoom, self.centro = 1.0, [0.5, 0.5]
         self.dibujar()
 
     def atajo(self, evento, decision):
+        """Aplica el atajo de decisión cuando el foco permite revisar.
+
+        Args:
+            evento: Evento de ratón o teclado de Tkinter.
+            decision: Respuesta de presencia, ausencia o incertidumbre.
+        """
+
         if isinstance(evento.widget, (ttk.Entry, ttk.Combobox)):
             return
         self.decidir(decision)
 
     def decidir(self, decision):
+        """Guarda la respuesta y avanza a la siguiente campaña pendiente.
+
+        Args:
+            decision: Respuesta de presencia, ausencia o incertidumbre.
+        """
+
         if (
             not self.actual
             or self.lote_terminado
@@ -1347,7 +1749,9 @@ class VisorSeguimiento:
                 for r in self._recursos_sitio()
             )
             if not foto_ref:
-                messagebox.showinfo("2023 sin imagen", "No puedes afirmar ausencia en ambas fotos.")
+                messagebox.showinfo(
+                    "2023 sin imagen", "No puedes afirmar ausencia en ambas fotos."
+                )
                 return
             decision = "ausente"
         anio = int(self.anio.get())
@@ -1359,13 +1763,19 @@ class VisorSeguimiento:
         if not disponibles and decision in ("presente", "ausente"):
             messagebox.showinfo(
                 "Imagen pendiente",
-                "No hay imagen de esta campaña. Prepara el caso o conserva una duda / no evaluable.",
+                (
+                    "No hay imagen de esta campaña. Prepara el caso o conserva una duda"
+                    " / no evaluable."
+                ),
             )
             return
         self.guardar_borrador()
         referencia = None
         if ambas_ausentes:
-            referencia = {**self.datos_referencia("referencia_incorrecta"), "corregir": True}
+            referencia = {
+                **self.datos_referencia("referencia_incorrecta"),
+                "corregir": True,
+            }
         elif (self.actual, 2023) not in self.observaciones:
             referencia = self.datos_referencia()
         self.almacen.guardar_observacion(
@@ -1378,18 +1788,37 @@ class VisorSeguimiento:
             self.notas.get(),
             referencia=referencia,
         )
-        self.ultimo_guardado = f"Guardado: {self.actual} · {anio} · {NOMBRES[decision]}." + (
-            f" También 2023: {NOMBRES[referencia['decision']]}." if referencia else ""
+        self.ultimo_guardado = (
+            f"Guardado: {self.actual} · {anio} · {NOMBRES[decision]}."
+            + (
+                f" También 2023: {NOMBRES[referencia['decision']]}."
+                if referencia
+                else ""
+            )
         )
         self.recargar()
         self.siguiente(tras_respuesta=True)
 
     def datos_referencia(self, decision=None):
+        """Recoge la respuesta y el borrador de la referencia de 2023.
+
+        Args:
+            decision: Respuesta de presencia, ausencia o incertidumbre.
+
+        Returns:
+            dict: Decisión, alcance, etiquetas y notas actuales de la referencia de
+                2023.
+        """
+
         o = self.observaciones.get((self.actual, 2023), {})
         borrador = self.almacen.meta(f"borrador_{self.actual}_2023", {})
         return {
             "decision": decision
-            or next(d for d, nombre in NOMBRES.items() if nombre == self.estado_referencia.get()),
+            or next(
+                d
+                for d, nombre in NOMBRES.items()
+                if nombre == self.estado_referencia.get()
+            ),
             "alcance": borrador.get("alcance", o.get("alcance", self.alcance.get())),
             "etiquetas": [
                 t.strip()
@@ -1402,7 +1831,12 @@ class VisorSeguimiento:
         }
 
     def corregir_referencia(self, decision=None):
-        """Corrige la foto izquierda sin interrumpir los históricos del sitio."""
+        """Corrige la foto izquierda sin interrumpir los históricos del sitio.
+
+        Args:
+            decision: Respuesta de presencia, ausencia o incertidumbre.
+        """
+
         if not self.actual:
             return
         datos = self.datos_referencia(decision)
@@ -1410,7 +1844,11 @@ class VisorSeguimiento:
             r["anio"] == 2023 and r["imagen"] and Path(r["imagen"]).exists()
             for r in self._recursos_sitio()
         )
-        if not foto and datos["decision"] in ("presente", "ausente", "referencia_incorrecta"):
+        if not foto and datos["decision"] in (
+            "presente",
+            "ausente",
+            "referencia_incorrecta",
+        ):
             messagebox.showinfo(
                 "2023 sin imagen", "La referencia solo permite duda o no evaluable."
             )
@@ -1427,20 +1865,28 @@ class VisorSeguimiento:
             datos["notas"],
         )
         self.ultimo_guardado = (
-            f"Guardado: 2023 · {NOMBRES[datos['decision']]}. Continúa con {self.anio.get()}."
+            f"Guardado: 2023 · {NOMBRES[datos['decision']]}. Continúa con "
+            f"{self.anio.get()}."
         )
         self.recargar()
         self.dibujar()
         self.raiz.focus_set()
 
     def abrir_cambios(self):
+        """Abre el menú de cambios observados entre las dos campañas visibles."""
+
         self.menu_cambios.tk_popup(
             self.boton_cambios.winfo_rootx(),
             self.boton_cambios.winfo_rooty() + self.boton_cambios.winfo_height(),
         )
 
     def marcar_cambio_referencia(self, etiqueta):
-        """Anota el cambio del par visible en 2023 sin repetir su clasificación."""
+        """Anota el cambio del par visible en 2023 sin repetir su clasificación.
+
+        Args:
+            etiqueta: Etiqueta secundaria que se añade a la observación.
+        """
+
         if not self.actual or int(self.anio.get()) == 2023:
             return
         self.guardar_borrador()
@@ -1462,11 +1908,18 @@ class VisorSeguimiento:
             notas = "\n".join(t for t in (notas, nota) if t)
         alcance = borrador.get("alcance", o.get("alcance", "emplazamiento_completo"))
         self.almacen.poner_meta(
-            clave, {"etiquetas": ", ".join(etiquetas), "notas": notas, "alcance": alcance}
+            clave,
+            {"etiquetas": ", ".join(etiquetas), "notas": notas, "alcance": alcance},
         )
         if o:
             self.almacen.guardar_observacion(
-                self.actual, 2023, o["decision"], o["segundos"], alcance, etiquetas, notas
+                self.actual,
+                2023,
+                o["decision"],
+                o["segundos"],
+                alcance,
+                etiquetas,
+                notas,
             )
         self.ultimo_guardado = (
             f"{'Guardado' if o else 'Borrador guardado'} en 2023: {CAMBIOS[etiqueta]}. "
@@ -1476,6 +1929,12 @@ class VisorSeguimiento:
         self.dibujar()
 
     def guardar_campos(self, _=None):
+        """Guarda el soporte, la relación catastral y el alcance elegidos.
+
+        Args:
+            _: Evento de Tkinter que no se utiliza.
+        """
+
         if self.actual:
             self.almacen.modificar_sitio(
                 self.actual, soporte=self.soporte.get(), relacion=self.relacion.get()
@@ -1487,9 +1946,21 @@ class VisorSeguimiento:
                 self.raiz.focus_set()
 
     def borrador(self, _=None):
+        """Programa el guardado de notas y etiquetas después de editar.
+
+        Args:
+            _: Evento de Tkinter que no se utiliza.
+        """
+
         self.guardar_borrador()
 
     def anadir_etiqueta(self, etiqueta):
+        """Añade una etiqueta secundaria sin repetir las ya presentes.
+
+        Args:
+            etiqueta: Etiqueta secundaria que se añade a la observación.
+        """
+
         etiquetas = [t.strip() for t in self.etiquetas.get().split(",") if t.strip()]
         if etiqueta not in etiquetas:
             etiquetas.append(etiqueta)
@@ -1497,6 +1968,12 @@ class VisorSeguimiento:
         self.guardar_borrador()
 
     def guardar_borrador(self, _=None):
+        """Conserva las notas y etiquetas del emplazamiento y campaña actuales.
+
+        Args:
+            _: Evento de Tkinter que no se utiliza.
+        """
+
         if self.actual:
             self.almacen.poner_meta(
                 f"borrador_{self.actual}_{self.anio.get()}",
@@ -1522,12 +1999,16 @@ class VisorSeguimiento:
                     [t.strip() for t in self.etiquetas.get().split(",") if t.strip()],
                     self.notas.get(),
                 )
-                self.observaciones[(self.actual, int(self.anio.get()))] = self.almacen.filas(
-                    "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=?",
-                    (self.actual, int(self.anio.get())),
-                )[0]
+                self.observaciones[(self.actual, int(self.anio.get()))] = (
+                    self.almacen.filas(
+                        "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=?",
+                        (self.actual, int(self.anio.get())),
+                    )[0]
+                )
 
     def deshacer(self):
+        """Revierte la última acción humana y actualiza el visor."""
+
         accion = self.almacen.deshacer()
         self.recargar()
         if accion and accion["tipo"] in ("observacion", "comparacion", "sitio"):
@@ -1545,25 +2026,35 @@ class VisorSeguimiento:
             self.mostrar(next(iter(anteriores["activos"])), 2023)
 
     def confirmar_grupo(self):
+        """Confirma la agrupación del emplazamiento seleccionado."""
+
         if self.actual:
             self.almacen.modificar_sitio(self.actual, agrupacion="confirmada")
             self.recargar()
             self.dibujar()
 
     def asociar(self):
+        """Permite corregir los edificios y las cubiertas asociados al caso."""
+
         if not self.actual:
             return
         s = self.sitios[self.actual]
         texto = simpledialog.askstring(
             "Asociación independiente",
-            "Identificadores internos de edificios, separados por comas; vacío para ninguna asociación:",
+            (
+                "Identificadores internos de edificios, separados por comas; vacío para"
+                " ninguna asociación:"
+            ),
             initialvalue=", ".join(json.loads(s["edificios"])),
         )
         if texto is None:
             return
         cubiertas = simpledialog.askstring(
             "Cubiertas",
-            "Identificadores de cubiertas, separados por comas. También puedes usar cubierta_manual_... para construcciones no catastradas:",
+            (
+                "Identificadores de cubiertas, separados por comas. También puedes usar"
+                " cubierta_manual_... para construcciones no catastradas:"
+            ),
             initialvalue=", ".join(json.loads(s["cubiertas"])),
         )
         if cubiertas is None:
@@ -1578,6 +2069,8 @@ class VisorSeguimiento:
         self.dibujar()
 
     def reagrupar(self):
+        """Permite repartir los componentes para dividir o fusionar emplazamientos."""
+
         if not self.actual:
             return
         sitios = simpledialog.askstring(
@@ -1589,12 +2082,17 @@ class VisorSeguimiento:
             return
         sitios = [s.strip() for s in sitios.split(",") if s.strip()]
         miembros = self.almacen.filas(
-            "SELECT * FROM miembros WHERE emplazamiento IN (" + ",".join("?" for _ in sitios) + ")",
+            "SELECT * FROM miembros WHERE emplazamiento IN ("
+            + ",".join("?" for _ in sitios)
+            + ")",
             tuple(sitios),
         )
         texto = simpledialog.askstring(
             "Repartir componentes",
-            "Componentes separados por comas. Separa grupos nuevos con punto y coma (;). Para fusionar usa un solo grupo:",
+            (
+                "Componentes separados por comas. Separa grupos nuevos con punto y coma"
+                " (;). Para fusionar usa un solo grupo:"
+            ),
             initialvalue=", ".join(m["componente"] for m in miembros),
         )
         if not texto:
@@ -1614,12 +2112,21 @@ class VisorSeguimiento:
         self.mostrar(nuevos[0], 2023)
 
     def contexto(self):
+        """Prepara más contexto sin perder la campaña ni las notas actuales."""
+
         if not self.actual or self.preparando:
             return
         self.cancelar_candidato()
         sitio = self.actual
 
         def preparar(almacen, informar):
+            """Ejecuta la preparación solicitada y comunica su avance al visor.
+
+            Args:
+                almacen: Base de seguimiento con sus observaciones y recursos.
+                informar: Función que recibe los mensajes de avance.
+            """
+
             from paneles_solares.etiquetado.preparar_seguimiento import ampliar_contexto
 
             ampliar_contexto(almacen, self.config, sitio, progreso=informar)
@@ -1627,6 +2134,8 @@ class VisorSeguimiento:
         self.iniciar_carga(preparar, "Ampliando contexto…", conservar_caso=True)
 
     def anadir(self):
+        """Activa la selección de un candidato histórico sobre la foto."""
+
         if not self.actual or self.preparando:
             return
         self.seleccionando_candidato = True
@@ -1637,13 +2146,23 @@ class VisorSeguimiento:
         self.raiz.focus_set()
 
     def cancelar_candidato(self):
+        """Cancela la selección de un candidato sin crear registros."""
+
         if self.seleccionando_candidato:
             self.seleccionando_candidato = False
             self.dibujar()
 
     def crear_candidato_en_foto(self, evento):
-        """Reutiliza la foto pulsada para incorporar una instalación sin pedir coordenadas."""
-        ancho, alto = max(evento.widget.winfo_width(), 100), max(evento.widget.winfo_height(), 100)
+        """Reutiliza la foto pulsada para incorporar una instalación sin pedir coordenadas.
+
+        Args:
+            evento: Evento de ratón o teclado de Tkinter.
+        """
+
+        ancho, alto = (
+            max(evento.widget.winfo_width(), 100),
+            max(evento.widget.winfo_height(), 100),
+        )
         lado = min(ancho, alto - 30)
         u = (evento.x - (ancho - lado) / 2) / lado
         v = (evento.y - (alto + 30 - lado) / 2) / lado
@@ -1663,7 +2182,9 @@ class VisorSeguimiento:
             and r["ymin"] <= y <= r["ymax"]
         ]
         if not recursos:
-            self.paso.config(text="Haz clic en una zona con imagen disponible. Esc cancela.")
+            self.paso.config(
+                text="Haz clic en una zona con imagen disponible. Esc cancela."
+            )
             return
         existente = next(
             (
@@ -1690,11 +2211,15 @@ class VisorSeguimiento:
             messagebox.showerror("Candidato", str(error), parent=self.raiz)
 
     def resumen(self):
+        """Exporta el progreso actual y abre su informe local."""
+
         self.guardar_borrador()
         generar_resumen(self.almacen, geopackage=True)
         webbrowser.open((SALIDA / "resumen_correo.txt").as_uri())
 
     def cerrar(self):
+        """Guarda el borrador y detiene la precarga al cerrar el visor."""
+
         self.detener_anticipacion.set()
         if self.evento_anticipacion:
             self.raiz.after_cancel(self.evento_anticipacion)

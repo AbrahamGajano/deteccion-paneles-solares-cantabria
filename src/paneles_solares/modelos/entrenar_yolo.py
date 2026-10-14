@@ -2,12 +2,17 @@
 
 from pathlib import Path
 
-from paneles_solares.rutas import reemplazar_carpeta, ruta_proyecto
+from paneles_solares.rutas import (
+    DATASET_YOLO,
+    PESOS_YOLO,
+    reemplazar_carpeta,
+    ruta_proyecto,
+)
 
 # Modelo que se quiere mejorar y ubicación del dataset.
 NOMBRE_MODELO = "yolo11s"
-PESOS_INICIALES = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
-DATASET = ruta_proyecto("data/datasets/yolo/dataset.yaml")
+PESOS_INICIALES = PESOS_YOLO
+DATASET = DATASET_YOLO / "dataset.yaml"
 CARPETA_ENTRENOS = ruta_proyecto("runs/entrenamiento/cantabria")
 
 # Límites del entrenamiento.
@@ -28,7 +33,7 @@ def entrenar(carpeta: Path) -> None:
     """Carga los pesos elegidos y ejecuta el entrenamiento.
 
     Args:
-        carpeta (Path): Carpeta donde se guardará la ejecución en curso.
+        carpeta: Carpeta donde se guardará la ejecución en curso.
     """
 
     from ultralytics import YOLO
@@ -62,8 +67,11 @@ def guardar_entrenamiento(temporal: Path, salida: Path) -> None:
     """Comprueba los pesos y sustituye el entrenamiento anterior.
 
     Args:
-        temporal (Path): Carpeta de la ejecución terminada.
-        salida (Path): Ubicación definitiva del modelo.
+        temporal: Carpeta de la ejecución terminada.
+        salida: Ubicación definitiva del modelo.
+
+    Raises:
+        RuntimeError: El entrenamiento no ha generado best.pt y last.pt.
     """
 
     for nombre in ("best.pt", "last.pt"):
@@ -83,7 +91,13 @@ def guardar_entrenamiento(temporal: Path, salida: Path) -> None:
 
 
 def main() -> None:
-    """Entrena sin retirar los pesos anteriores hasta que los nuevos estén listos."""
+    """Entrena sin retirar los pesos anteriores hasta que los nuevos estén listos.
+
+    Raises:
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
+        FileExistsError: Queda una salida incompleta de una ejecución anterior.
+    """
 
     if not PESOS_INICIALES.is_file():
         raise FileNotFoundError(PESOS_INICIALES)

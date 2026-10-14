@@ -8,12 +8,15 @@ import rasterio
 from rasterio.windows import Window
 from shapely.geometry import box
 
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.rutas import (
+    EDIFICIOS_CATASTRO,
+    INDICE_TESELAS,
+    PNOA,
+)
 
-RUTA_GPKG = ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg")
-RUTA_MANIFEST = ruta_proyecto("data/manifests/teselas.csv")
-CARPETA_PNOA = ruta_proyecto("data/pnoa")
-
+RUTA_GPKG = EDIFICIOS_CATASTRO
+RUTA_MANIFEST = INDICE_TESELAS
+CARPETA_PNOA = PNOA
 TAM_TES = 512
 
 
@@ -24,7 +27,7 @@ def cargar_edificios(ruta: Path = RUTA_GPKG) -> gpd.GeoDataFrame:
         ruta: Archivo GeoPackage con las geometrías de los edificios.
 
     Returns:
-        Tabla de edificios con su sistema de coordenadas.
+        gpd.GeoDataFrame: Tabla de edificios con su sistema de coordenadas.
     """
 
     return gpd.read_file(ruta)
@@ -37,7 +40,7 @@ def buscar_ortofotos(carpeta: Path = CARPETA_PNOA) -> list[Path]:
         carpeta: Carpeta donde están descargadas las ortofotos.
 
     Returns:
-        Rutas de las ortofotos, ordenadas por nombre.
+        list[Path]: Rutas de las ortofotos, ordenadas por nombre.
     """
 
     return sorted(carpeta.glob("*.tif"))
@@ -51,7 +54,8 @@ def obtener_teselas(tif, edificios: gpd.GeoDataFrame) -> list[dict]:
         edificios: Edificios situados dentro de esta ortofoto.
 
     Returns:
-        Registros con la posición, tamaño y número de edificios de cada tesela.
+        list[dict]: Registros con la posición, tamaño y número de edificios de cada
+            tesela.
     """
 
     registros = []
@@ -98,7 +102,10 @@ def procesar_tif(ruta_tif: Path, edificios: gpd.GeoDataFrame) -> list[dict]:
         edificios: Tabla completa de edificios de Catastro.
 
     Returns:
-        Teselas de esta ortofoto que intersectan algún edificio.
+        list[dict]: Teselas de esta ortofoto que intersectan algún edificio.
+
+    Raises:
+        ValueError: Los CRS de los edificios y de la ortofoto no coinciden.
     """
 
     with rasterio.open(ruta_tif) as tif:

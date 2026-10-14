@@ -6,8 +6,9 @@ import tkinter as tk
 from paneles_solares.datos.seguimiento import AlmacenSeguimiento, cargar_config
 
 
-def main():
+def main() -> None:
     """Continúa lotes pequeños o ejecuta una fase explícita sin reiniciar el progreso."""
+
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "accion",
@@ -18,7 +19,9 @@ def main():
     parser.add_argument("--config", default="seguimiento.json")
     parser.add_argument("--lote", type=int)
     parser.add_argument(
-        "--sitio", action="append", help="Prepara este emplazamiento; admite repetir la opción"
+        "--sitio",
+        action="append",
+        help="Prepara este emplazamiento; admite repetir la opción",
     )
     parser.add_argument(
         "--modo", choices=("indice", "fuera_indice", "todas"), default="fuera_indice"
@@ -77,8 +80,10 @@ def main():
             raiz.mainloop()
             return
         print(
-            f"Históricos: {resumen['historicos_guardados']} guardados; {resumen['historicos_pendientes']} pendientes.\n"
-            f"Referencias 2023 revisadas: {resumen['referencias_2023_revisadas']}; se confirman dentro del primer par.\n"
+            f"Históricos: {resumen['historicos_guardados']} guardados; "
+            f"{resumen['historicos_pendientes']} pendientes.\n"
+            f"Referencias 2023 revisadas: {resumen['referencias_2023_revisadas']}; "
+            "se confirman dentro del primer par.\n"
             f"Resultados: {SALIDA}"
         )
     finally:

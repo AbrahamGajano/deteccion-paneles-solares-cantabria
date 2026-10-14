@@ -10,13 +10,20 @@ import numpy as np
 import pandas as pd
 from PIL import Image
 
-from paneles_solares.rutas import reemplazar_carpeta, ruta_proyecto
+from paneles_solares.modelos.metricas import calcular_metricas
+from paneles_solares.rutas import (
+    DATASET_UNET,
+    DATASET_YOLO,
+    PESOS_YOLO,
+    reemplazar_carpeta,
+    ruta_proyecto,
+)
 
-MODELO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
-IMAGENES = ruta_proyecto("data/datasets/yolo/images/test")
-LABELS = ruta_proyecto("data/datasets/yolo/labels/test")
-IMAGENES_UNET = ruta_proyecto("data/datasets/unet/images/test")
-MASCARAS_REALES = ruta_proyecto("data/datasets/unet/masks/test")
+MODELO = PESOS_YOLO
+IMAGENES = DATASET_YOLO / "images/test"
+LABELS = DATASET_YOLO / "labels/test"
+IMAGENES_UNET = DATASET_UNET / "images/test"
+MASCARAS_REALES = DATASET_UNET / "masks/test"
 SALIDA = ruta_proyecto("runs/evaluacion/cantabria/yolo11s/revision")
 
 CONFIANZA = 0.30
@@ -32,7 +39,16 @@ CATEGORIAS = (
 
 
 def comprobar_etiquetas(imagenes: Path, labels: Path) -> None:
-    """Comprueba que todas las imágenes del test tienen su TXT."""
+    """Comprueba que todas las imágenes del test tienen su TXT.
+
+    Args:
+        imagenes: Carpeta de imágenes del test.
+        labels: Carpeta de etiquetas TXT del test.
+
+    Raises:
+        FileNotFoundError: Falta el TXT de una imagen del test.
+        ValueError: No hay imágenes en la carpeta del test.
+    """
 
     cantidad = 0
 
@@ -57,7 +73,16 @@ def comprobar_etiquetas(imagenes: Path, labels: Path) -> None:
 
 
 def comprobar_mismo_test(imagenes: Path) -> None:
-    """Exige las mismas imágenes y máscaras reales que evalúa U-Net."""
+    """Exige las mismas imágenes y máscaras reales que evalúa U-Net.
+
+    Args:
+        imagenes: Carpeta de imágenes del test.
+
+    Raises:
+        ValueError: Los tests de YOLO y U-Net no contienen las mismas imágenes y
+            máscaras.
+    """
+
     ids_yolo = {ruta.stem for ruta in imagenes.glob("*.png")}
     ids_unet = {ruta.stem for ruta in IMAGENES_UNET.glob("*.png")}
     ids_mascaras = {ruta.stem for ruta in MASCARAS_REALES.glob("*.png")}
@@ -74,7 +99,19 @@ def comprobar_mismo_test(imagenes: Path) -> None:
 
 
 def medir_mascara(resultado, ruta_real: Path) -> dict:
-    """Compara la unión de máscaras YOLO con la máscara real de U-Net."""
+    """Compara la unión de máscaras YOLO con la máscara real de U-Net.
+
+    Args:
+        resultado: Resultado de la predicción de YOLO.
+        ruta_real: PNG con la máscara real de la tesela.
+
+    Returns:
+        dict: Métricas de la unión de máscaras YOLO frente a la anotación.
+
+    Raises:
+        ValueError: Las dimensiones no coinciden o hay detecciones sin máscaras.
+    """
+
     with Image.open(ruta_real) as archivo:
         real = np.asarray(archivo.convert("L")) > 0
 
@@ -100,29 +137,19 @@ def medir_mascara(resultado, ruta_real: Path) -> dict:
     tp = int(np.count_nonzero(real & predicha))
     fp = int(np.count_nonzero(~real & predicha))
     fn = int(np.count_nonzero(real & ~predicha))
-    pixeles_reales = tp + fn
-    pixeles_predichos = tp + fp
-    diferencia_superficie = pixeles_predichos - pixeles_reales
-
-    return {
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "dice": 1.0 if 2 * tp + fp + fn == 0 else 2 * tp / (2 * tp + fp + fn),
-        "iou": 1.0 if tp + fp + fn == 0 else tp / (tp + fp + fn),
-        "precision": np.nan if tp + fp == 0 else tp / (tp + fp),
-        "recall": np.nan if tp + fn == 0 else tp / (tp + fn),
-        "pixeles_reales": pixeles_reales,
-        "pixeles_predichos": pixeles_predichos,
-        "diferencia_superficie": diferencia_superficie,
-        "sesgo_superficie": (
-            np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
-        ),
-    }
+    return calcular_metricas(tp, fp, fn)
 
 
 def clasificar_imagen(tiene_panel: bool, tiene_deteccion: bool) -> str:
-    """Compara la presencia de paneles reales con la predicción."""
+    """Compara la presencia de paneles reales con la predicción.
+
+    Args:
+        tiene_panel: Indica si la etiqueta contiene paneles.
+        tiene_deteccion: Indica si el modelo ha detectado algún objeto.
+
+    Returns:
+        str: Categoría de presencia para la revisión de imágenes.
+    """
 
     if tiene_panel and tiene_deteccion:
         return "positivas_detectadas"
@@ -137,7 +164,15 @@ def clasificar_imagen(tiene_panel: bool, tiene_deteccion: bool) -> str:
 
 
 def obtener_detecciones(resultado) -> tuple[int, float | None]:
-    """Resume las detecciones de una predicción de YOLO."""
+    """Resume las detecciones de una predicción de YOLO.
+
+    Args:
+        resultado: Resultado de la predicción de YOLO.
+
+    Returns:
+        tuple[int, float | None]: Número de detecciones y confianza máxima, o None si no
+            hay objetos.
+    """
 
     if resultado.boxes is None or len(resultado.boxes) == 0:
         return 0, None
@@ -154,7 +189,14 @@ def guardar_imagen(
     confianza: float | None,
     salida: Path,
 ) -> None:
-    """Guarda la imagen dibujada en su categoría de revisión."""
+    """Guarda la imagen dibujada en su categoría de revisión.
+
+    Args:
+        resultado: Resultado de la predicción de YOLO.
+        categoria: Categoría de revisión de la imagen.
+        confianza: Confianza máxima de la imagen, o None si no hay detecciones.
+        salida: Carpeta donde se guardan los resultados.
+    """
 
     # Los negativos correctos se incluyen en el CSV, sin copiar sus imágenes vacías.
     if categoria == "negativas_correctas":
@@ -172,7 +214,12 @@ def guardar_imagen(
 
 
 def guardar_resumen(registros: list[dict], salida: Path) -> None:
-    """Guarda el CSV de la revisión y muestra el número de casos de cada tipo."""
+    """Guarda el CSV de la revisión y muestra el número de casos de cada tipo.
+
+    Args:
+        registros: Resultados individuales con sus categorías de revisión.
+        salida: Carpeta donde se guardan los resultados.
+    """
 
     resumen = pd.DataFrame(registros)
 
@@ -186,43 +233,19 @@ def guardar_resumen(registros: list[dict], salida: Path) -> None:
     tp = int(resumen["tp"].sum())
     fp = int(resumen["fp"].sum())
     fn = int(resumen["fn"].sum())
-    pixeles_reales = tp + fn
-    pixeles_predichos = tp + fp
-    diferencia_superficie = pixeles_predichos - pixeles_reales
-    dice = 1.0 if 2 * tp + fp + fn == 0 else 2 * tp / (2 * tp + fp + fn)
-    iou = 1.0 if tp + fp + fn == 0 else tp / (tp + fp + fn)
-    precision = np.nan if tp + fp == 0 else tp / (tp + fp)
-    recall = np.nan if tp + fn == 0 else tp / (tp + fn)
-    sesgo_superficie = (
-        np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
-    )
+    metricas = calcular_metricas(tp, fp, fn)
 
-    pd.DataFrame(
-        [
-            {
-                "imagenes": len(resumen),
-                "tp": tp,
-                "fp": fp,
-                "fn": fn,
-                "dice": dice,
-                "iou": iou,
-                "precision": precision,
-                "recall": recall,
-                "pixeles_reales": pixeles_reales,
-                "pixeles_predichos": pixeles_predichos,
-                "diferencia_superficie": diferencia_superficie,
-                "sesgo_superficie": sesgo_superficie,
-            }
-        ]
-    ).to_csv(salida / "resumen.csv", index=False)
+    pd.DataFrame([{"imagenes": len(resumen), **metricas}]).to_csv(
+        salida / "resumen.csv", index=False
+    )
 
     print("\nResultados globales")
     print(f"Imágenes: {len(resumen)}")
-    print(f"Dice: {dice:.4f}")
-    print(f"IoU: {iou:.4f}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"Sesgo de superficie: {sesgo_superficie:.2%}")
+    print(f"Dice: {metricas['dice']:.4f}")
+    print(f"IoU: {metricas['iou']:.4f}")
+    print(f"Precision: {metricas['precision']:.4f}")
+    print(f"Recall: {metricas['recall']:.4f}")
+    print(f"Sesgo de superficie: {metricas['sesgo_superficie']:.2%}")
     print("\nClasificación de imágenes")
     for categoria in CATEGORIAS:
         cantidad = (resumen["tipo"] == categoria).sum()
@@ -238,7 +261,22 @@ def guardar_predicciones(
     imgsz: int = 512,
     device: int | str = 0,
 ) -> None:
-    """Revisa el test y guarda las imágenes y el resumen."""
+    """Revisa el test y guarda las imágenes y el resumen.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        confianza: Confianza mínima para aceptar una detección de YOLO.
+        imagenes: Carpeta de imágenes del test.
+        labels: Carpeta de etiquetas TXT del test.
+        salida: Carpeta donde se guardan los resultados.
+        imgsz: Tamaño de entrada utilizado por YOLO.
+        device: Dispositivo utilizado por YOLO.
+
+    Raises:
+        FileExistsError: Queda una salida incompleta de una ejecución anterior.
+        ValueError: Se repiten imágenes, faltan predicciones o las etiquetas no
+            coinciden.
+    """
 
     if salida.exists():
         raise FileExistsError(f"Quedó una revisión interrumpida: {salida}")
@@ -304,7 +342,12 @@ def guardar_predicciones(
 
 
 def main() -> None:
-    """Revisa el test y sustituye la revisión anterior cuando termina."""
+    """Revisa el test y sustituye la revisión anterior cuando termina.
+
+    Raises:
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
+    """
 
     if not MODELO.is_file():
         raise FileNotFoundError(MODELO)

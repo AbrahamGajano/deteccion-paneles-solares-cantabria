@@ -9,10 +9,14 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from paneles_solares.modelos.unet import DatasetPaneles, UMBRAL, crear_modelo
-from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
+from paneles_solares.modelos.unet import UMBRAL, DatasetPaneles, crear_modelo
+from paneles_solares.rutas import (
+    DATASET_UNET,
+    PESOS_UNET,
+    ruta_proyecto,
+)
 
-DATASET = ruta_proyecto("data/datasets/unet")
+DATASET = DATASET_UNET
 
 PESOS_INICIALES = ruta_proyecto("weights/unet_resnet34_anterior.pt")
 
@@ -31,7 +35,16 @@ SEMILLA = 42
 def crear_cargadores(
     dataset: Path,
 ) -> tuple[DataLoader, DataLoader]:
-    """Crea los cargadores de entrenamiento y validación."""
+    """Crea los cargadores de entrenamiento y validación.
+
+    Args:
+        dataset: Carpeta con imágenes y máscaras del dataset.
+
+    Returns:
+        tuple[DataLoader, DataLoader]: Cargadores de entrenamiento y validación, en ese
+            orden.
+    """
+
     dataset_train = DatasetPaneles(
         dataset,
         split="train",
@@ -68,6 +81,7 @@ class PerdidaSegmentacion(nn.Module):
 
     def __init__(self):
         """Prepara las dos funciones de pérdida."""
+
         super().__init__()
 
         self.bce = nn.BCEWithLogitsLoss()
@@ -82,7 +96,16 @@ class PerdidaSegmentacion(nn.Module):
         predicciones: torch.Tensor,
         mascaras: torch.Tensor,
     ) -> torch.Tensor:
-        """Calcula el error total de las predicciones."""
+        """Calcula el error total de las predicciones.
+
+        Args:
+            predicciones: Logits predichos por el modelo.
+            mascaras: Máscaras reales del lote.
+
+        Returns:
+            torch.Tensor: Suma de las pérdidas BCE y Dice del lote.
+        """
+
         perdida_bce = self.bce(
             predicciones,
             mascaras,
@@ -104,7 +127,20 @@ def entrenar_epoca(
     escalador: torch.amp.GradScaler,
     dispositivo: torch.device,
 ) -> float:
-    """Entrena el modelo durante una época completa."""
+    """Entrena el modelo durante una época completa.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        cargador: Cargador de lotes del dataset.
+        criterio: Función de pérdida de segmentación.
+        optimizador: Optimizador que actualiza los pesos.
+        escalador: Escalador de gradientes para precisión mixta.
+        dispositivo: CPU o GPU utilizada por el modelo.
+
+    Returns:
+        float: Pérdida media ponderada por el tamaño de cada lote.
+    """
+
     modelo.train()
 
     perdida_total = 0.0
@@ -151,7 +187,18 @@ def validar_epoca(
     criterio: nn.Module,
     dispositivo: torch.device,
 ) -> dict[str, float]:
-    """Evalúa el modelo utilizando el conjunto de validación."""
+    """Evalúa el modelo utilizando el conjunto de validación.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        cargador: Cargador de lotes del dataset.
+        criterio: Función de pérdida de segmentación.
+        dispositivo: CPU o GPU utilizada por el modelo.
+
+    Returns:
+        dict[str, float]: Pérdida y métricas globales de la validación.
+    """
+
     modelo.eval()
 
     perdida_total = 0.0
@@ -228,7 +275,13 @@ def guardar_modelo(
     modelo: nn.Module,
     ruta: Path,
 ) -> None:
-    """Guarda los pesos entrenados del modelo."""
+    """Guarda los pesos entrenados del modelo.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        ruta: Ruta del archivo que se utiliza.
+    """
+
     ruta.parent.mkdir(parents=True, exist_ok=True)
 
     torch.save(
@@ -238,7 +291,12 @@ def guardar_modelo(
 
 
 def fijar_semilla(semilla: int) -> None:
-    """Fija la semilla utilizada por los generadores aleatorios."""
+    """Fija la semilla utilizada por los generadores aleatorios.
+
+    Args:
+        semilla: Semilla del muestreo reproducible.
+    """
+
     random.seed(semilla)
     np.random.seed(semilla)
     torch.manual_seed(semilla)
@@ -249,6 +307,7 @@ def fijar_semilla(semilla: int) -> None:
 
 def entrenar() -> None:
     """Prepara y ejecuta el entrenamiento completo."""
+
     fijar_semilla(SEMILLA)
 
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")

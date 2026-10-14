@@ -1,7 +1,9 @@
 """Descarga municipal de Catastro y unión de edificios en un GeoPackage."""
 
+import http.client
 import shutil
 import ssl
+import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -11,7 +13,10 @@ from pathlib import Path
 import geopandas as gpd
 import pandas as pd
 
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.rutas import (
+    EDIFICIOS_CATASTRO,
+    ruta_proyecto,
+)
 
 # Conserva la excepción SSL del acceso original a Catastro.
 CONTEXTO_SSL = ssl._create_unverified_context()
@@ -20,7 +25,7 @@ URL_CATASTRO = "https://www.catastro.hacienda.gob.es/INSPIRE/buildings/39/ES.SDG
 
 CARPETA_ZIPS = ruta_proyecto("data/raw/catastro/zips")
 CARPETA_GMLS = ruta_proyecto("data/geografia/catastro/gml")
-ARCHIVO_FINAL = ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg")
+ARCHIVO_FINAL = EDIFICIOS_CATASTRO
 
 # None procesa todos los municipios.
 LIMITE = None
@@ -33,7 +38,7 @@ def preparar_url(url: str) -> str:
         url: Enlace original, que puede contener espacios, eñes o acentos.
 
     Returns:
-        Enlace con la ruta codificada para una petición HTTP.
+        str: Enlace con la ruta codificada para una petición HTTP.
     """
 
     partes = urllib.parse.urlsplit(url.strip())
@@ -54,7 +59,7 @@ def obtener_urls_de_zips() -> list[str]:
     """Consulta el índice de Catastro y recoge los enlaces a los municipios.
 
     Returns:
-        Enlaces a los ZIP, ordenados y sin duplicados.
+        list[str]: Enlaces a los ZIP, ordenados y sin duplicados.
     """
 
     with urllib.request.urlopen(URL_CATASTRO, context=CONTEXTO_SSL) as respuesta:
@@ -79,7 +84,7 @@ def nombre_desde_url(url: str) -> str:
         url: Enlace de descarga.
 
     Returns:
-        Nombre del archivo, con los espacios y acentos recuperados.
+        str: Nombre del archivo, con los espacios y acentos recuperados.
     """
 
     ruta = urllib.parse.urlsplit(url).path
@@ -96,15 +101,20 @@ def descargar_zip(url: str, destino: Path) -> str:
         destino: Ruta donde se guardará el ZIP.
 
     Returns:
-        Texto que indica si se ha descargado o ya existía.
+        str: Texto que indica si se ha descargado o ya existía.
+
+    Raises:
+        ValueError: La respuesta descargada no es un ZIP válido.
     """
 
     if destino.exists() and zipfile.is_zipfile(destino):
         return "ya existía"
 
-    with urllib.request.urlopen(url, context=CONTEXTO_SSL) as respuesta:
-        with destino.open("wb") as archivo:
-            shutil.copyfileobj(respuesta, archivo)
+    with (
+        urllib.request.urlopen(url, context=CONTEXTO_SSL) as respuesta,
+        destino.open("wb") as archivo,
+    ):
+        shutil.copyfileobj(respuesta, archivo)
 
     # No conservar una página de error del servidor como si fuera un ZIP.
     if not zipfile.is_zipfile(destino):
@@ -121,7 +131,7 @@ def descargar_zips(urls: list[str]) -> list[Path]:
         urls: Enlaces de los municipios que se quieren descargar.
 
     Returns:
-        Rutas de los ZIP descargados o reutilizados.
+        list[Path]: Rutas de los ZIP descargados o reutilizados.
     """
 
     CARPETA_ZIPS.mkdir(parents=True, exist_ok=True)
@@ -135,7 +145,7 @@ def descargar_zips(urls: list[str]) -> list[Path]:
             zips_correctos.append(destino)
             print(f"[{numero}/{len(urls)}] {destino.name}: {estado}")
 
-        except Exception as error:
+        except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError) as error:
             print(f"[{numero}/{len(urls)}] ERROR: {error}")
 
     return zips_correctos
@@ -148,7 +158,7 @@ def extraer_edificios(zips: list[Path]) -> list[Path]:
         zips: Archivos ZIP descargados de Catastro.
 
     Returns:
-        Rutas de los GML de edificios.
+        list[Path]: Rutas de los GML de edificios.
     """
 
     CARPETA_GMLS.mkdir(parents=True, exist_ok=True)
@@ -164,9 +174,11 @@ def extraer_edificios(zips: list[Path]) -> list[Path]:
                 destino = CARPETA_GMLS / Path(nombre_interno).name
 
                 if not destino.exists():
-                    with comprimido.open(nombre_interno) as origen:
-                        with destino.open("wb") as salida:
-                            shutil.copyfileobj(origen, salida)
+                    with (
+                        comprimido.open(nombre_interno) as origen,
+                        destino.open("wb") as salida,
+                    ):
+                        shutil.copyfileobj(origen, salida)
 
                 gmls.append(destino)
                 print(f"Extraído: {destino.name}")
@@ -180,6 +192,9 @@ def unir_edificios(gmls: list[Path], salida: Path = ARCHIVO_FINAL) -> None:
     Args:
         gmls: Archivos de edificios que se van a unir.
         salida: GeoPackage donde se guardará el conjunto.
+
+    Raises:
+        RuntimeError: No se ha obtenido ningún archivo de edificios.
     """
 
     municipios = []
@@ -209,7 +224,11 @@ def unir_edificios(gmls: list[Path], salida: Path = ARCHIVO_FINAL) -> None:
 
 
 def main() -> None:
-    """Descarga y prepara los edificios de Catastro de Cantabria."""
+    """Descarga y prepara los edificios de Catastro de Cantabria.
+
+    Raises:
+        ValueError: El límite configurado de municipios no es positivo.
+    """
 
     if LIMITE is not None and LIMITE <= 0:
         raise ValueError("El límite de municipios debe ser positivo")

@@ -5,14 +5,17 @@ from io import BytesIO
 import geopandas as gpd
 import requests
 
-from paneles_solares.rutas import ruta_proyecto
+from paneles_solares.rutas import (
+    MUNICIPIOS_CANTABRIA,
+)
 
-SALIDA = ruta_proyecto("data/geografia/municipios_cantabria.gpkg")
+SALIDA = MUNICIPIOS_CANTABRIA
 URL = "https://www.ign.es/wfs-inspire/unidades-administrativas"
 
 
 def main() -> None:
     """Guarda los municipios oficiales en un GeoPackage."""
+
     respuesta = requests.get(
         URL,
         params={

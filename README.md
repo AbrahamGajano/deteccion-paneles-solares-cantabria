@@ -64,10 +64,9 @@ Los pesos U-Net se guardan en `weights/unet_resnet34.pt`; su evaluación en
 sobrescribir sus resultados anteriores: revisa las constantes de cada script
 antes de lanzarlo.
 
-Calcula los indicadores georreferenciados y, después, la producción. La segunda
-etapa consulta PVGIS 5.3 secuencialmente, unas 200 llamadas para los 100
-municipios con detecciones actuales. La caché fija `pvgis_municipios.jsonl`
-permite continuar sin repetir municipios terminados.
+Calcula los indicadores georreferenciados y, después, la producción. Esta
+consulta PVGIS 5.3 por municipio con detecciones; la caché
+`pvgis_municipios.jsonl` permite continuar sin repetir consultas terminadas.
 
 `indicadores_unet.py` realiza la inferencia sobre Cantabria y guarda
 `edificios.gpkg` y `municipios.gpkg`. `estimar_energia.py` lee esos GeoPackage y
@@ -87,10 +86,8 @@ Prueba limitada de PVGIS, sin escribir resultados completos:
 .\.venv\Scripts\python.exe -c "from paneles_solares.visualizacion.estimar_energia import prueba; prueba()"
 ```
 
-El panel se puede regenerar sin repetir inferencia ni consultas PVGIS. El
-selector permite ver la producción anual y la potencia pico estimadas junto a
-los indicadores de detección. La evaluación U-Net guarda imágenes con errores
-del test en `runs/evaluacion/unet_actual/`.
+El selector del panel muestra detección, producción anual y potencia pico
+estimadas. La evaluación U-Net guarda también las imágenes con errores del test.
 
 ## Salidas y supuestos
 
@@ -120,9 +117,9 @@ la media mensual. El perfil no es una medición de producción de 2019. La
 [documentación oficial de PVGIS 5.3](https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/using-pvgis-5/api-non-interactive-service_en)
 describe los endpoints, parámetros y unidades.
 
-La [memoria técnica](docs/memoria_tecnica.pdf) presenta los resultados, figuras
-y limitaciones. Su fuente editable está en `docs/memoria_tecnica.tex`; desde
-`docs/` se puede compilar con `latexmk -pdf memoria_tecnica.tex`. Los dos mapas
+La [memoria técnica](docs/memoria_tecnica.pdf) presenta resultados y limitaciones.
+Su fuente está en `docs/memoria_tecnica.tex`; con LaTeX y `latexmk` instalados,
+se compila desde `docs/` con `latexmk -pdf memoria_tecnica.tex`. Los dos mapas
 estáticos se regeneran con:
 
 ```powershell
@@ -131,24 +128,33 @@ estáticos se regeneran con:
 
 ## Código
 
-La [validación de otras resoluciones](docs/validacion_resoluciones.md) prepara una
-muestra pequeña del test de 2023, permite etiquetarla con LabelMe y evalúa el
-modelo congelado sobre otro producto nativo. Su configuración está en
-`validaciones.json`; no requiere descarga regional ni reentrenamiento.
-
-La [revisión histórica](docs/seguimiento_historico.md) conserva el piloto, recupera
-predicciones completas sin filtro catastral y prepara las campañas 2014, 2017,
-2020 y 2023 por lotes pequeños. Las observaciones son independientes y se guardan
-inmediatamente en SQLite. Incluye auditoría visual, soportes corregibles y
-resultados por municipio; la recuperación regional sigue pendiente. Su única
-configuración está en `seguimiento.json`. Para preparar y continuar:
+La [guía de validación y seguimiento](docs/guia.md) reúne la evaluación de otras
+resoluciones, la revisión histórica y sus indicadores parciales. Las campañas
+se configuran en `validaciones.json` y `seguimiento.json`. La recuperación
+regional histórica sigue pendiente. Para continuar la revisión o generar su avance:
 
 ```powershell
 .\.venv\Scripts\python.exe -m paneles_solares.seguimiento
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos
 ```
 
 - `geografia/`: Catastro, municipios, ortofotos e índice de teselas.
 - `etiquetado/` y `datos/`: selección, anotaciones, manifiestos y datasets.
 - `modelos/unet.py`: arquitectura, preprocesamiento y carga compartidos.
+- `modelos/metricas.py`: métricas de píxel comunes a las evaluaciones.
 - `modelos/`: entrenamiento, evaluación e indicadores U-Net y YOLO.
 - `visualizacion/`: energía y panel central.
+
+Las rutas compartidas están en `src/paneles_solares/rutas.py`. Los nombres de
+campaña y sus fuentes se configuran en `validaciones.json` y `seguimiento.json`.
+Los flujos conservan separados el pool original, los datasets derivados y
+los resultados de cada fase.
+
+## Comprobación
+
+Las pruebas usan `unittest` y cubren validación, persistencia y visor histórico,
+con datos temporales y copias de la base real:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```

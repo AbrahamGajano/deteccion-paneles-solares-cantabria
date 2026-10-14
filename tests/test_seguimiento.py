@@ -36,23 +36,43 @@ from paneles_solares.modelos.resumir_seguimiento import generar_resumen
 
 class PruebasSeguimiento(unittest.TestCase):
     def setUp(self):
+        """Prepara datos aislados para cada prueba."""
+
         self.temporal = tempfile.TemporaryDirectory()
         self.carpeta = Path(self.temporal.name)
         self.almacen = AlmacenSeguimiento(self.carpeta / "seguimiento.sqlite")
         self.almacen.poner_meta("campanias", cargar_config()["campanias"])
         with self.almacen.db:
-            self.almacen.db.execute("INSERT INTO ventanas VALUES ('v',0,0,76.8,76.8,'prueba')")
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('a','v',?,'prueba')",
+                "INSERT INTO ventanas VALUES ('v',0,0,76.8,76.8,'prueba')"
+            )
+            self.almacen.db.execute(
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('a','v',?,'prueba')"
+                ),
                 (box(10, 10, 20, 20).wkb,),
             )
 
     def tearDown(self):
+        """Cierra la base y retira los archivos temporales de la prueba."""
+
         self.almacen.cerrar()
         self.temporal.cleanup()
 
     @contextmanager
     def visor_preparado(self, limite=12, precarga=False):
+        """Abre un visor aislado con fotos de prueba y lo cierra al terminar.
+
+        Args:
+            limite: Máximo de ventanas compartidas por lote.
+            precarga: Activa la preparación anticipada de fotos en el visor de prueba.
+
+        Returns:
+            Iterator[VisorSeguimiento]: Visor de prueba disponible durante el bloque de
+                contexto.
+        """
+
         import tkinter as tk
 
         from paneles_solares.visualizacion.revisar_seguimiento import VisorSeguimiento
@@ -74,7 +94,10 @@ class PruebasSeguimiento(unittest.TestCase):
                 return_value=edificios,
             ):
                 visor = VisorSeguimiento(
-                    raiz, self.almacen, {**cargar_config(), "precarga": precarga}, limite
+                    raiz,
+                    self.almacen,
+                    {**cargar_config(), "precarga": precarga},
+                    limite,
                 )
             yield visor
         finally:
@@ -86,6 +109,12 @@ class PruebasSeguimiento(unittest.TestCase):
             raiz.destroy()
 
     def esperar_preparacion(self, visor):
+        """Procesa eventos hasta que termine la carga del visor de prueba.
+
+        Args:
+            visor: Visor de prueba cuya cola de eventos se procesa.
+        """
+
         limite = time.monotonic() + 5
         while visor.preparando and time.monotonic() < limite:
             visor.raiz.update()
@@ -93,6 +122,13 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertFalse(visor.preparando, "La carga no terminó")
 
     def esperar_hasta(self, visor, condicion):
+        """Procesa eventos hasta que se alcance la condición de la prueba.
+
+        Args:
+            visor: Visor de prueba cuya cola de eventos se procesa.
+            condicion: Función que indica si se alcanzó el estado esperado.
+        """
+
         limite = time.monotonic() + 5
         while not condicion() and time.monotonic() < limite:
             visor.raiz.update()
@@ -100,19 +136,37 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertTrue(condicion(), "El visor no alcanzó el estado esperado")
 
     def agregar_ventana(self, ventana, sitios, preparada=False):
+        """Añade una ventana de prueba con los emplazamientos indicados.
+
+        Args:
+            ventana: Encuadre original con sus límites en EPSG:25830.
+            sitios: Identificadores de los emplazamientos seleccionados.
+            preparada: Crea también las fotos de todas las campañas.
+        """
+
         with self.almacen.db:
             self.almacen.db.execute(
                 "INSERT INTO ventanas VALUES (?,0,0,76.8,76.8,'prueba')", (ventana,)
             )
             for sid in sitios:
                 self.almacen.db.execute(
-                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES (?,?,?,'prueba')",
+                    (
+                        "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES"
+                        " (?,?,?,'prueba')"
+                    ),
                     (sid, ventana, box(30, 30, 40, 40).wkb),
                 )
         if preparada:
             self.guardar_fotos(self.almacen, ventana)
 
     def guardar_fotos(self, almacen, ventana):
+        """Crea y registra las fotos de prueba de las cuatro campañas.
+
+        Args:
+            almacen: Base de seguimiento con sus observaciones y recursos.
+            ventana: Encuadre original con sus límites en EPSG:25830.
+        """
+
         for anio in (2023, 2020, 2017, 2014):
             imagen = self.carpeta / f"{ventana}_{anio}.png"
             Image.new("RGB", (32, 32)).save(imagen)
@@ -123,6 +177,10 @@ class PruebasSeguimiento(unittest.TestCase):
                 )
 
     def test_provisionales_apartados_conservan_respuestas_y_acceso_avanzado(self):
+        """Comprueba que apartar provisionales conserva sus respuestas y permite
+        consultarlos.
+        """
+
         self.almacen.guardar_observacion("a", 2020, "dudosa", notas="Conservar")
         with self.almacen.db:
             self.almacen.db.execute(
@@ -137,37 +195,76 @@ class PruebasSeguimiento(unittest.TestCase):
             visor.recargar()
             visor.siguiente(cargar=False)
             self.assertEqual((visor.actual, visor.anio.get()), ("a", "2017"))
-            self.assertEqual(original, self.almacen.filas("SELECT * FROM observaciones"))
+            self.assertEqual(
+                original, self.almacen.filas("SELECT * FROM observaciones")
+            )
             self.assertEqual(visor.sitios["a"]["activo"], 1)
 
-    def test_misma_imagen_se_termina_entera_aunque_ids_y_prioridades_se_intercalen(self):
+    def test_misma_imagen_se_termina_entera_aunque_ids_y_prioridades_se_intercalen(
+        self,
+    ):
+        """Comprueba que se revisa una imagen completa aunque se intercalen las
+        prioridades.
+        """
+
         self.agregar_ventana("w", ["b", "d"], preparada=True)
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('z','v',?,'prueba')",
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('z','v',?,'prueba')"
+                ),
                 (box(40, 40, 50, 50).wkb,),
             )
         self.almacen.poner_meta("muestra_previa_sitios", ["z"])
         with self.visor_preparado(limite=1) as visor:
             self.assertEqual(visor.cola, ["a", "z"])
-            visor.mostrar("z", 2020)  # Reanudar en mitad de la imagen también acaba sus vecinos.
+            visor.mostrar(
+                "z", 2020
+            )  # Reanudar en mitad de la imagen también acaba sus vecinos.
             recorrido = []
             for _ in range(12):
                 recorrido.append((visor.actual, int(visor.anio.get())))
                 visor.decidir("presente")
             self.assertEqual(
-                recorrido, [(s, a) for s in ("z", "a", "b", "d") for a in (2020, 2017, 2014)]
+                recorrido,
+                [(s, a) for s in ("z", "a", "b", "d") for a in (2020, 2017, 2014)],
             )
             self.assertTrue(visor.lote_terminado)
 
-    def test_precarga_no_bloquea_respuestas_y_salta_automaticamente_sin_esperar_lote_entero(self):
+    def test_precarga_no_bloquea_respuestas_y_salta_automaticamente_sin_esperar_lote_entero(
+        self,
+    ):
+        """Comprueba que la precarga permite responder y usar cada ventana terminada."""
+
         self.agregar_ventana("w", ["b"])
         self.agregar_ventana("x", ["c"])
         iniciar, publicar, acabar = Event(), Event(), Event()
 
         def preparar(
-            almacen, config, lote, sitios, progreso, al_completar, solo_localizados, detener
+            almacen,
+            config,
+            lote,
+            sitios,
+            progreso,
+            al_completar,
+            solo_localizados,
+            detener,
         ):
+            """Ejecuta la preparación solicitada y comunica su avance al visor.
+
+            Args:
+                almacen: Base de seguimiento con sus observaciones y recursos.
+                config: Configuración de campañas y procesamiento.
+                lote: Máximo de ventanas compartidas que se preparan.
+                sitios: Identificadores de los emplazamientos seleccionados.
+                progreso: Función que recibe los mensajes de avance.
+                al_completar: Función que recibe cada ventana terminada.
+                solo_localizados: Prepara históricos solo donde se ha localizado el
+                    objetivo de 2023.
+                detener: Evento que permite detener la preparación anticipada.
+            """
+
             self.assertEqual((lote, sitios, solo_localizados), (2, ["b", "c"], True))
             iniciar.set()
             publicar.wait(5)
@@ -188,7 +285,9 @@ class PruebasSeguimiento(unittest.TestCase):
                 self.esperar_hasta(visor, iniciar.is_set)
                 self.assertTrue(visor.anticipando)
                 self.assertFalse(visor.preparando)
-                self.assertFalse(visor.botones_decision["presente"].instate(["disabled"]))
+                self.assertFalse(
+                    visor.botones_decision["presente"].instate(["disabled"])
+                )
                 visor.decidir("presente")
                 self.assertEqual((visor.actual, visor.anio.get()), ("a", "2017"))
                 publicar.set()
@@ -197,7 +296,9 @@ class PruebasSeguimiento(unittest.TestCase):
                 visor.decidir("presente")
                 visor.decidir("presente")
                 self.assertEqual((visor.actual, visor.anio.get()), ("b", "2020"))
-                self.assertTrue(visor.anticipando)  # El resto del lote aún se está preparando.
+                self.assertTrue(
+                    visor.anticipando
+                )  # El resto del lote aún se está preparando.
                 for _ in visor.historicos:
                     visor.decidir("ausente")
                 self.assertTrue(visor.lote_terminado)
@@ -208,10 +309,14 @@ class PruebasSeguimiento(unittest.TestCase):
                 acabar.set()
                 self.esperar_hasta(visor, lambda: visor.actual == "c")
                 self.assertEqual(visor.anio.get(), "2020")
-                self.assertFalse(visor.botones_decision["presente"].instate(["disabled"]))
+                self.assertFalse(
+                    visor.botones_decision["presente"].instate(["disabled"])
+                )
                 self.assertEqual(
                     original,
-                    self.almacen.filas("SELECT * FROM observaciones ORDER BY emplazamiento,anio"),
+                    self.almacen.filas(
+                        "SELECT * FROM observaciones ORDER BY emplazamiento,anio"
+                    ),
                 )
                 cargar.assert_called_once()
             finally:
@@ -219,6 +324,8 @@ class PruebasSeguimiento(unittest.TestCase):
                 acabar.set()
 
     def test_reserva_acotada_a_un_lote_y_sin_descargar_otros_municipios(self):
+        """Comprueba que la reserva respeta el lote y los municipios seleccionados."""
+
         self.agregar_ventana("w", ["b"], preparada=True)
         self.agregar_ventana("x", ["c"])
         with self.almacen.db:
@@ -226,7 +333,9 @@ class PruebasSeguimiento(unittest.TestCase):
                 "UPDATE emplazamientos SET municipio='Camargo' WHERE id IN ('a','b')"
             )
         with (
-            patch("paneles_solares.etiquetado.preparar_seguimiento.preparar_lote") as cargar,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.preparar_lote"
+            ) as cargar,
             self.visor_preparado(limite=1, precarga=True) as visor,
         ):
             self.esperar_hasta(visor, lambda: visor.evento_anticipacion is None)
@@ -240,11 +349,36 @@ class PruebasSeguimiento(unittest.TestCase):
             cargar.assert_not_called()
 
     def test_precarga_fallida_se_reintenta_sin_dialogos_ni_cambiar_respuestas(self):
+        """Comprueba que se puede reintentar una precarga fallida conservando las
+        respuestas.
+        """
+
         self.agregar_ventana("w", ["b"])
 
         def preparado(
-            almacen, config, lote, sitios, progreso, al_completar, solo_localizados, detener
+            almacen,
+            config,
+            lote,
+            sitios,
+            progreso,
+            al_completar,
+            solo_localizados,
+            detener,
         ):
+            """Simula la preparación anticipada de las ventanas de prueba.
+
+            Args:
+                almacen: Base de seguimiento con sus observaciones y recursos.
+                config: Configuración de campañas y procesamiento.
+                lote: Máximo de ventanas compartidas que se preparan.
+                sitios: Identificadores de los emplazamientos seleccionados.
+                progreso: Función que recibe los mensajes de avance.
+                al_completar: Función que recibe cada ventana terminada.
+                solo_localizados: Prepara históricos solo donde se ha localizado el
+                    objetivo de 2023.
+                detener: Evento que permite detener la preparación anticipada.
+            """
+
             self.guardar_fotos(almacen, "w")
             al_completar("w")
 
@@ -267,18 +401,27 @@ class PruebasSeguimiento(unittest.TestCase):
             cargar.side_effect = preparado
             visor.boton_siguiente.invoke()
             self.esperar_hasta(visor, lambda: visor.actual == "b")
-            self.assertEqual(original, self.almacen.filas("SELECT * FROM observaciones"))
+            self.assertEqual(
+                original, self.almacen.filas("SELECT * FROM observaciones")
+            )
             self.assertEqual(cargar.call_count, 2)
             dialogo.assert_not_called()
 
     def test_final_de_lote_continua_automaticamente_con_fotos_existentes(self):
+        """Comprueba que el siguiente lote aprovecha las fotos ya disponibles."""
+
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('b','v',?,'prueba')",
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('b','v',?,'prueba')"
+                ),
                 (box(30, 30, 40, 40).wkb,),
             )
         with (
-            patch("paneles_solares.etiquetado.preparar_seguimiento.preparar_lote") as preparar,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.preparar_lote"
+            ) as preparar,
             self.visor_preparado(limite=1) as visor,
         ):
             self.assertEqual(visor.cola, ["a", "b"])
@@ -290,15 +433,34 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(len(self.almacen.filas("SELECT * FROM observaciones")), 4)
             preparar.assert_not_called()
 
-    def test_continuar_carga_solo_el_siguiente_lote_sin_reabrir_ni_perder_respuestas(self):
+    def test_continuar_carga_solo_el_siguiente_lote_sin_reabrir_ni_perder_respuestas(
+        self,
+    ):
+        """Comprueba que continuar carga un único lote y conserva las respuestas guardadas."""
+
         with self.almacen.db:
-            self.almacen.db.execute("INSERT INTO ventanas VALUES ('w',0,0,76.8,76.8,'prueba')")
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('b','w',?,'prueba')",
+                "INSERT INTO ventanas VALUES ('w',0,0,76.8,76.8,'prueba')"
+            )
+            self.almacen.db.execute(
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('b','w',?,'prueba')"
+                ),
                 (box(30, 30, 40, 40).wkb,),
             )
 
         def preparar(almacen, config, lote, sitios, progreso):
+            """Ejecuta la preparación solicitada y comunica su avance al visor.
+
+            Args:
+                almacen: Base de seguimiento con sus observaciones y recursos.
+                config: Configuración de campañas y procesamiento.
+                lote: Máximo de ventanas compartidas que se preparan.
+                sitios: Identificadores de los emplazamientos seleccionados.
+                progreso: Función que recibe los mensajes de avance.
+            """
+
             self.assertEqual(sitios, ["b"])
             self.assertEqual(lote, 1)
             progreso("Prueba de carga")
@@ -334,14 +496,22 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual((visor.actual, visor.anio.get()), ("b", "2020"))
             self.assertFalse(visor.botones_decision["presente"].instate(["disabled"]))
             self.assertEqual(
-                original, self.almacen.filas("SELECT * FROM observaciones ORDER BY anio")
+                original,
+                self.almacen.filas("SELECT * FROM observaciones ORDER BY anio"),
             )
 
     def test_carga_fallida_permite_reintentar_sin_alterar_el_progreso(self):
+        """Comprueba que una carga fallida permite reintentar sin perder progreso."""
+
         with self.almacen.db:
-            self.almacen.db.execute("INSERT INTO ventanas VALUES ('w',0,0,76.8,76.8,'prueba')")
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('b','w',?,'prueba')",
+                "INSERT INTO ventanas VALUES ('w',0,0,76.8,76.8,'prueba')"
+            )
+            self.almacen.db.execute(
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('b','w',?,'prueba')"
+                ),
                 (box(30, 30, 40, 40).wkb,),
             )
         with (
@@ -364,18 +534,28 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertFalse(visor.boton_siguiente.instate(["disabled"]))
             self.assertTrue(visor.botones_decision["presente"].instate(["disabled"]))
             self.assertEqual(
-                original, self.almacen.filas("SELECT * FROM observaciones ORDER BY anio")
+                original,
+                self.almacen.filas("SELECT * FROM observaciones ORDER BY anio"),
             )
 
     def test_fin_con_filtro_indica_como_seguir_y_no_descarga_otros_municipios(self):
+        """Comprueba el aviso de fin de lote y el respeto al filtro municipal."""
+
         with self.almacen.db:
-            self.almacen.db.execute("UPDATE emplazamientos SET municipio='Camargo' WHERE id='a'")
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen,municipio) VALUES ('b','v',?,'prueba','Alfoz de Lloredo')",
+                "UPDATE emplazamientos SET municipio='Camargo' WHERE id='a'"
+            )
+            self.almacen.db.execute(
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen,municipio) "
+                    "VALUES ('b','v',?,'prueba','Alfoz de Lloredo')"
+                ),
                 (box(30, 30, 40, 40).wkb,),
             )
         with (
-            patch("paneles_solares.etiquetado.preparar_seguimiento.preparar_lote") as preparar,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.preparar_lote"
+            ) as preparar,
             self.visor_preparado(limite=1) as visor,
         ):
             visor.filtros["Municipio"].set("Camargo")
@@ -392,6 +572,8 @@ class PruebasSeguimiento(unittest.TestCase):
             preparar.assert_not_called()
 
     def test_un_click_por_campania_guarda_y_avanza_sin_confirmar(self):
+        """Comprueba que un clic guarda la campaña y avanza a la siguiente."""
+
         with self.visor_preparado() as visor:
             for indice, anio in enumerate((2020, 2017, 2014), start=1):
                 self.assertEqual(int(visor.anio.get()), anio)
@@ -400,7 +582,9 @@ class PruebasSeguimiento(unittest.TestCase):
                 visor.raiz.update()
                 o = self.almacen.filas("SELECT * FROM observaciones")
                 self.assertEqual(len(o), indice + 1)
-                self.assertEqual(len(self.almacen.filas("SELECT * FROM acciones")), indice)
+                self.assertEqual(
+                    len(self.almacen.filas("SELECT * FROM acciones")), indice
+                )
                 self.assertTrue(all(f["decision"] == "presente" for f in o))
                 self.assertIn(f"{anio} · Presencia clara", visor.aviso.cget("text"))
             self.assertTrue(visor.lote_terminado)
@@ -414,9 +598,20 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertFalse(visor.botones_decision["presente"].instate(["disabled"]))
 
     def test_contexto_en_segundo_plano_conserva_caso_anio_y_notas(self):
+        """Comprueba que ampliar contexto conserva el caso, el año y sus notas."""
+
         liberar = Event()
 
         def ampliar(almacen, config, sitio, progreso):
+            """Simula la descarga del contexto durante una prueba del visor.
+
+            Args:
+                almacen: Base de seguimiento con sus observaciones y recursos.
+                config: Configuración de campañas y procesamiento.
+                sitio: Identificador del emplazamiento que se revisa.
+                progreso: Función que recibe los mensajes de avance.
+            """
+
             progreso("Prueba de contexto")
             liberar.wait(3)
             with almacen.db:
@@ -465,6 +660,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertFalse(visor.botones_decision["presente"].instate(["disabled"]))
 
     def test_contexto_fallido_no_avanza_y_permite_reintentar(self):
+        """Comprueba que un contexto fallido mantiene el caso y permite reintentar."""
+
         with (
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.ampliar_contexto",
@@ -484,7 +681,11 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
 
     def test_candidato_omitido_se_anade_con_click_y_reutiliza_fotos_con_zoom(self):
-        geo = SimpleNamespace(describir=lambda _: {"municipio": "Prueba", "codigo_municipal": "x"})
+        """Comprueba que añadir un candidato reutiliza las fotos y conserva el zoom."""
+
+        geo = SimpleNamespace(
+            describir=lambda _: {"municipio": "Prueba", "codigo_municipal": "x"}
+        )
         with (
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento",
@@ -525,6 +726,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertFalse(visor.seleccionando_candidato)
 
     def test_cancelar_candidato_no_crea_casos_ni_respuestas(self):
+        """Comprueba que cancelar un candidato no crea emplazamientos ni respuestas."""
+
         with self.visor_preparado() as visor:
             visor.anadir()
             self.assertTrue(visor.botones_decision["presente"].instate(["disabled"]))
@@ -534,6 +737,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
 
     def test_caso_provisional_no_propone_presencia_2023_sin_localizar_paneles(self):
+        """Comprueba que un caso provisional no supone presencia sin localizar los paneles."""
+
         with self.almacen.db:
             self.almacen.db.execute(
                 "UPDATE emplazamientos SET origen='inventario_2023' WHERE id='a'"
@@ -554,6 +759,8 @@ class PruebasSeguimiento(unittest.TestCase):
             )
 
     def test_click_para_anadir_sobre_un_caso_existente_evitar_duplicarlo(self):
+        """Comprueba que pulsar sobre un caso existente no crea un candidato duplicado."""
+
         with self.visor_preparado() as visor:
             visor.anadir()
             panel = visor.paneles[0]
@@ -571,13 +778,21 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(len(self.almacen.filas("SELECT * FROM emplazamientos")), 1)
             self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
 
-    def test_aviso_antiguo_de_edificio_cortado_no_impone_alcance_parcial_a_paneles(self):
+    def test_aviso_antiguo_de_edificio_cortado_no_impone_alcance_parcial_a_paneles(
+        self,
+    ):
+        """Comprueba que un aviso antiguo de borde no limita el alcance de los paneles."""
+
         with self.almacen.db:
             self.almacen.db.execute(
-                "UPDATE emplazamientos SET origen='piloto',etiquetas='[\"borde_recorte\"]' WHERE id='a'"
+                "UPDATE emplazamientos SET "
+                "origen='piloto',etiquetas='[\"borde_recorte\"]' WHERE id='a'"
             )
             self.almacen.db.execute(
-                "INSERT INTO componentes(id,ventana,anio,geometria,area,borde) VALUES ('panel','v',2023,?,100,0)",
+                (
+                    "INSERT INTO componentes(id,ventana,anio,geometria,area,borde) "
+                    "VALUES ('panel','v',2023,?,100,0)"
+                ),
                 (box(10, 10, 20, 20).wkb,),
             )
             self.almacen.db.execute("INSERT INTO miembros VALUES ('panel','a')")
@@ -587,10 +802,18 @@ class PruebasSeguimiento(unittest.TestCase):
             visor.decidir("ausente")
             visor.mostrar("a", 2020)
             self.assertEqual(visor.alcance.get(), "zona_visible")
-            original = self.almacen.filas("SELECT alcance FROM observaciones WHERE anio=2020")[0]
+            original = self.almacen.filas(
+                "SELECT alcance FROM observaciones WHERE anio=2020"
+            )[0]
             self.assertEqual(original["alcance"], "zona_visible")
 
-    def test_referencia_falsa_con_presencia_historica_senala_retirada_para_revision(self):
+    def test_referencia_falsa_con_presencia_historica_senala_retirada_para_revision(
+        self,
+    ):
+        """Comprueba que una referencia falsa con presencia histórica señala una posible
+        retirada.
+        """
+
         observaciones = [
             {"anio": a, "decision": d, "alcance": "emplazamiento_completo"}
             for a, d in (
@@ -607,10 +830,16 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertIsNone(historia["aparicion_despues_de"])
 
     def test_grupo_con_partes_sin_foto_historica_no_propone_ausencia_completa(self):
+        """Comprueba que la falta de fotos de alguna parte impide suponer una ausencia
+        completa.
+        """
+
         imagen = self.carpeta / "vecina_2023.png"
         Image.new("RGB", (32, 32)).save(imagen)
         with self.almacen.db:
-            self.almacen.db.execute("INSERT INTO ventanas VALUES ('w',76.8,0,153.6,76.8,'prueba')")
+            self.almacen.db.execute(
+                "INSERT INTO ventanas VALUES ('w',76.8,0,153.6,76.8,'prueba')"
+            )
             self.almacen.db.execute(
                 "INSERT INTO recursos VALUES (?,?,?,?,?,?,?,?)",
                 ("w", 2023, str(imagen), "", "prueba", "", 0.15, ""),
@@ -620,7 +849,10 @@ class PruebasSeguimiento(unittest.TestCase):
                 ("panel2", "w", box(100, 10, 110, 20)),
             ):
                 self.almacen.db.execute(
-                    "INSERT INTO componentes(id,ventana,anio,geometria,area,borde) VALUES (?,?,2023,?,100,0)",
+                    (
+                        "INSERT INTO componentes(id,ventana,anio,geometria,area,borde) "
+                        "VALUES (?,?,2023,?,100,0)"
+                    ),
                     (cid, ventana, geometria.wkb),
                 )
                 self.almacen.db.execute("INSERT INTO miembros VALUES (?,'a')", (cid,))
@@ -635,14 +867,20 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertIsNone(historia["aparicion_despues_de"])
 
     def test_siguiente_salta_la_campania_sin_inventar_respuesta(self):
+        """Comprueba que saltar una campaña conserva su respuesta pendiente."""
+
         with self.visor_preparado() as visor:
             self.assertEqual(visor.anio.get(), "2020")
             visor.siguiente()
             self.assertEqual(visor.anio.get(), "2017")
             self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
-            self.assertFalse(visor.botones_decision["referencia_incorrecta"].instate(["disabled"]))
+            self.assertFalse(
+                visor.botones_decision["referencia_incorrecta"].instate(["disabled"])
+            )
 
     def test_filtro_pendiente_no_requiere_repetir_la_respuesta(self):
+        """Comprueba que el filtro de pendientes no obliga a repetir respuestas guardadas."""
+
         with self.visor_preparado() as visor:
             visor.filtros["Estado"].set("Pendiente")
             visor.recargar()
@@ -654,6 +892,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertTrue(visor.lote_terminado)
 
     def test_cambio_del_par_se_guarda_en_2023_sin_repetir_presencia(self):
+        """Comprueba que un cambio del par se anota en 2023 sin repetir la presencia."""
+
         self.almacen.guardar_observacion("a", 2023, "presente", notas="Nota previa")
         with self.visor_preparado() as visor:
             visor.notas.set("Nota del histórico")
@@ -676,6 +916,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertNotIn("ampliacion", json.loads(o["etiquetas"]))
 
     def test_cambio_no_clasifica_automaticamente_la_referencia_pendiente(self):
+        """Comprueba que anotar un cambio mantiene pendiente una referencia sin respuesta."""
+
         with self.visor_preparado() as visor:
             visor.mostrar("a", 2017)
             visor.marcar_cambio_referencia("reduccion")
@@ -688,18 +930,29 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertIn("reduccion", json.loads(o["etiquetas"]))
 
     def test_dos_sitios_en_orden_y_zoom_conservado_entre_campanias(self):
+        """Comprueba el orden de los emplazamientos y la conservación del zoom entre
+        campañas.
+        """
+
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('b','v',?,'prueba')",
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('b','v',?,'prueba')"
+                ),
                 (box(30, 30, 40, 40).wkb,),
             )
         with self.visor_preparado() as visor:
             visor.zoom, visor.centro = 2.5, [0.35, 0.42]
             for sitio in ("a", "b"):
                 for anio in (2020, 2017, 2014):
-                    self.assertEqual((visor.actual, int(visor.anio.get())), (sitio, anio))
+                    self.assertEqual(
+                        (visor.actual, int(visor.anio.get())), (sitio, anio)
+                    )
                     if sitio == "a":
-                        self.assertEqual((visor.zoom, visor.centro), (2.5, [0.35, 0.42]))
+                        self.assertEqual(
+                            (visor.zoom, visor.centro), (2.5, [0.35, 0.42])
+                        )
                     else:
                         self.assertEqual((visor.zoom, visor.centro), (1.0, [0.5, 0.5]))
                     visor.decidir("presente")
@@ -709,12 +962,16 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertTrue(visor.lote_terminado)
 
     def test_falso_positivo_se_corrige_sin_cambiar_el_historico(self):
+        """Comprueba que corregir un falso positivo no modifica las respuestas históricas."""
+
         with self.visor_preparado() as visor:
             visor.corregir_referencia("referencia_incorrecta")
             self.assertEqual(visor.anio.get(), "2020")
             o = self.almacen.filas("SELECT * FROM observaciones")
             self.assertEqual(len(o), 1)
-            self.assertEqual((o[0]["anio"], o[0]["decision"]), (2023, "referencia_incorrecta"))
+            self.assertEqual(
+                (o[0]["anio"], o[0]["decision"]), (2023, "referencia_incorrecta")
+            )
             visor.decidir("presente")
             self.assertEqual(visor.anio.get(), "2017")
             o = self.almacen.filas("SELECT * FROM observaciones WHERE anio=2023")[0]
@@ -726,6 +983,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(o["decision"], "dudosa")
 
     def test_ninguno_en_ambas_descarta_referencia_y_avanza_en_tres_clicks(self):
+        """Comprueba el descarte de ambas fotos y el avance por los tres históricos."""
+
         with self.visor_preparado() as visor:
             visor.botones_decision["referencia_incorrecta"].invoke()
             self.assertEqual(visor.anio.get(), "2017")
@@ -746,6 +1005,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertTrue(visor.lote_terminado)
 
     def test_ninguno_en_ambas_corrige_y_deshace_preservando_importadas(self):
+        """Comprueba la corrección y su reversión conservando las respuestas importadas."""
+
         self.almacen.guardar_observacion(
             "a",
             2023,
@@ -769,6 +1030,8 @@ class PruebasSeguimiento(unittest.TestCase):
             )
 
     def test_primera_comparacion_se_deshace_junta_y_no_sobrescribe_2023(self):
+        """Comprueba que deshacer la primera comparación revierte ambas respuestas juntas."""
+
         with self.visor_preparado() as visor:
             visor.decidir("ausente")
             visor.deshacer()
@@ -785,10 +1048,24 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(json.loads(o["original"]), {"decision": "ausente"})
 
     def test_comparacion_atomica_no_deja_media_respuesta_tras_un_error(self):
+        """Comprueba que un fallo de transacción no guarda solo una parte de la
+        comparación.
+        """
+
         referencia = {"decision": "presente", "alcance": "emplazamiento_completo"}
         escribir = self.almacen._escribir_observacion
 
         def fallar_en_historico(o):
+            """Simula un fallo al guardar la respuesta histórica de una comparación.
+
+            Args:
+                o: Observación cuyo guardado se simula.
+
+            Raises:
+                OSError: No hay espacio suficiente para las imágenes y predicciones del
+                    lote.
+            """
+
             if o["anio"] == 2020:
                 raise OSError("Corte")
             escribir(o)
@@ -801,17 +1078,23 @@ class PruebasSeguimiento(unittest.TestCase):
             ),
             self.assertRaises(OSError),
         ):
-            self.almacen.guardar_observacion("a", 2020, "ausente", referencia=referencia)
+            self.almacen.guardar_observacion(
+                "a", 2020, "ausente", referencia=referencia
+            )
         self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
         self.assertEqual(self.almacen.filas("SELECT * FROM acciones"), [])
 
     def test_cursor_antiguo_2023_reanuda_en_historico_pendiente(self):
+        """Comprueba que un cursor antiguo de 2023 reanuda en un histórico pendiente."""
+
         self.almacen.poner_meta("cursor_revision", {"sitio": "a", "anio": 2023})
         self.almacen.guardar_observacion("a", 2020, "ausente")
         with self.visor_preparado() as visor:
             self.assertEqual((visor.actual, visor.anio.get()), ("a", "2017"))
 
     def test_cambio_manual_de_anio_conserva_zoom_y_no_mezcla_notas(self):
+        """Comprueba que cambiar de año conserva el zoom y separa las notas por campaña."""
+
         with self.visor_preparado() as visor:
             visor.notas.set("Nota exclusiva de 2020")
             visor.guardar_borrador()
@@ -825,6 +1108,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(visor.notas.get(), "Nota exclusiva de 2020")
 
     def test_resumen_separa_tres_historicos_y_referencia_integrada(self):
+        """Comprueba que el resumen distingue históricos y referencias de 2023."""
+
         self.almacen.guardar_observacion("a", 2020, "ausente", 12)
         resumen = generar_resumen(self.almacen, self.carpeta / "resumen")
         self.assertEqual(resumen["historicos_pendientes"], 2)
@@ -833,13 +1118,22 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertEqual(resumen["segundos_medios_por_decision"], 12)
 
     def test_objetivo_visual_usa_componentes_sin_cambiar_geometria_original(self):
+        """Comprueba que localizar el objetivo con sus componentes conserva la geometría
+        original.
+        """
+
         from paneles_solares.visualizacion.revisar_seguimiento import objetivos_visuales
 
-        original = self.almacen.filas("SELECT geometria FROM emplazamientos WHERE id='a'")[0]
+        original = self.almacen.filas(
+            "SELECT geometria FROM emplazamientos WHERE id='a'"
+        )[0]
         paneles = box(50, 2, 57, 8)
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO componentes(id,ventana,anio,geometria,area) VALUES ('panel','v',2023,?,?)",
+                (
+                    "INSERT INTO componentes(id,ventana,anio,geometria,area) VALUES "
+                    "('panel','v',2023,?,?)"
+                ),
                 (paneles.wkb, paneles.area),
             )
             self.almacen.db.execute("INSERT INTO miembros VALUES ('panel','a')")
@@ -847,11 +1141,14 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertTrue(objetivo["geometria"].equals(paneles))
         self.assertFalse(objetivo["provisional"])
         self.assertEqual(
-            original, self.almacen.filas("SELECT geometria FROM emplazamientos WHERE id='a'")[0]
+            original,
+            self.almacen.filas("SELECT geometria FROM emplazamientos WHERE id='a'")[0],
         )
         self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
 
     def test_marco_objetivo_sigue_visible_sin_capas_y_en_ambas_campanias(self):
+        """Comprueba que el objetivo permanece visible en ambas campañas al ocultar capas."""
+
         with self.visor_preparado() as visor:
             visor.capas["Agrupación"].set(False)
             visor.capas["Predicción"].set(False)
@@ -867,9 +1164,14 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
 
     def test_click_en_otro_caso_cambia_objetivo_sin_copiar_respuestas(self):
+        """Comprueba que seleccionar otro objetivo no copia sus respuestas."""
+
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('b','v',?,'prueba')",
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('b','v',?,'prueba')"
+                ),
                 (box(50, 10, 60, 20).wkb,),
             )
         with self.visor_preparado() as visor:
@@ -891,9 +1193,14 @@ class PruebasSeguimiento(unittest.TestCase):
             )
 
     def test_arrastrar_la_foto_no_selecciona_un_vecino(self):
+        """Comprueba que arrastrar una foto no selecciona otro emplazamiento."""
+
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES ('b','v',?,'prueba')",
+                (
+                    "INSERT INTO emplazamientos(id,ventana,geometria,origen) VALUES "
+                    "('b','v',?,'prueba')"
+                ),
                 (box(50, 10, 60, 20).wkb,),
             )
         with self.visor_preparado() as visor:
@@ -909,6 +1216,8 @@ class PruebasSeguimiento(unittest.TestCase):
             self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
 
     def test_centrar_recupera_un_objetivo_fuera_de_vista(self):
+        """Comprueba que centrar vuelve a mostrar un objetivo fuera del encuadre."""
+
         with self.visor_preparado() as visor:
             visor.zoom, visor.centro = 8.0, [0.98, 0.01]
             visor.dibujar()
@@ -921,13 +1230,26 @@ class PruebasSeguimiento(unittest.TestCase):
             )
 
     def test_guardado_sobrevive_a_cierre_abrupto(self):
-        codigo = "from paneles_solares.datos.seguimiento import AlmacenSeguimiento; import os; s=AlmacenSeguimiento(__import__('pathlib').Path(__import__('sys').argv[1])); s.guardar_observacion('a',2023,'presente',4); os._exit(0)"
-        subprocess.run([sys.executable, "-c", codigo, str(self.almacen.ruta)], check=True)
+        """Comprueba que una respuesta guardada sobrevive al cierre abrupto del proceso."""
+
+        codigo = (
+            "from paneles_solares.datos.seguimiento import AlmacenSeguimiento; import "
+            "os; "
+            "s=AlmacenSeguimiento(__import__('pathlib').Path(__import__('sys').argv[1]));"
+            " s.guardar_observacion('a',2023,'presente',4); os._exit(0)"
+        )
+        subprocess.run(
+            [sys.executable, "-c", codigo, str(self.almacen.ruta)], check=True
+        )
         o = self.almacen.filas("SELECT * FROM observaciones")
         self.assertEqual(o[0]["decision"], "presente")
-        self.assertEqual(self.almacen.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(
+            self.almacen.db.execute("PRAGMA integrity_check").fetchone()[0], "ok"
+        )
 
     def test_correccion_deshacer_y_reapertura_no_borran_original(self):
+        """Comprueba que corregir, deshacer y reabrir conservan la observación original."""
+
         self.almacen.guardar_observacion(
             "a", 2020, "presente", 4, original={"decision": "presente", "anio": 2020}
         )
@@ -937,7 +1259,8 @@ class PruebasSeguimiento(unittest.TestCase):
         self.almacen.cerrar()
         self.almacen = AlmacenSeguimiento(self.carpeta / "seguimiento.sqlite")
         self.assertEqual(
-            self.almacen.filas("SELECT decision FROM observaciones")[0]["decision"], "dudosa"
+            self.almacen.filas("SELECT decision FROM observaciones")[0]["decision"],
+            "dudosa",
         )
         self.almacen.deshacer()
         o = self.almacen.filas("SELECT * FROM observaciones")[0]
@@ -946,6 +1269,8 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertEqual(len(self.almacen.filas("SELECT * FROM acciones")), 2)
 
     def test_soportes_y_asociacion_no_cambian_cronologia(self):
+        """Comprueba que corregir soporte y asociación no cambia la cronología."""
+
         self.almacen.guardar_observacion(
             "a", 2020, "presente", etiquetas=["ampliacion", "edificio_nuevo"]
         )
@@ -964,33 +1289,54 @@ class PruebasSeguimiento(unittest.TestCase):
                 cubiertas=["cubierta_manual_jardin"],
             )
         self.assertEqual(
-            self.almacen.filas("SELECT decision FROM observaciones")[0]["decision"], "presente"
+            self.almacen.filas("SELECT decision FROM observaciones")[0]["decision"],
+            "presente",
         )
         self.assertEqual(
-            json.loads(self.almacen.filas("SELECT edificios FROM emplazamientos")[0]["edificios"]),
+            json.loads(
+                self.almacen.filas("SELECT edificios FROM emplazamientos")[0][
+                    "edificios"
+                ]
+            ),
             [],
         )
 
     def test_intervalos_solo_con_observaciones_no_con_predicciones(self):
+        """Comprueba que los intervalos se derivan únicamente de observaciones humanas."""
+
         anios = [2014, 2017, 2020, 2023]
 
         def obs(secuencia):
+            """Construye observaciones completas a partir de una secuencia de decisiones.
+
+            Args:
+                secuencia: Decisiones que forman la secuencia histórica de prueba.
+
+            Returns:
+                list[dict]: Observaciones completas para los años de la prueba.
+            """
+
             return [
                 {"anio": a, "decision": d, "alcance": "emplazamiento_completo"}
                 for a, d in zip(anios, secuencia)
             ]
 
-        resultado = derivar_historia(obs(["ausente", "ausente", "presente", "presente"]), anios)
-        self.assertEqual(
-            (resultado["aparicion_despues_de"], resultado["aparicion_hasta"]), (2017, 2020)
+        resultado = derivar_historia(
+            obs(["ausente", "ausente", "presente", "presente"]), anios
         )
-        resultado = derivar_historia(obs(["presente", "ausente", "presente", "presente"]), anios)
+        self.assertEqual(
+            (resultado["aparicion_despues_de"], resultado["aparicion_hasta"]),
+            (2017, 2020),
+        )
+        resultado = derivar_historia(
+            obs(["presente", "ausente", "presente", "presente"]), anios
+        )
         self.assertTrue(resultado["secuencia_anomala"])
         self.assertIsNone(resultado["aparicion_despues_de"])
         self.assertEqual(
-            derivar_historia(obs(["ausente", "no_evaluable", "presente", "presente"]), anios)[
-                "estado_historia"
-            ],
+            derivar_historia(
+                obs(["ausente", "no_evaluable", "presente", "presente"]), anios
+            )["estado_historia"],
             "primera_presencia_intervalo_no_resuelto",
         )
         self.assertEqual(
@@ -1008,8 +1354,12 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertIsNone(derivar_historia(parciales, anios)["aparicion_despues_de"])
 
     def test_componentes_exteriores_pequenos_y_bordes_se_conservan(self):
+        """Comprueba que se conservan componentes exteriores, pequeños y de borde."""
+
         geo = GeografiaSeguimiento.__new__(GeografiaSeguimiento)
-        geo.edificios = gpd.GeoDataFrame(geometry=[box(20, 20, 30, 30)], crs="EPSG:25830")
+        geo.edificios = gpd.GeoDataFrame(
+            geometry=[box(20, 20, 30, 30)], crs="EPSG:25830"
+        )
         geo.municipios = gpd.GeoDataFrame(
             [{"codigo": "x", "municipio": "Prueba", "geometry": box(0, 0, 200, 200)}],
             crs="EPSG:25830",
@@ -1028,51 +1378,89 @@ class PruebasSeguimiento(unittest.TestCase):
         geometria = c[0]["geometria"]
         registrar_componentes(self.almacen, ventana, 2023, p, "modelo", geo, "prueba")
         self.assertEqual(len(self.almacen.filas("SELECT * FROM componentes")), 2)
-        self.assertEqual(geometria, self.almacen.filas("SELECT * FROM componentes")[0]["geometria"])
+        self.assertEqual(
+            geometria, self.almacen.filas("SELECT * FROM componentes")[0]["geometria"]
+        )
 
     def test_relacion_desplazada_y_proxima_no_afirma_paneles(self):
+        """Comprueba que una relación catastral próxima no confirma presencia de paneles."""
+
         geo = GeografiaSeguimiento.__new__(GeografiaSeguimiento)
-        geo.edificios = gpd.GeoDataFrame(geometry=[box(20, 20, 30, 30)], crs="EPSG:25830")
+        geo.edificios = gpd.GeoDataFrame(
+            geometry=[box(20, 20, 30, 30)], crs="EPSG:25830"
+        )
         geo.municipios = gpd.GeoDataFrame(
             [{"codigo": "x", "municipio": "Prueba", "geometry": box(0, 0, 100, 100)}],
             crs="EPSG:25830",
         )
         geo.proximidad = 1.3
-        self.assertEqual(geo.describir(box(29, 20, 32, 25))["relacion"], "parcial_desplazado")
+        self.assertEqual(
+            geo.describir(box(29, 20, 32, 25))["relacion"], "parcial_desplazado"
+        )
         cercano = geo.describir(box(30.5, 20, 33, 25))
         self.assertEqual(cercano["relacion"], "proximo")
         self.assertEqual(cercano["edificios"], [])
         self.assertEqual(len(self.almacen.filas("SELECT * FROM observaciones")), 0)
 
     def test_reagrupacion_preserva_revisiones_y_originales(self):
+        """Comprueba que reorganizar componentes conserva revisiones y emplazamientos
+        originales.
+        """
+
         with self.almacen.db:
             self.almacen.db.execute(
-                "INSERT INTO componentes(id,ventana,anio,geometria,area,municipio,codigo_municipal) VALUES ('c1','v',2023,?,4,'Prueba','x')",
+                (
+                    "INSERT INTO "
+                    "componentes(id,ventana,anio,geometria,area,municipio,codigo_municipal)"
+                    " VALUES ('c1','v',2023,?,4,'Prueba','x')"
+                ),
                 (box(10, 10, 12, 12).wkb,),
             )
             self.almacen.db.execute(
-                "INSERT INTO componentes(id,ventana,anio,geometria,area,municipio,codigo_municipal) VALUES ('c2','v',2023,?,4,'Prueba','x')",
+                (
+                    "INSERT INTO "
+                    "componentes(id,ventana,anio,geometria,area,municipio,codigo_municipal)"
+                    " VALUES ('c2','v',2023,?,4,'Prueba','x')"
+                ),
                 (box(12, 10, 14, 12).wkb,),
             )
-            self.almacen.db.executemany("INSERT INTO miembros VALUES (?,'a')", [("c1",), ("c2",)])
-        self.almacen.guardar_observacion("a", 2020, "presente", etiquetas=["ampliacion"])
+            self.almacen.db.executemany(
+                "INSERT INTO miembros VALUES (?,'a')", [("c1",), ("c2",)]
+            )
+        self.almacen.guardar_observacion(
+            "a", 2020, "presente", etiquetas=["ampliacion"]
+        )
         nuevos = self.almacen.reorganizar(["a"], [["c1"], ["c2"]])
         self.assertEqual(len(nuevos), 2)
         self.assertEqual(
-            self.almacen.filas("SELECT decision FROM observaciones")[0]["decision"], "presente"
+            self.almacen.filas("SELECT decision FROM observaciones")[0]["decision"],
+            "presente",
         )
         self.assertEqual(
-            self.almacen.filas("SELECT activo FROM emplazamientos WHERE id='a'")[0]["activo"], 0
+            self.almacen.filas("SELECT activo FROM emplazamientos WHERE id='a'")[0][
+                "activo"
+            ],
+            0,
         )
         self.almacen.deshacer()
         self.assertTrue(
-            all(m["emplazamiento"] == "a" for m in self.almacen.filas("SELECT * FROM miembros"))
+            all(
+                m["emplazamiento"] == "a"
+                for m in self.almacen.filas("SELECT * FROM miembros")
+            )
         )
         self.assertEqual(
-            self.almacen.filas("SELECT activo FROM emplazamientos WHERE id='a'")[0]["activo"], 1
+            self.almacen.filas("SELECT activo FROM emplazamientos WHERE id='a'")[0][
+                "activo"
+            ],
+            1,
         )
 
     def test_preparacion_independiente_reutiliza_imagenes_tras_ausencia(self):
+        """Comprueba que una ausencia no impide preparar otras campañas ni reutilizar
+        fotos.
+        """
+
         config = cargar_config()
         self.almacen.poner_meta("piloto_importado", True)
         self.almacen.guardar_observacion("a", 2023, "referencia_incorrecta")
@@ -1092,7 +1480,9 @@ class PruebasSeguimiento(unittest.TestCase):
                 )
         with (
             patch("paneles_solares.etiquetado.preparar_seguimiento.PESOS_UNET", pesos),
-            patch("paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"),
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"
+            ),
             patch("paneles_solares.etiquetado.preparar_seguimiento.comprobar_wcs"),
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs",
@@ -1111,6 +1501,10 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertEqual(len(self.almacen.filas("SELECT * FROM observaciones")), 2)
 
     def test_precarga_no_descarga_historicos_de_zona_provisional_sin_detecciones(self):
+        """Comprueba que la precarga evita históricos de zonas provisionales sin
+        detecciones.
+        """
+
         self.almacen.poner_meta("piloto_importado", True)
         with self.almacen.db:
             self.almacen.db.execute(
@@ -1121,12 +1515,16 @@ class PruebasSeguimiento(unittest.TestCase):
         completas = []
         with (
             patch("paneles_solares.etiquetado.preparar_seguimiento.PESOS_UNET", pesos),
-            patch("paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"),
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"
+            ),
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.leer_referencia_local",
                 return_value=(Image.new("RGB", (512, 512)), "prueba"),
             ),
-            patch("paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs") as descargar,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs"
+            ) as descargar,
             patch("paneles_solares.etiquetado.preparar_seguimiento.cargar_modelo"),
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.predecir",
@@ -1142,7 +1540,9 @@ class PruebasSeguimiento(unittest.TestCase):
             )
         descargar.assert_not_called()
         self.assertEqual(completas, ["v"])
-        self.assertEqual([r["anio"] for r in self.almacen.filas("SELECT * FROM recursos")], [2023])
+        self.assertEqual(
+            [r["anio"] for r in self.almacen.filas("SELECT * FROM recursos")], [2023]
+        )
         self.assertEqual(self.almacen.filas("SELECT * FROM observaciones"), [])
         import tkinter as tk
 
@@ -1155,7 +1555,9 @@ class PruebasSeguimiento(unittest.TestCase):
                 "paneles_solares.visualizacion.revisar_seguimiento.gpd.read_file",
                 return_value=gpd.GeoDataFrame(geometry=[], crs="EPSG:25830"),
             ):
-                visor = VisorSeguimiento(raiz, self.almacen, {**cargar_config(), "precarga": False})
+                visor = VisorSeguimiento(
+                    raiz, self.almacen, {**cargar_config(), "precarga": False}
+                )
             self.assertEqual(
                 visor.sitios_sin_fotos(), []
             )  # No se reintenta un negativo ya procesado.
@@ -1164,12 +1566,25 @@ class PruebasSeguimiento(unittest.TestCase):
         finally:
             raiz.destroy()
 
-    def test_registrar_predicciones_no_bloquea_el_guardado_humano_durante_geografia(self):
+    def test_registrar_predicciones_no_bloquea_el_guardado_humano_durante_geografia(
+        self,
+    ):
+        """Comprueba que los cálculos geográficos no bloquean el guardado de respuestas."""
+
         segundo, liberar = Event(), Event()
         errores = []
         llamadas = 0
 
         def describir(geometria):
+            """Describe la geometría de prueba sin asociarla a edificios.
+
+            Args:
+                geometria: Geometría original en EPSG:25830.
+
+            Returns:
+                dict: Relación catastral y municipio simulados.
+            """
+
             nonlocal llamadas
             llamadas += 1
             if llamadas == 2:
@@ -1186,6 +1601,8 @@ class PruebasSeguimiento(unittest.TestCase):
             }
 
         def registrar():
+            """Registra los componentes de prueba desde una conexión independiente."""
+
             almacen = AlmacenSeguimiento(self.almacen.ruta)
             try:
                 ventana = almacen.filas("SELECT * FROM ventanas WHERE id='v'")[0]
@@ -1227,6 +1644,8 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertEqual(len(self.almacen.filas("SELECT * FROM componentes")), 2)
 
     def test_preparacion_recupera_foto_perdida_sin_repetir_prediccion(self):
+        """Comprueba que recuperar una foto perdida conserva su predicción existente."""
+
         config = cargar_config()
         self.almacen.poner_meta("piloto_importado", True)
         pesos = self.carpeta / "modelo.pt"
@@ -1241,7 +1660,16 @@ class PruebasSeguimiento(unittest.TestCase):
             with self.almacen.db:
                 self.almacen.db.execute(
                     "INSERT INTO recursos VALUES (?,?,?,?,?,?,?,?)",
-                    ("v", anio, str(imagen), str(prediccion), "prueba", "", 0.15, firma),
+                    (
+                        "v",
+                        anio,
+                        str(imagen),
+                        str(prediccion),
+                        "prueba",
+                        "",
+                        0.15,
+                        firma,
+                    ),
                 )
         self.almacen.guardar_observacion("a", 2020, "ausente", notas="Conservar")
         original = self.almacen.filas("SELECT * FROM observaciones")
@@ -1249,13 +1677,17 @@ class PruebasSeguimiento(unittest.TestCase):
         avances = []
         with (
             patch("paneles_solares.etiquetado.preparar_seguimiento.PESOS_UNET", pesos),
-            patch("paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"),
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"
+            ),
             patch("paneles_solares.etiquetado.preparar_seguimiento.comprobar_wcs"),
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs",
                 return_value=(Image.new("RGB", (32, 32)), "prueba"),
             ) as descargar,
-            patch("paneles_solares.etiquetado.preparar_seguimiento.predecir") as predecir,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.predecir"
+            ) as predecir,
         ):
             preparar_lote(self.almacen, config, 1, progreso=avances.append)
             descargar.assert_called_once()
@@ -1267,6 +1699,8 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertIn("2014", avances[-1])
 
     def test_preparacion_predeterminada_no_vuelve_a_casos_terminados(self):
+        """Comprueba que preparar un lote omite los casos ya terminados."""
+
         self.almacen.poner_meta("piloto_importado", True)
         for anio in (2020, 2017, 2014):
             self.almacen.guardar_observacion("a", anio, "ausente")
@@ -1274,9 +1708,15 @@ class PruebasSeguimiento(unittest.TestCase):
         pesos.write_bytes(b"modelo_de_prueba")
         with (
             patch("paneles_solares.etiquetado.preparar_seguimiento.PESOS_UNET", pesos),
-            patch("paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"),
-            patch("paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs") as descargar,
-            patch("paneles_solares.etiquetado.preparar_seguimiento.predecir") as predecir,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.GeografiaSeguimiento"
+            ),
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs"
+            ) as descargar,
+            patch(
+                "paneles_solares.etiquetado.preparar_seguimiento.predecir"
+            ) as predecir,
         ):
             preparar_lote(self.almacen, cargar_config(), 1)
             descargar.assert_not_called()
@@ -1284,6 +1724,8 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertEqual(len(self.almacen.filas("SELECT * FROM observaciones")), 3)
 
     def test_exportacion_no_cuenta_agrupaciones_dudosas(self):
+        """Comprueba que exportar no da por resueltas las agrupaciones dudosas."""
+
         self.almacen.guardar_observacion("a", 2023, "presente")
         s = generar_resumen(self.almacen, self.carpeta / "resultados", True)
         self.assertEqual(s["emplazamientos_validos_observados"], 0)
@@ -1299,6 +1741,10 @@ class PruebasSeguimiento(unittest.TestCase):
         )
 
     def test_cubierta_sin_comprobar_catastro_conserva_cronologia_y_se_exporta(self):
+        """Comprueba que una cubierta sin asociación confirmada conserva su historia al
+        exportar.
+        """
+
         self.almacen.guardar_observacion("a", 2023, "presente")
         self.almacen.guardar_observacion("a", 2020, "ausente")
         original = self.almacen.filas("SELECT * FROM observaciones ORDER BY anio")
@@ -1306,14 +1752,21 @@ class PruebasSeguimiento(unittest.TestCase):
         resumen = generar_resumen(self.almacen, self.carpeta / "resumen")
         self.assertEqual(resumen["soportes_confirmados"]["cubierta"], 1)
         self.assertEqual(resumen["cubiertas_catastrales_con_fv_confirmadas"], 0)
-        self.assertEqual(original, self.almacen.filas("SELECT * FROM observaciones ORDER BY anio"))
+        self.assertEqual(
+            original, self.almacen.filas("SELECT * FROM observaciones ORDER BY anio")
+        )
 
     def test_contexto_interrumpido_reanuda_sin_crear_otras_ventanas(self):
+        """Comprueba que reanudar un contexto utiliza las ventanas ya registradas."""
+
         config = cargar_config()
         with (
             patch(
                 "paneles_solares.etiquetado.preparar_seguimiento.extraer_wcs",
-                side_effect=[(Image.new("RGB", (512, 512)), "prueba"), OSError("Corte")],
+                side_effect=[
+                    (Image.new("RGB", (512, 512)), "prueba"),
+                    OSError("Corte"),
+                ],
             ),
             self.assertRaises(OSError),
         ):
@@ -1329,8 +1782,12 @@ class PruebasSeguimiento(unittest.TestCase):
         self.assertEqual(self.almacen.filas("SELECT * FROM contextos"), ventanas)
 
     def test_agrupacion_cruza_borde_de_tesela_sin_duplicar_sitio(self):
+        """Comprueba que una agrupación entre teselas no duplica el emplazamiento."""
+
         geo = GeografiaSeguimiento.__new__(GeografiaSeguimiento)
-        geo.edificios = gpd.GeoDataFrame(geometry=[box(20, 20, 30, 30)], crs="EPSG:25830")
+        geo.edificios = gpd.GeoDataFrame(
+            geometry=[box(20, 20, 30, 30)], crs="EPSG:25830"
+        )
         geo.municipios = gpd.GeoDataFrame(
             [{"codigo": "x", "municipio": "Prueba", "geometry": box(0, 0, 200, 200)}],
             crs="EPSG:25830",
@@ -1356,6 +1813,10 @@ class PruebasSeguimiento(unittest.TestCase):
 class PruebasDatosReales(unittest.TestCase):
     @unittest.skipUnless(BASE.exists(), "Requiere el piloto local preparado")
     def test_depuradora_distingue_geometria_antigua_de_paneles_en_suelo(self):
+        """Comprueba con datos reales la separación entre el objetivo antiguo y los paneles
+        en suelo.
+        """
+
         import tkinter as tk
 
         from paneles_solares.visualizacion.revisar_seguimiento import VisorSeguimiento
@@ -1371,13 +1832,19 @@ class PruebasDatosReales(unittest.TestCase):
             raiz = tk.Tk()
             raiz.withdraw()
             try:
-                visor = VisorSeguimiento(raiz, almacen, {**cargar_config(), "precarga": False})
-                original = almacen.filas("SELECT * FROM observaciones ORDER BY emplazamiento,anio")
+                visor = VisorSeguimiento(
+                    raiz, almacen, {**cargar_config(), "precarga": False}
+                )
+                original = almacen.filas(
+                    "SELECT * FROM observaciones ORDER BY emplazamiento,anio"
+                )
                 visor.mostrar("edificio_13532_cubierta_0", 2014)
                 objetivo = next(o for o in visor.objetivos if o["seleccionado"])
                 self.assertTrue(objetivo["provisional"])
                 self.assertEqual(objetivo["componentes"], 0)
-                self.assertIn("UBICACIÓN PROVISIONAL", visor.indicacion_objetivo.cget("text"))
+                self.assertIn(
+                    "UBICACIÓN PROVISIONAL", visor.indicacion_objetivo.cget("text")
+                )
                 panel = visor.paneles[0]
                 marca = next(
                     m
@@ -1394,7 +1861,9 @@ class PruebasDatosReales(unittest.TestCase):
                 )
                 self.assertEqual(
                     original,
-                    almacen.filas("SELECT * FROM observaciones ORDER BY emplazamiento,anio"),
+                    almacen.filas(
+                        "SELECT * FROM observaciones ORDER BY emplazamiento,anio"
+                    ),
                 )
             finally:
                 raiz.destroy()
@@ -1402,6 +1871,8 @@ class PruebasDatosReales(unittest.TestCase):
 
     @unittest.skipUnless(BASE.exists(), "Requiere el piloto local preparado")
     def test_visor_real_guarda_notas_soporte_y_correccion(self):
+        """Comprueba que el visor guarda notas y correcciones en una copia de datos reales."""
+
         import tkinter as tk
 
         from paneles_solares.visualizacion.revisar_seguimiento import VisorSeguimiento
@@ -1417,7 +1888,9 @@ class PruebasDatosReales(unittest.TestCase):
             raiz = tk.Tk()
             raiz.withdraw()
             try:
-                visor = VisorSeguimiento(raiz, s, {**cargar_config(), "precarga": False}, 12)
+                visor = VisorSeguimiento(
+                    raiz, s, {**cargar_config(), "precarga": False}, 12
+                )
                 sitio = s.meta("muestra_previa_sitios")[0]
                 visor.mostrar(sitio, 2020)
                 visor.notas.set("Paneles en terreno: prueba aislada")
@@ -1429,19 +1902,21 @@ class PruebasDatosReales(unittest.TestCase):
                 visor.mostrar(sitio, 2020)
                 visor.corregir_referencia("dudosa")
                 o = s.filas(
-                    "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=2023", (sitio,)
+                    "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=2023",
+                    (sitio,),
                 )[0]
                 self.assertEqual(o["decision"], "dudosa")
                 self.assertIn("Comparación 2020→2023", o["notas"])
                 self.assertIn("ampliacion", json.loads(o["etiquetas"]))
                 o2020 = s.filas(
-                    "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=2020", (sitio,)
+                    "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=2020",
+                    (sitio,),
                 )[0]
                 self.assertEqual(o2020["notas"], "Paneles en terreno: prueba aislada")
                 self.assertEqual(
-                    s.filas("SELECT soporte FROM emplazamientos WHERE id=?", (sitio,))[0][
-                        "soporte"
-                    ],
+                    s.filas("SELECT soporte FROM emplazamientos WHERE id=?", (sitio,))[
+                        0
+                    ]["soporte"],
                     "suelo",
                 )
                 self.assertEqual(len(visor.fotos), 2)
@@ -1451,6 +1926,8 @@ class PruebasDatosReales(unittest.TestCase):
 
     @unittest.skipUnless(BASE.exists(), "Requiere el piloto local preparado")
     def test_flujo_real_en_copia_transaccional_sin_tocar_progreso(self):
+        """Comprueba el flujo completo en una copia consistente de la base real."""
+
         original = BASE.parent / "revisiones.csv"
         firma = hashlib.sha256(original.read_bytes()).hexdigest()
         with tempfile.TemporaryDirectory() as carpeta:
@@ -1461,28 +1938,43 @@ class PruebasDatosReales(unittest.TestCase):
             ):
                 origen.backup(destino)
             s = AlmacenSeguimiento(ruta)
-            importadas = s.filas("SELECT * FROM observaciones WHERE original IS NOT NULL")
+            importadas = s.filas(
+                "SELECT * FROM observaciones WHERE original IS NOT NULL"
+            )
             self.assertEqual(len(importadas), 44)
             c = s.filas(
-                "SELECT c.*,m.emplazamiento FROM componentes c JOIN miembros m ON m.componente=c.id WHERE c.anio=2023 AND c.fraccion=0 ORDER BY c.area DESC LIMIT 1"
+                "SELECT c.*,m.emplazamiento FROM componentes c JOIN miembros m ON "
+                "m.componente=c.id WHERE c.anio=2023 AND c.fraccion=0 ORDER BY "
+                "c.area DESC LIMIT 1"
             )[0]
             sid = c["emplazamiento"]
             geom = c["geometria"]
-            s.guardar_observacion(sid, 2023, "presente", 2, etiquetas=["desplazamiento_ortofoto"])
+            s.guardar_observacion(
+                sid, 2023, "presente", 2, etiquetas=["desplazamiento_ortofoto"]
+            )
             s.modificar_sitio(
-                sid, soporte="construccion_no_catastrada", agrupacion="confirmada", edificios=[]
+                sid,
+                soporte="construccion_no_catastrada",
+                agrupacion="confirmada",
+                edificios=[],
             )
             s.guardar_observacion(sid, 2014, "presente")
             s.guardar_observacion(sid, 2017, "ausente")
-            s.guardar_observacion(sid, 2020, "presente", etiquetas=["reinstalacion", "ampliacion"])
+            s.guardar_observacion(
+                sid, 2020, "presente", etiquetas=["reinstalacion", "ampliacion"]
+            )
             s.cerrar()
             s = AlmacenSeguimiento(ruta)
             o = s.filas("SELECT * FROM observaciones WHERE emplazamiento=?", (sid,))
-            self.assertTrue(derivar_historia(o, [2014, 2017, 2020, 2023])["secuencia_anomala"])
+            self.assertTrue(
+                derivar_historia(o, [2014, 2017, 2020, 2023])["secuencia_anomala"]
+            )
             s.guardar_observacion(sid, 2017, "no_evaluable", notas="Sombra")
             s.deshacer()
             self.assertEqual(
-                s.filas("SELECT geometria FROM componentes WHERE id=?", (c["id"],))[0]["geometria"],
+                s.filas("SELECT geometria FROM componentes WHERE id=?", (c["id"],))[0][
+                    "geometria"
+                ],
                 geom,
             )
             for soporte in ("suelo", "marquesina", "mixto"):

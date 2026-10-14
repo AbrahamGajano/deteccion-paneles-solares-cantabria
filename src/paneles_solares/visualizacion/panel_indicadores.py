@@ -62,23 +62,87 @@ INDICADOR_INICIAL_ENERGIA = "produccion_anual_central_mwh"
 TOOLTIPS = [
     ("edificios_analizados", "texto_analizados", "Edificios analizados", 0, ""),
     ("edificios_con_deteccion", "texto_detectados", "Edificios con detección", 0, ""),
-    ("porcentaje_edificios_con_deteccion", "texto_porcentaje_edificios", "Edificios con detección (%)", 2, " %"),
-    ("superficie_fv_detectada_total_m2", "texto_superficie_detectada", "Superficie detectada", 2, " m²"),
-    ("superficie_fv_corregida_test_total_m2", "texto_superficie_corregida", "Superficie corregida (test)", 2, " m²"),
-    ("edificios_con_deteccion_por_1000", "texto_por_1000", "Edificios con detección por 1.000", 2, ""),
-    ("porcentaje_cubierta_ocupado", "texto_cubierta_ocupada", "Cubierta ocupada", 2, " %"),
-    ("superficie_fv_media_positivo_m2", "texto_media", "Media por edificio positivo", 2, " m²"),
-    ("superficie_fv_mediana_positivo_m2", "texto_mediana", "Mediana por edificio positivo", 2, " m²"),
+    (
+        "porcentaje_edificios_con_deteccion",
+        "texto_porcentaje_edificios",
+        "Edificios con detección (%)",
+        2,
+        " %",
+    ),
+    (
+        "superficie_fv_detectada_total_m2",
+        "texto_superficie_detectada",
+        "Superficie detectada",
+        2,
+        " m²",
+    ),
+    (
+        "superficie_fv_corregida_test_total_m2",
+        "texto_superficie_corregida",
+        "Superficie corregida (test)",
+        2,
+        " m²",
+    ),
+    (
+        "edificios_con_deteccion_por_1000",
+        "texto_por_1000",
+        "Edificios con detección por 1.000",
+        2,
+        "",
+    ),
+    (
+        "porcentaje_cubierta_ocupado",
+        "texto_cubierta_ocupada",
+        "Cubierta ocupada",
+        2,
+        " %",
+    ),
+    (
+        "superficie_fv_media_positivo_m2",
+        "texto_media",
+        "Media por edificio positivo",
+        2,
+        " m²",
+    ),
+    (
+        "superficie_fv_mediana_positivo_m2",
+        "texto_mediana",
+        "Mediana por edificio positivo",
+        2,
+        " m²",
+    ),
 ]
-TOOLTIPS_ENERGIA = [
-    (f"potencia_{escenario}_mwp", f"texto_potencia_{escenario}", f"Potencia pico {escenario} estimada", 3, " MWp")
-    for escenario in ("conservador", "central", "superior")
-] + [
-    (f"produccion_anual_{escenario}_mwh", f"texto_produccion_{escenario}", f"Producción anual {escenario} estimada", 2, " MWh/año")
-    for escenario in ("conservador", "central", "superior")
-] + [
-    ("rendimiento_anual_kwh_kwp", "texto_rendimiento_anual", "Rendimiento anual PVGIS", 2, " kWh/kWp"),
-]
+TOOLTIPS_ENERGIA = (
+    [
+        (
+            f"potencia_{escenario}_mwp",
+            f"texto_potencia_{escenario}",
+            f"Potencia pico {escenario} estimada",
+            3,
+            " MWp",
+        )
+        for escenario in ("conservador", "central", "superior")
+    ]
+    + [
+        (
+            f"produccion_anual_{escenario}_mwh",
+            f"texto_produccion_{escenario}",
+            f"Producción anual {escenario} estimada",
+            2,
+            " MWh/año",
+        )
+        for escenario in ("conservador", "central", "superior")
+    ]
+    + [
+        (
+            "rendimiento_anual_kwh_kwp",
+            "texto_rendimiento_anual",
+            "Rendimiento anual PVGIS",
+            2,
+            " kWh/kWp",
+        ),
+    ]
+)
 
 COLORES = ["#fff7bc", "#fee391", "#fec44f", "#fe9929", "#cc4c02"]
 COLOR_SIN_EDIFICIOS = "#9ca3af"
@@ -86,7 +150,16 @@ COLOR_SIN_DETECCIONES = "#d9efe2"
 
 
 def cargar_datos() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """Lee los resultados geográficos de la U-Net sin usar CSV por tesela."""
+    """Lee los resultados geográficos de la U-Net sin usar CSV por tesela.
+
+    Returns:
+        tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]: Municipios y edificios positivos
+            con sus indicadores y geometrías.
+
+    Raises:
+        FileNotFoundError: Falta el GeoPackage de edificios o de municipios.
+    """
+
     for ruta in (MUNICIPIOS, EDIFICIOS):
         if not ruta.is_file():
             raise FileNotFoundError(
@@ -102,35 +175,82 @@ def cargar_datos() -> tuple[gpd.GeoDataFrame, gpd.GeoDataFrame]:
     return municipios, positivos
 
 
-def integrar_produccion(municipios: gpd.GeoDataFrame) -> tuple[gpd.GeoDataFrame, dict | None]:
-    """Incorpora solo resúmenes energéticos compatibles con los GeoPackage actuales."""
+def integrar_produccion(
+    municipios: gpd.GeoDataFrame,
+) -> tuple[gpd.GeoDataFrame, dict | None]:
+    """Incorpora solo resúmenes energéticos compatibles con los GeoPackage actuales.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+
+    Returns:
+        tuple[gpd.GeoDataFrame, dict | None]: Municipios con energía y configuración, o
+            los originales y None.
+
+    Raises:
+        ValueError: El resumen energético no contiene los mismos municipios que el
+            GeoPackage.
+    """
+
     if not all(ruta.is_file() for ruta in (PRODUCCION_CONFIG, PRODUCCION_MUNICIPAL)):
         return municipios, None
     config = json.loads(PRODUCCION_CONFIG.read_text(encoding="utf-8"))
     if config["indicadores_entrada"] != version_indicadores():
         return municipios, None
     energia = pd.read_csv(PRODUCCION_MUNICIPAL, dtype={"codigo": str})
-    if energia.codigo.duplicated().any() or set(energia.codigo) != set(municipios.codigo.astype(str)):
-        raise ValueError("El resumen energético no contiene exactamente los municipios del GeoPackage")
+    if energia.codigo.duplicated().any() or set(energia.codigo) != set(
+        municipios.codigo.astype(str)
+    ):
+        raise ValueError(
+            "El resumen energético no contiene exactamente los municipios del GeoPackage"
+        )
     municipios = municipios.merge(
-        energia.drop(columns=["municipio", "superficie_fv_detectada_m2", "superficie_fv_corregida_test_m2"]),
-        on="codigo", validate="one_to_one",
+        energia.drop(
+            columns=[
+                "municipio",
+                "superficie_fv_detectada_m2",
+                "superficie_fv_corregida_test_m2",
+            ]
+        ),
+        on="codigo",
+        validate="one_to_one",
     )
     for escenario in ("conservador", "central", "superior"):
-        municipios[f"potencia_{escenario}_mwp"] = municipios[f"potencia_{escenario}_kwp"] / 1000
-        municipios[f"produccion_anual_{escenario}_mwh"] = municipios[f"produccion_anual_{escenario}_kwh"] / 1000
+        municipios[f"potencia_{escenario}_mwp"] = (
+            municipios[f"potencia_{escenario}_kwp"] / 1000
+        )
+        municipios[f"produccion_anual_{escenario}_mwh"] = (
+            municipios[f"produccion_anual_{escenario}_kwh"] / 1000
+        )
     return municipios, config
 
 
 def formatear_numero(valor: float, decimales: int = 2) -> str:
-    """Representa un número con miles y decimales en formato español."""
+    """Representa un número con miles y decimales en formato español.
+
+    Args:
+        valor: Número que se muestra.
+        decimales: Número de cifras decimales que se muestran.
+
+    Returns:
+        str: Número con separadores españoles de miles y decimales.
+    """
+
     return (
         f"{valor:,.{decimales}f}".replace(",", "_").replace(".", ",").replace("_", ".")
     )
 
 
 def preparar_tooltips(municipios: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
-    """Añade textos legibles sin modificar los indicadores numéricos."""
+    """Añade textos legibles sin modificar los indicadores numéricos.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+
+    Returns:
+        gpd.GeoDataFrame: Copia de los municipios con los campos de texto del mapa.
+    """
+
     datos = municipios.copy()
     campos = TOOLTIPS + (TOOLTIPS_ENERGIA if "potencia_central_kwp" in datos else [])
     for columna, texto, _, decimales, unidad in campos:
@@ -145,14 +265,25 @@ def preparar_tooltips(municipios: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
     sin_detecciones = datos.edificios_con_deteccion.eq(0)
     datos.loc[sin_detecciones, ["texto_media", "texto_mediana"]] = "Sin detecciones"
     if "potencia_central_kwp" in datos:
-        datos.loc[~datos.consultado_pvgis, "texto_rendimiento_anual"] = "Sin consulta PVGIS"
+        datos.loc[~datos.consultado_pvgis, "texto_rendimiento_anual"] = (
+            "Sin consulta PVGIS"
+        )
     return datos
 
 
 def crear_escalas(
     municipios: gpd.GeoDataFrame, indicadores: dict[str, tuple[str, str]]
 ) -> dict[str, dict]:
-    """Calcula cortes por cuantiles entre municipios con detección."""
+    """Calcula cortes por cuantiles entre municipios con detección.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+        indicadores: Campos del selector con sus títulos y unidades.
+
+    Returns:
+        dict[str, dict]: Título, unidad, cortes y colores por indicador.
+    """
+
     escalas = {}
     positivos = municipios.loc[municipios.edificios_con_deteccion.gt(0)]
     for columna, (titulo, unidad) in indicadores.items():
@@ -167,7 +298,17 @@ def crear_escalas(
 
 
 def color_municipio(propiedades: dict, columna: str, cortes: list[float]) -> str:
-    """Distingue falta de análisis, ausencia de detección y valor positivo."""
+    """Distingue falta de análisis, ausencia de detección y valor positivo.
+
+    Args:
+        propiedades: Propiedades del municipio en el GeoJSON.
+        columna: Campo numérico que se representa.
+        cortes: Límites de los intervalos de la escala de color.
+
+    Returns:
+        str: Color del intervalo o del estado sin edificios o detecciones.
+    """
+
     if propiedades["edificios_analizados"] == 0:
         return COLOR_SIN_EDIFICIOS
     if propiedades["edificios_con_deteccion"] == 0:
@@ -176,7 +317,16 @@ def color_municipio(propiedades: dict, columna: str, cortes: list[float]) -> str
 
 
 def texto_resumen(municipios: gpd.GeoDataFrame, con_energia: bool) -> str:
-    """Crea las cifras generales a partir de los indicadores municipales."""
+    """Crea las cifras generales a partir de los indicadores municipales.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+        con_energia: Indica si se dispone de producción compatible.
+
+    Returns:
+        str: Texto HTML con los totales y las hipótesis del análisis.
+    """
+
     analizados = int(municipios.edificios_analizados.sum())
     detectados = int(municipios.edificios_con_deteccion.sum())
     superficie = municipios.superficie_fv_detectada_total_m2.sum()
@@ -197,16 +347,27 @@ def texto_resumen(municipios: gpd.GeoDataFrame, con_energia: bool) -> str:
     if con_energia:
         cifras_energia = []
         for escenario in ("conservador", "central", "superior"):
-            cifras_energia.extend([
-                (f"Potencia pico {escenario} estimada", f"{formatear_numero(municipios[f'potencia_{escenario}_mwp'].sum())} MWp"),
-                (f"Producción anual {escenario} estimada", f"{formatear_numero(municipios[f'produccion_anual_{escenario}_mwh'].sum() / 1000)} GWh"),
-            ])
+            cifras_energia.extend(
+                [
+                    (
+                        f"Potencia pico {escenario} estimada",
+                        f"{formatear_numero(municipios[f'potencia_{escenario}_mwp'].sum())} MWp",
+                    ),
+                    (
+                        f"Producción anual {escenario} estimada",
+                        (
+                            f"{formatear_numero(municipios[f'produccion_anual_{escenario}_mwh'].sum() / 1000)} "
+                            f"GWh"
+                        ),
+                    ),
+                ]
+            )
         tarjetas_energia = "".join(
             f'<div class="cifra"><strong>{valor}</strong><span>{nombre}</span></div>'
             for nombre, valor in cifras_energia
         )
         energia_html = (
-            '<h3>Potencia pico y producción estimadas</h3>'
+            "<h3>Potencia pico y producción estimadas</h3>"
             f'<div class="cifras">{tarjetas_energia}</div>'
         )
     tarjetas = "".join(
@@ -215,13 +376,21 @@ def texto_resumen(municipios: gpd.GeoDataFrame, con_energia: bool) -> str:
     )
     return (
         '<div id="resumen-panel"><h2>Cantabria · U-Net</h2>'
-        f'{energia_html}<h3>Detecciones y superficies</h3>'
+        f"{energia_html}<h3>Detecciones y superficies</h3>"
         f'<div class="cifras">{tarjetas}</div></div>'
     )
 
 
 def puntos_calor(positivos: gpd.GeoDataFrame) -> list[list[float]]:
-    """Agrupa puntos interiores de edificios positivos en celdas de 1 km."""
+    """Agrupa puntos interiores de edificios positivos en celdas de 1 km.
+
+    Args:
+        positivos: Edificios con detección fotovoltaica.
+
+    Returns:
+        list[list[float]]: Puntos de mapa de calor ponderados por superficie detectada.
+    """
+
     if positivos.empty:
         return []
     puntos = positivos.representative_point()
@@ -246,9 +415,19 @@ def puntos_calor(positivos: gpd.GeoDataFrame) -> list[list[float]]:
 
 
 def controles_html(
-    municipios: gpd.GeoDataFrame, config_energia: dict | None,
+    municipios: gpd.GeoDataFrame,
+    config_energia: dict | None,
 ) -> str:
-    """Prepara el selector, la leyenda y el resumen general."""
+    """Prepara el selector, la leyenda y el resumen general.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+        config_energia: Hipótesis energéticas, o None si no hay resultados compatibles.
+
+    Returns:
+        str: Controles HTML y leyendas del panel municipal.
+    """
+
     con_energia = config_energia is not None
     opciones = "".join(
         f'<option value="{columna}">{titulo} ({unidad})</option>'
@@ -259,12 +438,13 @@ def controles_html(
             '<optgroup label="Potencia y producción estimadas">'
             + "".join(
                 f'<option value="{columna}"'
-                f'{" selected" if columna == INDICADOR_INICIAL_ENERGIA else ""}>'
-                f'{titulo} ({unidad})</option>'
+                f"{' selected' if columna == INDICADOR_INICIAL_ENERGIA else ''}>"
+                f"{titulo} ({unidad})</option>"
                 for columna, (titulo, unidad) in INDICADORES_ENERGIA.items()
             )
             + '</optgroup><optgroup label="Detecciones y superficies">'
-            + opciones + '</optgroup>'
+            + opciones
+            + "</optgroup>"
         )
     nota_energia = (
         "<p class='nota-panel'>La potencia pico y la producción son estimaciones, "
@@ -275,7 +455,8 @@ def controles_html(
         f"{config_energia['perdidas_pct']} % como hipótesis comunes; aún no se conoce "
         "la inclinación ni orientación real de cada cubierta. El perfil horario es "
         "representativo, no una medición real.</p>"
-        if con_energia else ""
+        if con_energia
+        else ""
     )
     return f"""
     <style>
@@ -309,7 +490,17 @@ def controles_html(
       <label for="indicador-select">Indicador municipal</label>
       <select id="indicador-select">{opciones}</select>
       <p id="titulo-indicador"></p>
-      {"<p class='nota-panel'>La potencia pico y la producción son estimaciones; consulta las hipótesis en la leyenda.</p>" if con_energia else "<p class='nota-panel'>Sin producción compatible: ejecuta estimar_energia.py y vuelve a generar este panel.</p>"}
+      {
+        (
+            "<p class='nota-panel'>La potencia pico y la producción son estimaciones; "
+            "consulta las hipótesis en la leyenda.</p>"
+        )
+        if con_energia
+        else (
+            "<p class='nota-panel'>Sin producción compatible: ejecuta estimar_energia.py "
+            "y vuelve a generar este panel.</p>"
+        )
+    }
     </div>
     <div class="panel-ui" id="leyenda-panel">
       <h3>Leyenda</h3><div id="leyenda-filas"></div>
@@ -324,7 +515,16 @@ def controles_html(
 
 
 def selector_javascript(capa: folium.GeoJson, escalas: dict[str, dict]) -> str:
-    """Cambia el estilo de un único GeoJSON y reconstruye su leyenda."""
+    """Cambia el estilo de un único GeoJSON y reconstruye su leyenda.
+
+    Args:
+        capa: Capa de municipios de Folium.
+        escalas: Escalas de color por indicador.
+
+    Returns:
+        str: Código JavaScript que actualiza la capa y su leyenda.
+    """
+
     return f"""
     document.addEventListener('DOMContentLoaded', function () {{
       const capa = {capa.get_name()};
@@ -374,10 +574,21 @@ def selector_javascript(capa: folium.GeoJson, escalas: dict[str, dict]) -> str:
 
 
 def crear_panel(
-    municipios: gpd.GeoDataFrame, positivos: gpd.GeoDataFrame,
+    municipios: gpd.GeoDataFrame,
+    positivos: gpd.GeoDataFrame,
     config_energia: dict | None = None,
 ) -> folium.Map:
-    """Crea el mapa municipal único y la capa opcional de calor."""
+    """Crea el mapa municipal único y la capa opcional de calor.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+        positivos: Edificios con detección fotovoltaica.
+        config_energia: Hipótesis energéticas, o None si no hay resultados compatibles.
+
+    Returns:
+        folium.Map: Mapa Folium con selector, leyendas y edificios positivos.
+    """
+
     con_energia = config_energia is not None
     indicadores = INDICADORES | (INDICADORES_ENERGIA if con_energia else {})
     escalas = crear_escalas(municipios, indicadores)
@@ -427,7 +638,13 @@ def crear_panel(
 def crear_resumen_png(
     municipios: gpd.GeoDataFrame, positivos: gpd.GeoDataFrame
 ) -> None:
-    """Dibuja cuatro gráficos para la memoria técnica."""
+    """Dibuja cuatro gráficos para la memoria técnica.
+
+    Args:
+        municipios: Indicadores y geometrías municipales.
+        positivos: Edificios con detección fotovoltaica.
+    """
+
     figura, ejes = plt.subplots(2, 2, figsize=(16, 12))
     figura.subplots_adjust(
         left=0.16, right=0.98, top=0.92, bottom=0.09, hspace=0.22, wspace=0.36
@@ -489,7 +706,10 @@ def crear_resumen_png(
     figura.text(
         0.5,
         0.025,
-        "Superficies planimétricas. La corrección es una calibración experimental del sesgo global del test (−7,54 %).",
+        (
+            "Superficies planimétricas. La corrección es una calibración experimental "
+            "del sesgo global del test (−7,54 %)."
+        ),
         ha="center",
         fontsize=9,
     )
@@ -499,6 +719,7 @@ def crear_resumen_png(
 
 def main() -> None:
     """Sobrescribe el panel HTML y el resumen PNG a partir de los GeoPackage."""
+
     municipios, positivos = cargar_datos()
     municipios, config_energia = integrar_produccion(municipios)
     crear_panel(municipios, positivos, config_energia).save(str(SALIDA_HTML))

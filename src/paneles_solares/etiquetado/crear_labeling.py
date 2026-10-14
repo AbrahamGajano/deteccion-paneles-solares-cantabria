@@ -17,7 +17,12 @@ from paneles_solares.datos.coleccion import (
 )
 from paneles_solares.geografia.ortofotos import leer_tesela
 from paneles_solares.modelos.unet import cargar_modelo, normalizar_rgb
-from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
+from paneles_solares.rutas import (
+    INDICE_TESELAS,
+    PESOS_UNET,
+    PESOS_YOLO,
+    PNOA,
+)
 
 # Deja a cero las categorías que no quieras utilizar.
 CANTIDAD_ALEATORIAS = 1000
@@ -27,7 +32,7 @@ CANTIDAD_MUCHAS_DETECCIONES = 0
 CANTIDAD_SIN_DETECCION = 0
 
 # Los modelos solo se cargan si alguna categoría los necesita.
-MODELO_YOLO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
+MODELO_YOLO = PESOS_YOLO
 MODELO_UNET = PESOS_UNET
 
 CONFIANZA_MIN = 0.40
@@ -46,18 +51,20 @@ DEVICE = 0
 SEMILLA = 42
 MAXIMO_CANDIDATAS = 20000  # None permite recorrer todo el índice.
 
-INDICE = ruta_proyecto("data/manifests/teselas.csv")
-PNOA = ruta_proyecto("data/pnoa")
+INDICE = INDICE_TESELAS
 
 
 def obtener_cantidades(pendientes: pd.DataFrame) -> dict[str, int]:
     """Obtiene cuántas imágenes se quieren de cada categoría.
 
     Args:
-        pendientes (pd.DataFrame): Imágenes que ya están en labeling.
+        pendientes: Imágenes que ya están en labeling.
 
     Returns:
         dict[str, int]: Cantidades pendientes de seleccionar.
+
+    Raises:
+        ValueError: Las cantidades son negativas o no se solicita ninguna imagen.
     """
 
     solicitadas = {
@@ -88,10 +95,13 @@ def cargar_candidatas(pendientes: pd.DataFrame) -> pd.DataFrame:
     """Obtiene teselas completas que todavía no se han utilizado.
 
     Args:
-        pendientes (pd.DataFrame): Imágenes que ya están en labeling.
+        pendientes: Imágenes que ya están en labeling.
 
     Returns:
         pd.DataFrame: Candidatas ordenadas aleatoriamente.
+
+    Raises:
+        ValueError: El límite de candidatas no es positivo ni None.
     """
 
     manifest = cargar_manifest(MANIFEST)
@@ -127,10 +137,15 @@ def cargar_modelo_yolo(cantidades: dict):
     """Carga YOLO únicamente cuando lo necesita alguna categoría.
 
     Args:
-        cantidades (dict): Cantidad solicitada de cada tipo.
+        cantidades: Cantidad solicitada de cada tipo.
 
     Returns:
         YOLO | None: Modelo cargado o None para muestreo solo aleatorio.
+
+    Raises:
+        ValueError: Los umbrales o el mínimo de detecciones son inválidos.
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
     """
 
     cantidad_yolo = (
@@ -161,10 +176,15 @@ def cargar_modelo_unet(cantidades: dict):
     """Carga U-Net únicamente cuando se solicitan discrepancias.
 
     Args:
-        cantidades (dict): Cantidad solicitada de cada tipo.
+        cantidades: Cantidad solicitada de cada tipo.
 
     Returns:
         tuple: Modelo U-Net y dispositivo, o dos None si no se necesitan.
+
+    Raises:
+        ValueError: Los umbrales o el mínimo de píxeles son inválidos.
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
     """
 
     if cantidades["discrepancias"] == 0:
@@ -198,9 +218,9 @@ def categoria_yolo(
     """Elige una categoría de YOLO que todavía tenga plazas disponibles.
 
     Args:
-        confianza (float): Mayor confianza encontrada en la imagen.
-        detecciones (int): Número de detecciones.
-        faltan (dict): Cantidades pendientes de cada categoría.
+        confianza: Mayor confianza encontrada en la imagen.
+        detecciones: Número de detecciones.
+        faltan: Cantidades pendientes de cada categoría.
 
     Returns:
         str: Categoría elegida o vacío si la imagen no interesa.
@@ -301,8 +321,8 @@ def son_discrepantes(mascara_yolo: np.ndarray, mascara_unet: np.ndarray) -> bool
     """Comprueba si las predicciones de YOLO y U-Net difieren lo suficiente.
 
     Args:
-        mascara_yolo (np.ndarray): Máscara binaria predicha por YOLO.
-        mascara_unet (np.ndarray): Máscara binaria predicha por U-Net.
+        mascara_yolo: Máscara binaria predicha por YOLO.
+        mascara_unet: Máscara binaria predicha por U-Net.
 
     Returns:
         bool: True cuando la imagen resulta interesante para revisar.
@@ -329,11 +349,14 @@ def guardar_muestra(
 
     Args:
         imagen: Array RGB que se quiere guardar.
-        fila (dict): Información de la imagen seleccionada.
-        pendientes (pd.DataFrame): Manifest que se ampliará con la nueva imagen.
+        fila: Información de la imagen seleccionada.
+        pendientes: Manifest que se ampliará con la nueva imagen.
 
     Returns:
         Path: Ruta del PNG guardado.
+
+    Raises:
+        FileExistsError: Ya existe un PNG con el mismo identificador.
     """
 
     destino = LABELING / "images" / f"{fila['tile_id']}.png"
@@ -361,9 +384,9 @@ def seleccionar_muestras(
     """Recorre las teselas y guarda las que cubren las cantidades solicitadas.
 
     Args:
-        candidatas (pd.DataFrame): Teselas que todavía no se han utilizado.
-        pendientes (pd.DataFrame): Manifest de labeling, que se irá ampliando.
-        faltan (dict): Cantidades que se irán descontando al guardar imágenes.
+        candidatas: Teselas que todavía no se han utilizado.
+        pendientes: Manifest de labeling, que se irá ampliando.
+        faltan: Cantidades que se irán descontando al guardar imágenes.
         modelo_yolo: YOLO cargado o None si no se necesita.
         modelo_unet: U-Net cargado o None si no se necesita.
         dispositivo: CPU o GPU utilizada por U-Net.

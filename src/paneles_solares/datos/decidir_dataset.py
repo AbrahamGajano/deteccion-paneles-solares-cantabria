@@ -12,7 +12,10 @@ from paneles_solares.datos.coleccion import (
     guardar_manifest,
 )
 from paneles_solares.modelos.unet import cargar_modelo, normalizar_rgb
-from paneles_solares.rutas import PESOS_UNET, ruta_proyecto
+from paneles_solares.rutas import (
+    PESOS_UNET,
+    PESOS_YOLO,
+)
 
 # La validación solo sale de imágenes aleatorias para que sea representativa.
 FRACCION_VAL_ALEATORIAS = 0.25
@@ -26,7 +29,7 @@ UMBRAL_YOLO = 0.20
 UMBRAL_UNET = 0.30
 MINIMO_PIXELES = 10
 
-MODELO_YOLO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
+MODELO_YOLO = PESOS_YOLO
 MODELO_UNET = PESOS_UNET
 
 IMGSZ = 640
@@ -45,10 +48,10 @@ def asignar_uso(
     """Asigna el uso de varias imágenes y conserva su valor anterior.
 
     Args:
-        manifest (pd.DataFrame): Manifest completo del pool.
-        indices (pd.Index): Filas que se quieren modificar.
-        uso (str): Nuevo uso de las imágenes.
-        motivo (str): Explicación breve de la decisión.
+        manifest: Manifest completo del pool.
+        indices: Filas que se quieren modificar.
+        uso: Nuevo uso de las imágenes.
+        motivo: Explicación breve de la decisión.
     """
 
     if len(indices) == 0:
@@ -63,10 +66,13 @@ def elegir_validacion(aleatorias: pd.DataFrame) -> pd.Index:
     """Elige una parte de las aleatorias manteniendo positivos y negativos.
 
     Args:
-        aleatorias (pd.DataFrame): Imágenes aleatorias válidas y pendientes.
+        aleatorias: Imágenes aleatorias válidas y pendientes.
 
     Returns:
         pd.Index: Filas que se utilizarán para validación.
+
+    Raises:
+        ValueError: La fracción de validación queda fuera del intervalo permitido.
     """
 
     if not 0 <= FRACCION_VAL_ALEATORIAS < 1:
@@ -91,8 +97,12 @@ def cargar_modelos() -> tuple[object, torch.nn.Module, torch.device]:
     """Carga una sola vez YOLO y U-Net para revisar las negativas.
 
     Returns:
-        tuple[object, torch.nn.Module, torch.device]:
-            Modelo YOLO, modelo U-Net y dispositivo de U-Net.
+        tuple[object, torch.nn.Module, torch.device]: Modelo YOLO, modelo U-Net y
+            dispositivo de U-Net.
+
+    Raises:
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
     """
 
     if not MODELO_YOLO.is_file():
@@ -119,11 +129,14 @@ def predecir_yolo(
     """Predice una imagen y resume la salida de YOLO.
 
     Args:
-        modelo (object): Modelo YOLO cargado.
-        imagen (np.ndarray): Imagen RGB.
+        modelo: Modelo YOLO cargado.
+        imagen: Imagen RGB.
 
     Returns:
         tuple[float, int, int]: Confianza máxima, detecciones y píxeles.
+
+    Raises:
+        ValueError: YOLO devuelve detecciones sin máscaras.
     """
 
     # Ultralytics interpreta los arrays como imágenes BGR.
@@ -160,9 +173,9 @@ def predecir_unet(
     """Cuenta los píxeles que U-Net considera panel solar.
 
     Args:
-        modelo (torch.nn.Module): Modelo U-Net cargado.
-        imagen (np.ndarray): Imagen RGB.
-        dispositivo (torch.device): CPU o GPU utilizada.
+        modelo: Modelo U-Net cargado.
+        imagen: Imagen RGB.
+        dispositivo: CPU o GPU utilizada.
 
     Returns:
         int: Número de píxeles predichos como panel.
@@ -189,11 +202,14 @@ def analizar_negativas(
     """Busca falsos positivos de YOLO y U-Net en imágenes negativas.
 
     Args:
-        manifest (pd.DataFrame): Manifest completo del pool.
-        negativas (pd.DataFrame): Negativas pendientes de decidir.
+        manifest: Manifest completo del pool.
+        negativas: Negativas pendientes de decidir.
 
     Returns:
         pd.Index: Negativas fáciles donde ninguno de los modelos falla.
+
+    Raises:
+        FileNotFoundError: Falta una imagen negativa del pool.
     """
 
     if negativas.empty:
@@ -274,10 +290,13 @@ def decidir_dataset(manifest: pd.DataFrame) -> pd.DataFrame:
     """Decide el uso de las imágenes válidas que continúan pendientes.
 
     Args:
-        manifest (pd.DataFrame): Manifest completo del pool.
+        manifest: Manifest completo del pool.
 
     Returns:
         pd.DataFrame: Manifest con las decisiones aplicadas.
+
+    Raises:
+        ValueError: Las cantidades o los tipos de las imágenes pendientes son inválidos.
     """
 
     if MAX_NEGATIVAS_FACILES < 0:
@@ -362,7 +381,7 @@ def mostrar_resumen(manifest: pd.DataFrame) -> None:
     """Muestra el resultado de la selección.
 
     Args:
-        manifest (pd.DataFrame): Manifest actualizado.
+        manifest: Manifest actualizado.
     """
 
     print("\nUso de las imágenes")

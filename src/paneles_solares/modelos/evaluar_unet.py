@@ -9,10 +9,15 @@ from PIL import Image
 from torch import nn
 from torch.utils.data import DataLoader
 
-from paneles_solares.modelos.unet import DatasetPaneles, UMBRAL, cargar_modelo
-from paneles_solares.rutas import EVALUACION_UNET, PESOS_UNET, ruta_proyecto
+from paneles_solares.modelos.metricas import calcular_metricas
+from paneles_solares.modelos.unet import UMBRAL, DatasetPaneles, cargar_modelo
+from paneles_solares.rutas import (
+    DATASET_UNET,
+    EVALUACION_UNET,
+    PESOS_UNET,
+)
 
-DATASET = ruta_proyecto("data/datasets/unet")
+DATASET = DATASET_UNET
 
 SALIDA = EVALUACION_UNET
 
@@ -38,7 +43,12 @@ CATEGORIAS_REVISION = (
 
 
 def crear_cargador_test() -> DataLoader:
-    """Crea el cargador de datos para el conjunto de test."""
+    """Crea el cargador de datos para el conjunto de test.
+
+    Returns:
+        DataLoader: Cargador del test, sin aumentos y con una imagen por lote.
+    """
+
     dataset = DatasetPaneles(
         DATASET,
         split="test",
@@ -62,7 +72,18 @@ def predecir(
     tensor: torch.Tensor,
     dispositivo: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Obtiene el mapa de probabilidades y la máscara binaria."""
+    """Obtiene el mapa de probabilidades y la máscara binaria.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        tensor: Imagen normalizada con dimensiones de lote y canales.
+        dispositivo: CPU o GPU utilizada por el modelo.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Mapa de probabilidades y máscara binaria de la
+            imagen.
+    """
+
     tensor = tensor.to(dispositivo)
 
     # No necesitamos calcular gradientes durante la evaluación.
@@ -85,50 +106,34 @@ def calcular_indicadores(
     predicha: np.ndarray,
     tile_id: str,
 ) -> dict:
-    """Calcula los aciertos y errores de segmentación de una imagen."""
+    """Calcula los aciertos y errores de segmentación de una imagen.
+
+    Args:
+        real: Máscara binaria anotada.
+        predicha: Máscara binaria predicha por el modelo.
+        tile_id: Identificador de la tesela.
+
+    Returns:
+        dict: Recuentos y métricas de segmentación por píxel.
+    """
+
     tp = np.count_nonzero(real & predicha)
     fp = np.count_nonzero(~real & predicha)
     fn = np.count_nonzero(real & ~predicha)
 
-    pixeles_reales = tp + fn
-    pixeles_predichos = tp + fp
-
-    # Si ambas máscaras están vacías, la segmentación es perfecta.
-    dice = 1.0 if 2 * tp + fp + fn == 0 else (2 * tp) / (2 * tp + fp + fn)
-
-    iou = 1.0 if tp + fp + fn == 0 else tp / (tp + fp + fn)
-
-    # No están definidas si no hay predicciones o positivos reales.
-    precision = np.nan if tp + fp == 0 else tp / (tp + fp)
-    recall = np.nan if tp + fn == 0 else tp / (tp + fn)
-
-    diferencia_superficie = pixeles_predichos - pixeles_reales
-
-    # Una imagen sin panel real no tiene sesgo relativo calculable.
-    sesgo_superficie = (
-        np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
-    )
-
-    resultado = {
-        "tile_id": tile_id,
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "dice": dice,
-        "iou": iou,
-        "precision": precision,
-        "recall": recall,
-        "pixeles_reales": pixeles_reales,
-        "pixeles_predichos": pixeles_predichos,
-        "diferencia_superficie": diferencia_superficie,
-        "sesgo_superficie": sesgo_superficie,
-    }
-
-    return resultado
+    return {"tile_id": tile_id, **calcular_metricas(tp, fp, fn)}
 
 
 def clasificar_resultado(resultado: dict) -> str:
-    """Clasifica una predicción según sus errores de segmentación."""
+    """Clasifica una predicción según sus errores de segmentación.
+
+    Args:
+        resultado: Resultado de la predicción de YOLO.
+
+    Returns:
+        str: Categoría de revisión según el exceso y el defecto de superficie.
+    """
+
     tp = resultado["tp"]
     fp = resultado["fp"]
     fn = resultado["fn"]
@@ -157,7 +162,17 @@ def crear_visualizacion(
     real: np.ndarray,
     predicha: np.ndarray,
 ) -> Image.Image:
-    """Dibuja visualmente los aciertos y errores del modelo."""
+    """Dibuja visualmente los aciertos y errores del modelo.
+
+    Args:
+        imagen: Imagen RGB que se procesa.
+        real: Máscara binaria anotada.
+        predicha: Máscara binaria predicha por el modelo.
+
+    Returns:
+        Image.Image: RGB con aciertos, falsos positivos y falsos negativos coloreados.
+    """
+
     imagen = np.asarray(
         imagen.convert("RGB"),
         dtype=np.float32,
@@ -186,6 +201,7 @@ def crear_visualizacion(
 
 def preparar_salida() -> None:
     """Elimina la evaluación anterior y crea las carpetas de salida."""
+
     if SALIDA.exists():
         shutil.rmtree(SALIDA)
 
@@ -200,7 +216,17 @@ def evaluar_dataset(
     cargador: DataLoader,
     dispositivo: torch.device,
 ) -> list[dict]:
-    """Evalúa todas las imágenes del conjunto de test."""
+    """Evalúa todas las imágenes del conjunto de test.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        cargador: Cargador de lotes del dataset.
+        dispositivo: CPU o GPU utilizada por el modelo.
+
+    Returns:
+        list[dict]: Indicadores individuales de todas las imágenes del test.
+    """
+
     resultados = []
 
     for indice, (imagenes, mascaras, tile_ids) in enumerate(cargador, start=1):
@@ -249,7 +275,12 @@ def evaluar_dataset(
 
 
 def guardar_resultados(resultados: list[dict]) -> None:
-    """Guarda los resultados individuales y calcula el resumen global."""
+    """Guarda los resultados individuales y calcula el resumen global.
+
+    Args:
+        resultados: Indicadores individuales de las imágenes evaluadas.
+    """
+
     if not resultados:
         print("No hay imágenes en el conjunto de test.")
         return
@@ -266,36 +297,9 @@ def guardar_resultados(resultados: list[dict]) -> None:
     fp = int(tabla["fp"].sum())
     fn = int(tabla["fn"].sum())
 
-    pixeles_reales = tp + fn
-    pixeles_predichos = tp + fp
+    metricas = calcular_metricas(tp, fp, fn)
 
-    dice = 1.0 if 2 * tp + fp + fn == 0 else (2 * tp) / (2 * tp + fp + fn)
-
-    iou = 1.0 if tp + fp + fn == 0 else tp / (tp + fp + fn)
-
-    precision = np.nan if tp + fp == 0 else tp / (tp + fp)
-    recall = np.nan if tp + fn == 0 else tp / (tp + fn)
-
-    diferencia_superficie = pixeles_predichos - pixeles_reales
-
-    sesgo_superficie = (
-        np.nan if pixeles_reales == 0 else diferencia_superficie / pixeles_reales
-    )
-
-    resumen = {
-        "imagenes": len(tabla),
-        "tp": tp,
-        "fp": fp,
-        "fn": fn,
-        "dice": dice,
-        "iou": iou,
-        "precision": precision,
-        "recall": recall,
-        "pixeles_reales": pixeles_reales,
-        "pixeles_predichos": pixeles_predichos,
-        "diferencia_superficie": diferencia_superficie,
-        "sesgo_superficie": sesgo_superficie,
-    }
+    resumen = {"imagenes": len(tabla), **metricas}
 
     pd.DataFrame([resumen]).to_csv(
         SALIDA / "resumen.csv",
@@ -305,11 +309,11 @@ def guardar_resultados(resultados: list[dict]) -> None:
     print()
     print("Resultados globales")
     print(f"Imágenes: {len(tabla)}")
-    print(f"Dice: {dice:.4f}")
-    print(f"IoU: {iou:.4f}")
-    print(f"Precision: {precision:.4f}")
-    print(f"Recall: {recall:.4f}")
-    print(f"Sesgo de superficie: {sesgo_superficie:.2%}")
+    print(f"Dice: {metricas['dice']:.4f}")
+    print(f"IoU: {metricas['iou']:.4f}")
+    print(f"Precision: {metricas['precision']:.4f}")
+    print(f"Recall: {metricas['recall']:.4f}")
+    print(f"Sesgo de superficie: {metricas['sesgo_superficie']:.2%}")
 
     print()
     print("Clasificación de imágenes")
@@ -320,6 +324,7 @@ def guardar_resultados(resultados: list[dict]) -> None:
 
 def main() -> None:
     """Ejecuta la evaluación completa del modelo U-Net."""
+
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"Dispositivo: {dispositivo}")

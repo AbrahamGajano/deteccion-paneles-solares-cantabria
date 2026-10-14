@@ -11,13 +11,24 @@ from shapely import union_all
 from shapely.geometry import box
 from torch import nn
 
-from paneles_solares.modelos.unet import TAM_ENTRADA, UMBRAL, cargar_modelo, normalizar_rgb
-from paneles_solares.rutas import INDICADORES_UNET, PESOS_UNET, ruta_proyecto
+from paneles_solares.modelos.unet import (
+    TAM_ENTRADA,
+    UMBRAL,
+    cargar_modelo,
+    normalizar_rgb,
+)
+from paneles_solares.rutas import (
+    EDIFICIOS_CATASTRO,
+    INDICADORES_UNET,
+    INDICE_TESELAS,
+    MUNICIPIOS_CANTABRIA,
+    PESOS_UNET,
+    PNOA,
+)
 
-INDICE = ruta_proyecto("data/manifests/teselas.csv")
-PNOA = ruta_proyecto("data/pnoa")
-EDIFICIOS = ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg")
-MUNICIPIOS = ruta_proyecto("data/geografia/municipios_cantabria.gpkg")
+INDICE = INDICE_TESELAS
+EDIFICIOS = EDIFICIOS_CATASTRO
+MUNICIPIOS = MUNICIPIOS_CANTABRIA
 SALIDA = INDICADORES_UNET
 
 LOTE = 4
@@ -26,7 +37,19 @@ FACTOR_CALIBRACION_TEST = 0.9246  # Sesgo global de superficie del test: -7,54 %
 
 
 def cargar_datos() -> tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
-    """Lee el índice y las geometrías necesarias antes de la inferencia."""
+    """Lee el índice y las geometrías necesarias antes de la inferencia.
+
+    Returns:
+        tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]: Tablas de entrada de
+            esta fase, con sus geometrías e indicadores.
+
+    Raises:
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
+        ValueError: El índice o las geometrías están vacíos, repetidos o tienen un CRS
+            incompatible.
+    """
+
     for ruta in (PESOS_UNET, INDICE, EDIFICIOS, MUNICIPIOS):
         if not ruta.is_file():
             raise FileNotFoundError(ruta)
@@ -60,7 +83,21 @@ def cargar_datos() -> tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
 
 
 def comprobar_ortofotos(indice: pd.DataFrame, crs: object) -> dict[str, object]:
-    """Valida las ortofotos y conserva sus extensiones para resolver solapes."""
+    """Valida las ortofotos y conserva sus extensiones para resolver solapes.
+
+    Args:
+        indice: Posición de la imagen dentro del dataset.
+        crs: Sistema de coordenadas esperado para las ortofotos.
+
+    Returns:
+        dict[str, object]: Extensión métrica de cada ortofoto comprobada.
+
+    Raises:
+        ValueError: Hay un CRS, RGB, resolución o ventana incompatible con el índice.
+        FileNotFoundError: Falta un archivo de entrada o de pesos necesario para esta
+            fase.
+    """
+
     extensiones = {}
     for nombre, filas in indice.groupby("tif", sort=True):
         ruta = PNOA / nombre
@@ -99,7 +136,19 @@ def comprobar_ortofotos(indice: pd.DataFrame, crs: object) -> dict[str, object]:
 def asociar_municipios(
     edificios: gpd.GeoDataFrame, municipios: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
-    """Asigna cada edificio al municipio de un punto interior."""
+    """Asigna cada edificio al municipio de un punto interior.
+
+    Args:
+        edificios: Geometrías e indicadores de edificios.
+        municipios: Indicadores y geometrías municipales.
+
+    Returns:
+        gpd.GeoDataFrame: Edificios con código municipal y superficie de cubierta.
+
+    Raises:
+        ValueError: Un edificio tiene más de una asignación municipal igualmente válida.
+    """
+
     puntos = gpd.GeoDataFrame(
         geometry=edificios.representative_point(), crs=edificios.crs
     )
@@ -129,7 +178,18 @@ def asociar_municipios(
 def predecir_lote(
     modelo: nn.Module, dispositivo: torch.device, imagenes: list[np.ndarray]
 ) -> list[np.ndarray]:
-    """Aplica la normalización y el umbral de evaluar_unet.py."""
+    """Aplica la normalización y el umbral de evaluar_unet.py.
+
+    Args:
+        modelo: Modelo cargado para esta fase.
+        dispositivo: CPU o GPU utilizada por el modelo.
+        imagenes: Carpeta de imágenes del test.
+
+    Returns:
+        list[np.ndarray]: Máscaras binarias recortadas al tamaño original de cada
+            imagen.
+    """
+
     tamanos = [imagen.shape[:2] for imagen in imagenes]
     preparadas = np.zeros((len(imagenes), TAM_ENTRADA, TAM_ENTRADA, 3), dtype=np.float32)
     for indice, (imagen, (alto, ancho)) in enumerate(zip(imagenes, tamanos)):
@@ -154,7 +214,17 @@ def acumular_ventana(
     pixeles: np.ndarray,
     superficie_cubierta: np.ndarray,
 ) -> None:
-    """Cuenta cada píxel en un único edificio y registra el área cubierta."""
+    """Cuenta cada píxel en un único edificio y registra el área cubierta.
+
+    Args:
+        mascara: Máscara binaria de paneles.
+        transformacion: Transformación afín de píxeles a coordenadas métricas.
+        zona: Parte de la ventana que todavía no se ha contado.
+        edificios: Geometrías e indicadores de edificios.
+        pixeles: Recuento acumulado de píxeles predichos por edificio.
+        superficie_cubierta: Superficie de cubierta cubierta por las ventanas, en m².
+    """
+
     if zona.is_empty:
         return
     posiciones = edificios.sindex.query(zona, predicate="intersects")
@@ -191,7 +261,20 @@ def procesar_teselas(
     modelo: nn.Module,
     dispositivo: torch.device,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Infiere por lotes sin conservar las máscaras de Cantabria en memoria."""
+    """Infiere por lotes sin conservar las máscaras de Cantabria en memoria.
+
+    Args:
+        indice: Posición de la imagen dentro del dataset.
+        edificios: Geometrías e indicadores de edificios.
+        extensiones: Extensión métrica de cada ortofoto.
+        modelo: Modelo cargado para esta fase.
+        dispositivo: CPU o GPU utilizada por el modelo.
+
+    Returns:
+        tuple[np.ndarray, np.ndarray]: Píxeles predichos y superficie cubierta
+            acumulados por edificio.
+    """
+
     pixeles = np.zeros(len(edificios), dtype=np.int64)
     superficie_cubierta = np.zeros(len(edificios), dtype=np.float64)
     anteriores = []
@@ -240,7 +323,18 @@ def procesar_teselas(
 def calcular_edificios(
     edificios: gpd.GeoDataFrame, pixeles: np.ndarray, superficie_cubierta: np.ndarray
 ) -> gpd.GeoDataFrame:
-    """Conserva los edificios cubiertos y calcula sus superficies planimétricas."""
+    """Conserva los edificios cubiertos y calcula sus superficies planimétricas.
+
+    Args:
+        edificios: Geometrías e indicadores de edificios.
+        pixeles: Recuento acumulado de píxeles predichos por edificio.
+        superficie_cubierta: Superficie de cubierta cubierta por las ventanas, en m².
+
+    Returns:
+        gpd.GeoDataFrame: Edificios con cobertura completa y sus indicadores de
+            superficie.
+    """
+
     completa = np.isclose(
         superficie_cubierta,
         edificios.superficie_cubierta_m2.to_numpy(),
@@ -263,7 +357,17 @@ def calcular_edificios(
 def resumir_municipios(
     edificios: gpd.GeoDataFrame, municipios: gpd.GeoDataFrame
 ) -> gpd.GeoDataFrame:
-    """Agrega los indicadores por municipio, incluidos los que tienen cero edificios."""
+    """Agrega los indicadores por municipio, incluidos los que tienen cero edificios.
+
+    Args:
+        edificios: Geometrías e indicadores de edificios.
+        municipios: Indicadores y geometrías municipales.
+
+    Returns:
+        gpd.GeoDataFrame: Geometrías municipales con recuentos, superficies y
+            proporciones.
+    """
+
     agrupados = edificios.groupby("codigo_municipal").agg(
         edificios_analizados=("id_edificio", "size"),
         edificios_con_deteccion=("presencia_fotovoltaica", "sum"),
@@ -307,7 +411,13 @@ def resumir_municipios(
 def guardar_resultados(
     edificios: gpd.GeoDataFrame, municipios: gpd.GeoDataFrame
 ) -> None:
-    """Sobrescribe las tres salidas fijas de esta fase."""
+    """Sobrescribe las tres salidas fijas de esta fase.
+
+    Args:
+        edificios: Geometrías e indicadores de edificios.
+        municipios: Indicadores y geometrías municipales.
+    """
+
     SALIDA.mkdir(parents=True, exist_ok=True)
     rutas = [
         SALIDA / "edificios.gpkg",
@@ -324,6 +434,7 @@ def guardar_resultados(
 
 def main() -> None:
     """Aplica la U-Net actual a las teselas de Cantabria y resume sus edificios."""
+
     indice, edificios, municipios = cargar_datos()
     extensiones = comprobar_ortofotos(indice, edificios.crs)
     edificios = asociar_municipios(edificios, municipios)
