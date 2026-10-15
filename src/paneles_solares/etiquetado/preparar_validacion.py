@@ -443,7 +443,7 @@ def extraer_muestra(nombre: str, config: dict, seleccion: pd.DataFrame) -> None:
 
     if not config["anio"] or not config["procedencia"] or not config["fuentes"]:
         raise ValueError(
-            "Completa anio, procedencia y fuentes en validaciones.json. La "
+            "Completa anio, procedencia y fuentes en la configuración de la campaña. La "
             "selección ya está guardada; no se ha descargado nada."
         )
     carpeta = carpeta_campania(nombre)
@@ -474,7 +474,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("campania")
-    parser.add_argument("--config", default="validaciones.json")
+    parser.add_argument("--config", help="JSON opcional con otras campañas")
     parser.add_argument(
         "--solo-seleccion",
         action="store_true",

@@ -16,7 +16,8 @@ en la campaña: no entran en entrenamiento ni se incorporan al pool.
 
 ### Preparación y etiquetas
 
-`validaciones.json` contiene una entrada por campaña. `20cm` utiliza la
+`CAMPANIAS`, al principio de `src/paneles_solares/datos/validacion.py`, contiene
+una entrada por campaña. `20cm` utiliza la
 Ortofoto 2024 True Ortho del Gobierno de Cantabria, cobertura WCS 16
 `Ortofoto_de_2024_True_Ortho`, rejilla de 0,20 m y EPSG:25830.
 El producto está identificado en sus [metadatos oficiales](https://geoservicios.cantabria.es/inspire/rest/services/Ortofoto_2024/MapServer).
@@ -99,7 +100,7 @@ mantienen los límites de más de 10 píxeles y más del 10 %; pueden señalar
 errores parciales. No se cuentan instalaciones. Precision, recall y sesgo
 quedan indefinidos si falta el denominador.
 
-Para otra resolución, añade una entrada completa en `validaciones.json` y pasa
+Para otra resolución, añade una entrada completa en `CAMPANIAS` y pasa
 su nombre a los mismos comandos. A 25 cm, 76,8 / 0,25 = 307,2: el PNG se prepara
 a 307 × 307 conservando los 76,8 m antes de entrar al modelo a 512.
 
@@ -160,7 +161,7 @@ Ese umbral maximiza Dice entre los probados, pero conserva 12.852 FN
 y añade 10.562 FP. Un sesgo pequeño puede compensar errores.
 No se adopta como nuevo umbral y requiere validación independiente.
 
-### Alcance y comprobación
+### Alcance
 
 La prueba mide transferencia al producto, año y lugares seleccionados.
 El total enriquecido no estima prevalencia ni superficie regional.
@@ -174,13 +175,6 @@ y la rejilla de la ortofoto son magnitudes distintas. El bootstrap no corrige
 dependencia espacial ni error de etiquetado. No se aplica la corrección
 del −7,54 % del test completo de 2023 a esta campaña.
 
-Las pruebas cubren ventanas, cobertura, conversión RGB, revisión de negativos,
-configuración, métricas y bootstrap:
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -p test_validacion.py -v
-```
-
 ## Revisión histórica fotovoltaica
 
 Prepara y revisa 2020, 2017 y 2014 con 2023 como referencia fija.
@@ -190,7 +184,8 @@ Desde la raíz del repositorio:
 .\.venv\Scripts\python.exe -m paneles_solares.seguimiento
 ```
 
-La configuración está en `seguimiento.json`. El lote comprende 12 imágenes
+La configuración está en `CONFIGURACION`, al principio de
+`src/paneles_solares/datos/seguimiento.py`. El lote comprende 12 imágenes
 compartidas por defecto; todas las detecciones de una imagen van seguidas.
 El recorrido es **2020 → 2017 → 2014 → siguiente emplazamiento**.
 Una ausencia o duda no elimina campañas anteriores. Las predicciones son ayuda
@@ -380,15 +375,6 @@ en el primer par y las pausas. No estiman las regiones todavía sin recuperar.
 El [avance de indicadores históricos](#indicadores-históricos) exporta por
 separado una instantánea de solo lectura con periodos y cobertura municipal.
 Muestra agrupaciones pendientes sin certificarlas como instalaciones.
-
-Las pruebas cubren persistencia, correcciones, deshacer, cronología, agrupación,
-precarga, contexto y navegación. Los casos reales utilizan copias temporales
-de SQLite. Las pruebas de software no certifican soporte físico ni cambios
-de una instalación: requieren revisión humana.
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
 
 ## Indicadores históricos
 

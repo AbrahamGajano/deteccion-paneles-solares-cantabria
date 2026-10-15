@@ -4,6 +4,7 @@ import hashlib
 import json
 import sqlite3
 import time
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +20,49 @@ from paneles_solares.rutas import ruta_proyecto
 CARPETA = ruta_proyecto("data/datasets/seguimiento")
 BASE = CARPETA / "seguimiento.sqlite"
 URL_WCS = "https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer"
+CONFIGURACION = {
+    "lote": 12,
+    "precarga": True,
+    "contexto_m": 20,
+    "corte_segmentacion_m": 0.6,
+    "extension_m": 76.8,
+    "muestra_previa": [
+        "PNOA_MA_OF_ETRS89_HU30_h25_0033_4_f41984_c33792",
+        "PNOA_MA_OF_ETRS89_HU30_h25_0033_3_f56832_c72704",
+        "PNOA_MA_OF_ETRS89_HU30_h25_0034_2_f36352_c81920",
+    ],
+    "campanias": [
+        {
+            "anio": 2023,
+            "resolucion_m": 0.15,
+            "cobertura": "14",
+            "etiqueta": "Ortofoto_de_2023",
+            "divisor_rgb": 1.0,
+        },
+        {
+            "anio": 2020,
+            "resolucion_m": 0.15,
+            "cobertura": "13",
+            "etiqueta": "Ortofoto_de_2020",
+            "divisor_rgb": 1.0,
+        },
+        {
+            "anio": 2017,
+            "resolucion_m": 0.25,
+            "cobertura": "11",
+            "etiqueta": "Ortofoto_de_2017",
+            "divisor_rgb": 257.0,
+        },
+        {
+            "anio": 2014,
+            "resolucion_m": 0.25,
+            "cobertura": "10",
+            "etiqueta": "Ortofoto_de_2014",
+            "divisor_rgb": 1.0,
+        },
+    ],
+}
+
 DECISIONES = ("presente", "ausente", "dudosa", "no_evaluable", "referencia_incorrecta")
 SOPORTES = (
     "cubierta",
@@ -85,11 +129,11 @@ def id_ventana(identificador: str) -> str:
     return str(identificador).split("_cubierta_")[0]
 
 
-def cargar_config(archivo: str = "seguimiento.json") -> dict:
-    """Lee la configuración única.
+def cargar_config(archivo: str | Path | None = None) -> dict:
+    """Carga la configuración del seguimiento o una alternativa en JSON.
 
     Args:
-        archivo: Ruta relativa al proyecto o absoluta.
+        archivo: JSON opcional; None utiliza CONFIGURACION de este módulo.
 
     Returns:
         dict: Campañas y tamaño de los lotes.
@@ -98,7 +142,10 @@ def cargar_config(archivo: str = "seguimiento.json") -> dict:
         ValueError: Si las campañas se repiten o no incluyen la referencia.
     """
 
-    config = json.loads(ruta_proyecto(archivo).read_text(encoding="utf-8"))
+    if archivo is None:
+        config = deepcopy(CONFIGURACION)
+    else:
+        config = json.loads(ruta_proyecto(archivo).read_text(encoding="utf-8"))
     anios = [c["anio"] for c in config["campanias"]]
     if len(set(anios)) != len(anios) or 2023 not in anios:
         raise ValueError("Las campañas deben ser únicas e incluir 2023")

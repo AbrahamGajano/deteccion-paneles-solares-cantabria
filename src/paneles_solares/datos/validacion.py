@@ -1,9 +1,35 @@
 """Configuración y rutas de las validaciones de resolución."""
 
 import json
+from copy import deepcopy
 from pathlib import Path
 
 from paneles_solares.rutas import ruta_proyecto
+
+CAMPANIAS = {
+    "20cm": {
+        "anio": 2024,
+        "resolucion_m": 0.2,
+        "procedencia": "Gobierno de Cantabria: Ortofoto 2024 True Ortho, 20 cm "
+        "nativos. "
+        "https://geoservicios.cantabria.es/inspire/rest/services/Ortofoto_2024/MapServer",
+        "fuentes": [
+            {
+                "tipo": "wcs",
+                "url": "https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer",
+                "cobertura": "16",
+                "etiqueta": "Ortofoto_de_2024_True_Ortho",
+                "bandas": [1, 2, 3],
+                "divisor_rgb": 257.0,
+            }
+        ],
+        "aleatorias": 219,
+        "positivas": 31,
+        "semilla": 42,
+        "bootstrap": 1000,
+        "ejemplos_por_categoria": 2,
+    }
+}
 
 EXTENSION_M = 76.8
 TAM_MODELO = 512
@@ -19,12 +45,12 @@ CAMPOS_MUESTRA = (
 )
 
 
-def cargar_campania(nombre: str, archivo: str = "validaciones.json") -> dict:
+def cargar_campania(nombre: str, archivo: str | Path | None = None) -> dict:
     """Lee una campaña; sus datos siempre quedan dentro de datasets.
 
     Args:
         nombre: Nombre de la campaña configurada.
-        archivo: Ruta relativa al proyecto o absoluta.
+        archivo: JSON opcional; None utiliza CAMPANIAS de este módulo.
 
     Returns:
         dict: Configuración de la campaña solicitada.
@@ -40,7 +66,12 @@ def cargar_campania(nombre: str, archivo: str = "validaciones.json") -> dict:
         raise ValueError(
             "Usa un nombre de campaña con letras minúsculas, números, _ o -"
         )
-    campania = json.loads(ruta_proyecto(archivo).read_text(encoding="utf-8"))[nombre]
+    if archivo is None:
+        campania = deepcopy(CAMPANIAS[nombre])
+    else:
+        campania = json.loads(ruta_proyecto(archivo).read_text(encoding="utf-8"))[
+            nombre
+        ]
     resolucion = campania["resolucion_m"]
     if resolucion <= 0 or campania["aleatorias"] < 1 or campania["positivas"] < 0:
         raise ValueError("Revisa la resolución y las cantidades de la campaña")

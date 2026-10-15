@@ -344,7 +344,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("campania")
-    parser.add_argument("--config", default="validaciones.json")
+    parser.add_argument("--config", help="JSON opcional con otras campañas")
     parser.add_argument("--umbrales", type=float, nargs="+", default=UMBRALES)
     args = parser.parse_args()
     config = cargar_campania(args.campania, args.config)

@@ -16,7 +16,7 @@ def main() -> None:
         default="continuar",
         choices=("continuar", "preparar", "auditar", "resumen", "region"),
     )
-    parser.add_argument("--config", default="seguimiento.json")
+    parser.add_argument("--config", help="JSON opcional con otra configuración")
     parser.add_argument("--lote", type=int)
     parser.add_argument(
         "--sitio",
