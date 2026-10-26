@@ -1,163 +1,135 @@
-"""Índice de teselas PNOA que intersectan edificios de Catastro."""
+"""Crea el índice PNOA de todo el territorio, incluidas zonas sin edificios."""
 
+import argparse
+import json
 from pathlib import Path
 
 import geopandas as gpd
+import numpy as np
 import pandas as pd
 import rasterio
-from rasterio.windows import Window
-from shapely.geometry import box
+from shapely import area, box, intersection, union_all
 
 from paneles_solares.rutas import (
     EDIFICIOS_CATASTRO,
     INDICE_TESELAS,
+    MUNICIPIOS_CANTABRIA,
     PNOA,
+    huella_archivo,
+    ruta_proyecto,
 )
 
-RUTA_GPKG = EDIFICIOS_CATASTRO
-RUTA_MANIFEST = INDICE_TESELAS
-CARPETA_PNOA = PNOA
 TAM_TES = 512
 
 
-def cargar_edificios(ruta: Path = RUTA_GPKG) -> gpd.GeoDataFrame:
-    """Lee los edificios de Catastro.
+def obtener_teselas(tif, edificios, territorio=None) -> pd.DataFrame:
+    """Describe ventanas de 512 píxeles sin descartarlas por ausencia de edificios."""
+    if edificios.crs != tif.crs or not np.allclose(tif.res, (0.15, 0.15)):
+        raise ValueError(f"Se espera EPSG:25830 y 0,15 m: {tif.name}")
 
-    Args:
-        ruta: Archivo GeoPackage con las geometrías de los edificios.
+    filas, columnas = np.meshgrid(
+        np.arange(0, tif.height, TAM_TES),
+        np.arange(0, tif.width, TAM_TES),
+        indexing="ij",
+    )
+    tabla = pd.DataFrame({"fila": filas.ravel(), "columna": columnas.ravel()})
+    tabla["ancho"] = np.minimum(TAM_TES, tif.width - tabla.columna)
+    tabla["alto"] = np.minimum(TAM_TES, tif.height - tabla.fila)
 
-    Returns:
-        gpd.GeoDataFrame: Tabla de edificios con su sistema de coordenadas.
-    """
+    transformacion = tif.transform
+    xmin = transformacion.c + tabla.columna * transformacion.a
+    ymax = transformacion.f + tabla.fila * transformacion.e
+    geometrias = box(
+        xmin, ymax + tabla.alto * transformacion.e,
+        xmin + tabla.ancho * transformacion.a, ymax,
+    )
+    if territorio is not None:
+        activas = area(intersection(geometrias, territorio)) > 0
+        tabla = tabla.loc[activas].reset_index(drop=True)
+        geometrias = geometrias[activas]
 
-    return gpd.read_file(ruta)
+    parejas = edificios.sindex.query(geometrias, predicate="intersects")
+    tabla["num_edificios"] = np.bincount(parejas[0], minlength=len(tabla))
+    nombre = Path(tif.name)
+    tabla["tile_id"] = [
+        f"{nombre.stem}_f{fila}_c{columna}"
+        for fila, columna in zip(tabla.fila, tabla.columna)
+    ]
+    tabla["tif"] = nombre.name
+    tabla["prioridad"] = np.where(
+        tabla.num_edificios > 0, "edificaciones", "resto_territorio"
+    )
+    tabla["anio_catastro"] = 2023
+    return tabla[[
+        "tile_id", "tif", "fila", "columna", "ancho", "alto",
+        "num_edificios", "prioridad", "anio_catastro",
+    ]]
 
 
-def buscar_ortofotos(carpeta: Path = CARPETA_PNOA) -> list[Path]:
-    """Busca los archivos TIF de la carpeta PNOA.
+def preparar(salida: Path = INDICE_TESELAS, bbox=None) -> pd.DataFrame:
+    """Guarda el índice y las capas de cobertura nominal de las ortofotos locales."""
+    edificios = gpd.read_file(EDIFICIOS_CATASTRO, layer="edificios")
+    region = union_all(gpd.read_file(MUNICIPIOS_CANTABRIA, layer="cantabria").geometry)
+    if bbox is not None:
+        region = region.intersection(box(*bbox))
 
-    Args:
-        carpeta: Carpeta donde están descargadas las ortofotos.
-
-    Returns:
-        list[Path]: Rutas de las ortofotos, ordenadas por nombre.
-    """
-
-    return sorted(carpeta.glob("*.tif"))
-
-
-def obtener_teselas(tif, edificios: gpd.GeoDataFrame) -> list[dict]:
-    """Recorre una ortofoto y registra las teselas que contienen edificios.
-
-    Args:
-        tif: Ortofoto abierta con rasterio.
-        edificios: Edificios situados dentro de esta ortofoto.
-
-    Returns:
-        list[dict]: Registros con la posición, tamaño y número de edificios de cada
-            tesela.
-    """
-
-    registros = []
-
-    # El índice permite buscar edificios sin recorrer toda la tabla cada vez.
-    indice_edificios = edificios.sindex
-    ruta_tif = Path(tif.name)
-
-    for fila in range(0, tif.height, TAM_TES):
-        for columna in range(0, tif.width, TAM_TES):
-            # En los bordes puede quedar una tesela menor que TAM_TES.
-            ancho = min(TAM_TES, tif.width - columna)
-            alto = min(TAM_TES, tif.height - fila)
-
-            ventana = Window(col_off=columna, row_off=fila, width=ancho, height=alto)
-            limites = tif.window_bounds(ventana)
-            poligono = box(*limites)
-
-            posiciones = indice_edificios.query(poligono, predicate="intersects")
-            num_edificios = len(posiciones)
-
-            if num_edificios == 0:
+    registros, hojas = [], []
+    tifs = sorted(PNOA.glob("*.tif"))
+    for numero, ruta in enumerate(tifs, 1):
+        with rasterio.open(ruta) as tif:
+            zona = region.intersection(box(*tif.bounds))
+            if zona.is_empty:
                 continue
+            # Los solapes se resuelven al inferir: otra hoja puede cubrir bordes negros.
+            tabla = obtener_teselas(tif, edificios, zona)
+            registros.append(tabla)
+            hojas.append({
+                "tif": ruta.name,
+                "teselas": len(tabla),
+                "area_nominal_m2": zona.area,
+                "geometry": zona,
+            })
+            print(f"[{numero}/{len(tifs)}] {ruta.name}: {len(tabla)} teselas")
 
-            registro = {
-                "tile_id": f"{ruta_tif.stem}_f{fila}_c{columna}",
-                "tif": ruta_tif.name,
-                "fila": fila,
-                "columna": columna,
-                "ancho": ancho,
-                "alto": alto,
-                "num_edificios": num_edificios,
-            }
-            registros.append(registro)
+    indice = pd.concat(registros, ignore_index=True)
+    salida.parent.mkdir(parents=True, exist_ok=True)
+    indice.to_csv(salida, index=False)
+    cobertura = union_all([hoja["geometry"] for hoja in hojas])
+    sin_cobertura = region.difference(cobertura)
 
-    return registros
+    gpkg = salida.with_suffix(".gpkg")
+    gpkg.unlink(missing_ok=True)
+    gpd.GeoDataFrame(hojas, crs=25830).to_file(gpkg, layer="hojas", index=False)
+    for nombre, geometria in (("cobertura_pnoa", cobertura), ("sin_ortofoto", sin_cobertura)):
+        gpd.GeoDataFrame(geometry=[geometria], crs=25830).to_file(
+            gpkg, layer=nombre, index=False
+        )
 
-
-def procesar_tif(ruta_tif: Path, edificios: gpd.GeoDataFrame) -> list[dict]:
-    """Busca primero los edificios de la ortofoto y después sus teselas.
-
-    Args:
-        ruta_tif: Archivo TIF que se va a consultar.
-        edificios: Tabla completa de edificios de Catastro.
-
-    Returns:
-        list[dict]: Teselas de esta ortofoto que intersectan algún edificio.
-
-    Raises:
-        ValueError: Los CRS de los edificios y de la ortofoto no coinciden.
-    """
-
-    with rasterio.open(ruta_tif) as tif:
-        if edificios.crs != tif.crs:
-            raise ValueError("Los CRS del gpkg y el tif no coinciden")
-
-        poligono_tif = box(*tif.bounds)
-        posiciones = edificios.sindex.query(poligono_tif, predicate="intersects")
-        edificios_tif = edificios.iloc[posiciones]
-
-        if edificios_tif.empty:
-            return []
-
-        return obtener_teselas(tif, edificios_tif)
-
-
-def guardar_manifest(registros: list[dict], ruta: Path = RUTA_MANIFEST) -> None:
-    """Guarda el índice de teselas como CSV.
-
-    Args:
-        registros: Teselas encontradas al recorrer las ortofotos.
-        ruta: Archivo CSV de salida.
-    """
-
-    columnas = ["tile_id", "tif", "fila", "columna", "ancho", "alto", "num_edificios"]
-    manifest = pd.DataFrame(registros, columns=columnas)
-
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    manifest.to_csv(ruta, index=False)
+    resumen = {
+        "anio": 2023,
+        "bbox": bbox,
+        "teselas": len(indice),
+        "con_edificaciones": int(indice.num_edificios.gt(0).sum()),
+        "sin_edificaciones": int(indice.num_edificios.eq(0).sum()),
+        "hojas_locales": len(tifs),
+        "hojas_utilizadas": len(hojas),
+        "sin_ortofoto_m2": sin_cobertura.area,
+        "referencia_sha256": huella_archivo(EDIFICIOS_CATASTRO),
+    }
+    salida.with_suffix(".json").write_text(
+        json.dumps(resumen, indent=2), encoding="utf-8"
+    )
+    return indice
 
 
 def main() -> None:
-    """Crea el índice que se usa después para solicitar imágenes de etiquetado."""
-
-    print("\nCargando edificios [1/4]...")
-    edificios = cargar_edificios(RUTA_GPKG)
-
-    print("\nBuscando ortofotos [2/4]...")
-    tifs = buscar_ortofotos(CARPETA_PNOA)
-
-    print("\nProcesando tifs [3/4]...")
-    registros_totales = []
-
-    for numero, tif in enumerate(tifs, start=1):
-        print(f"Procesando tif [{numero}/{len(tifs)}]: {tif.name}")
-
-        registros_tif = procesar_tif(tif, edificios)
-        registros_totales.extend(registros_tif)
-
-    print("\nGuardando manifest [4/4]...")
-    guardar_manifest(registros_totales, RUTA_MANIFEST)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--bbox", type=float, nargs=4)
+    args = parser.parse_args()
+    salida = ruta_proyecto("runs/prueba_2023/teselas.csv") if args.bbox else INDICE_TESELAS
+    preparar(salida, args.bbox)
 
 
 if __name__ == "__main__":
     main()
+

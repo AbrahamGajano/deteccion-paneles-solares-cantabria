@@ -265,11 +265,13 @@ def comprobar_wcs(fuente: dict, resolucion: float) -> None:
 
     if fuente["tipo"] != "wcs":
         raise ValueError(f"Tipo de fuente desconocido: {fuente['tipo']}")
+    # Cantabria publica ahora nombres de cobertura; conservamos los metadatos antiguos.
+    cobertura = fuente["etiqueta"] if str(fuente["cobertura"]).isdigit() else fuente["cobertura"]
     parametros = {
         "SERVICE": "WCS",
         "VERSION": "1.0.0",
         "REQUEST": "DescribeCoverage",
-        "COVERAGE": fuente["cobertura"],
+        "COVERAGE": cobertura,
     }
     respuesta = requests.get(fuente["url"], params=parametros, timeout=30)
     respuesta.raise_for_status()
@@ -305,11 +307,12 @@ def extraer_wcs(fila: dict, fuente: dict) -> tuple[Image.Image, str]:
             o formato RGB.
     """
 
+    cobertura = fuente["etiqueta"] if str(fuente["cobertura"]).isdigit() else fuente["cobertura"]
     parametros = {
         "SERVICE": "WCS",
         "VERSION": "1.0.0",
         "REQUEST": "GetCoverage",
-        "COVERAGE": fuente["cobertura"],
+        "COVERAGE": cobertura,
         "CRS": "EPSG:25830",
         "RESPONSE_CRS": "EPSG:25830",
         "BBOX": ",".join(

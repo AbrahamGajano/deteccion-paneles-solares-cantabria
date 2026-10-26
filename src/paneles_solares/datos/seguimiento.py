@@ -1,132 +1,54 @@
-"""Datos originales, observaciones independientes y progreso histórico en SQLite."""
+"""Campañas de ortofoto y conservación de las respuestas del seguimiento anterior."""
 
-import hashlib
 import json
 import sqlite3
-import time
+from contextlib import closing
 from copy import deepcopy
-from datetime import datetime, timezone
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
-from rasterio.features import shapes
-from rasterio.transform import from_bounds
-from shapely import from_wkb, make_valid, union_all
-from shapely.geometry import shape
+import geopandas as gpd
+from shapely import from_wkb
 
 from paneles_solares.rutas import ruta_proyecto
 
 CARPETA = ruta_proyecto("data/datasets/seguimiento")
 BASE = CARPETA / "seguimiento.sqlite"
 URL_WCS = "https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer"
+
+
 CONFIGURACION = {
-    "lote": 12,
-    "precarga": True,
-    "contexto_m": 20,
-    "corte_segmentacion_m": 0.6,
-    "extension_m": 76.8,
-    "muestra_previa": [
-        "PNOA_MA_OF_ETRS89_HU30_h25_0033_4_f41984_c33792",
-        "PNOA_MA_OF_ETRS89_HU30_h25_0033_3_f56832_c72704",
-        "PNOA_MA_OF_ETRS89_HU30_h25_0034_2_f36352_c81920",
-    ],
     "campanias": [
         {
             "anio": 2023,
             "resolucion_m": 0.15,
-            "cobertura": "14",
+            "cobertura": "Ortofoto_de_2023",
             "etiqueta": "Ortofoto_de_2023",
             "divisor_rgb": 1.0,
         },
         {
             "anio": 2020,
             "resolucion_m": 0.15,
-            "cobertura": "13",
+            "cobertura": "Ortofoto_de_2020",
             "etiqueta": "Ortofoto_de_2020",
             "divisor_rgb": 1.0,
         },
         {
             "anio": 2017,
             "resolucion_m": 0.25,
-            "cobertura": "11",
+            "cobertura": "Ortofoto_de_2017",
             "etiqueta": "Ortofoto_de_2017",
             "divisor_rgb": 257.0,
         },
         {
             "anio": 2014,
             "resolucion_m": 0.25,
-            "cobertura": "10",
+            "cobertura": "Ortofoto_de_2014",
             "etiqueta": "Ortofoto_de_2014",
             "divisor_rgb": 1.0,
         },
     ],
 }
-
-DECISIONES = ("presente", "ausente", "dudosa", "no_evaluable", "referencia_incorrecta")
-SOPORTES = (
-    "cubierta",
-    "cubierta_catastrada",
-    "construccion_no_catastrada",
-    "marquesina",
-    "suelo",
-    "mixto",
-    "desconocido",
-)
-RELACIONES = (
-    "interseccion_clara",
-    "proximo",
-    "parcial_desplazado",
-    "exterior",
-    "sin_asociacion",
-    "ambigua",
-)
-ETIQUETAS = (
-    "ampliacion",
-    "reduccion",
-    "retirada",
-    "reinstalacion",
-    "distribucion_diferente",
-    "edificio_nuevo",
-    "edificio_demolido",
-    "edificio_reformado",
-    "division",
-    "fusion",
-    "desplazamiento_ortofoto",
-    "mala_resolucion",
-    "sombra",
-    "nube",
-    "sin_cobertura",
-    "confusion_claraboyas",
-    "cambio_soporte",
-    "secuencia_incoherente",
-    "borde_recorte",
-    "agrupacion_pendiente",
-    "asociacion_pendiente",
-)
-
-
-def ahora() -> str:
-    """Devuelve la fecha UTC para las acciones persistentes.
-
-    Returns:
-        str: Fecha y hora actuales en UTC, en formato ISO 8601.
-    """
-
-    return datetime.now(timezone.utc).isoformat()
-
-
-def id_ventana(identificador: str) -> str:
-    """Recupera el recorte compartido por las cubiertas del piloto.
-
-    Args:
-        identificador: Identificador de una cubierta o de su recorte original.
-
-    Returns:
-        str: Identificador del recorte compartido del piloto.
-    """
-
-    return str(identificador).split("_cubierta_")[0]
 
 
 def cargar_config(archivo: str | Path | None = None) -> dict:
@@ -136,10 +58,10 @@ def cargar_config(archivo: str | Path | None = None) -> dict:
         archivo: JSON opcional; None utiliza CONFIGURACION de este módulo.
 
     Returns:
-        dict: Campañas y tamaño de los lotes.
+        dict: Configuración de las campañas.
 
     Raises:
-        ValueError: Si las campañas se repiten o no incluyen la referencia.
+        ValueError: Si las campañas se repiten.
     """
 
     if archivo is None:
@@ -147,30 +69,9 @@ def cargar_config(archivo: str | Path | None = None) -> dict:
     else:
         config = json.loads(ruta_proyecto(archivo).read_text(encoding="utf-8"))
     anios = [c["anio"] for c in config["campanias"]]
-    if len(set(anios)) != len(anios) or 2023 not in anios:
-        raise ValueError("Las campañas deben ser únicas e incluir 2023")
+    if len(set(anios)) != len(anios):
+        raise ValueError("Las campañas no pueden repetirse")
     return config
-
-
-def sustituir_archivo(temporal: Path, destino: Path) -> None:
-    """Publica un archivo cerrado y reintenta bloqueos breves de Windows.
-
-    Args:
-        temporal: Archivo o carpeta completa pendiente de publicar.
-        destino: Ruta definitiva de la salida.
-
-    Raises:
-        PermissionError: Si el destino sigue bloqueado tras tres intentos.
-    """
-
-    for intento in range(3):
-        try:
-            temporal.replace(destino)
-            return
-        except PermissionError:
-            if intento == 2:
-                raise
-            time.sleep(0.1 * (intento + 1))
 
 
 def guardar_csv(tabla: pd.DataFrame, ruta: Path) -> None:
@@ -185,166 +86,67 @@ def guardar_csv(tabla: pd.DataFrame, ruta: Path) -> None:
     temporal = ruta.with_suffix(".csv.part")
     try:
         tabla.to_csv(temporal, index=False)
-        sustituir_archivo(temporal, ruta)
+        temporal.replace(ruta)
     finally:
         temporal.unlink(missing_ok=True)
 
 
-def guardar_json(datos: dict, ruta: Path) -> None:
-    """Publica un resumen JSON mediante un temporal retirado al terminar.
+def recuperar_revision(base: Path = BASE):
+    """Recupera máscaras de 2023 y respuestas humanas sin abrir la base para escritura.
 
     Args:
-        datos: Datos que se guardan como JSON.
-        ruta: Ruta del JSON de salida.
+        base: Archivo heredado del visor; sus agrupaciones no son instalaciones.
+
+    Returns:
+        tuple: Máscaras de referencia, selecciones con máscara y respuestas por año.
+            No se recuperan las predicciones de las campañas antiguas.
     """
 
-    ruta.parent.mkdir(parents=True, exist_ok=True)
-    temporal = ruta.with_suffix(".json.part")
-    try:
-        temporal.write_text(
-            json.dumps(datos, indent=2, ensure_ascii=False), encoding="utf-8"
+    with closing(sqlite3.connect(f"{base.resolve().as_uri()}?mode=ro", uri=True)) as db:
+        referencia = pd.read_sql_query(
+            "SELECT c.id AS id_panel,c.ventana AS ventanas,c.anio,c.geometria,"
+            "c.borde AS borde_imagen,c.modelo AS modelo_sha256,"
+            "m.emplazamiento AS id_seleccion,o.decision AS decision_referencia "
+            "FROM componentes c JOIN miembros m ON m.componente=c.id "
+            "LEFT JOIN observaciones o ON o.emplazamiento=m.emplazamiento AND o.anio=2023 "
+            "WHERE c.anio=2023 ORDER BY c.id",
+            db,
         )
-        sustituir_archivo(temporal, ruta)
-    finally:
-        temporal.unlink(missing_ok=True)
-
-
-def leer_csv(ruta: Path) -> pd.DataFrame:
-    """Lee los datos del piloto conservando identificadores y campos vacíos.
-
-    Args:
-        ruta: Ruta del archivo que se utiliza.
-
-    Returns:
-        pd.DataFrame: Datos del piloto, o tabla vacía si no existe el archivo.
-    """
-
-    if not ruta.exists():
-        return pd.DataFrame()
-    return pd.read_csv(
-        ruta,
-        keep_default_na=False,
-        dtype={"id_instalacion": str, "id_ventana": str, "codigo_municipal": str},
-    )
-
-
-def transformacion(fila: dict, ancho: int = 512, alto: int = 512):
-    """Relaciona píxeles con el encuadre métrico original, sin ajustes a Catastro.
-
-    Args:
-        fila: Metadatos de la tesela o ventana.
-        ancho: Ancho de la imagen en píxeles.
-        alto: Alto de la imagen en píxeles.
-
-    Returns:
-        Affine: Transformación afín del encuadre métrico.
-    """
-
-    return from_bounds(
-        *(fila[c] for c in ("xmin", "ymin", "xmax", "ymax")), ancho, alto
-    )
-
-
-def geometria_mascara(mascara: np.ndarray, transformacion_pixel) -> list:
-    """Conserva todos los componentes de ocho vecinos, incluidos los pequeños.
-
-    Args:
-        mascara: Máscara binaria de paneles.
-        transformacion_pixel: Transformación afín de píxeles a coordenadas métricas.
-
-    Returns:
-        list: Geometrías válidas de todos los componentes de ocho vecinos.
-    """
-
-    return [
-        make_valid(shape(g))
-        for g, _ in shapes(
-            mascara.astype("uint8"),
-            mask=mascara,
-            connectivity=8,
-            transform=transformacion_pixel,
+        selecciones = pd.read_sql_query(
+            "SELECT e.id AS id_seleccion,e.ventana,e.geometria FROM emplazamientos e "
+            "WHERE EXISTS(SELECT 1 FROM miembros m JOIN componentes c ON c.id=m.componente "
+            "WHERE m.emplazamiento=e.id AND c.anio=2023) ORDER BY e.id",
+            db,
         )
-    ]
-
-
-def identificador(prefijo: str, contenido: bytes) -> str:
-    """Crea un identificador reproducible a partir del origen inmutable.
-
-    Args:
-        prefijo: Texto que identifica el tipo de registro.
-        contenido: Contenido inmutable usado para calcular el identificador.
-
-    Returns:
-        str: Identificador estable con prefijo y huella del contenido.
-    """
-
-    return prefijo + "_" + hashlib.sha256(contenido).hexdigest()[:20]
-
-
-def derivar_historia(observaciones: list[dict], anios: list[int]) -> dict:
-    """Deriva visibilidad e intervalos sin convertir predicciones en observaciones.
-
-    Args:
-        observaciones: Decisiones humanas actuales de un emplazamiento.
-        anios: Campañas esperadas, en cualquier orden.
-
-    Returns:
-        dict: Primera presencia, límites e incertidumbres; sin fecha exacta inventada.
-    """
-
-    por_anio = {o["anio"]: o for o in observaciones}
-    presentes = sorted(a for a, o in por_anio.items() if o["decision"] == "presente")
-    ausentes = sorted(
-        a
-        for a, o in por_anio.items()
-        if (
-            o["decision"] == "ausente"
-            or a == 2023
-            and o["decision"] == "referencia_incorrecta"
+        respuestas = pd.read_sql_query(
+            "SELECT emplazamiento AS id_seleccion,anio,decision,alcance,fecha_utc "
+            "FROM observaciones ORDER BY emplazamiento,anio",
+            db,
         )
-        and o.get("alcance", "emplazamiento_completo") == "emplazamiento_completo"
+
+    capas = []
+    for tabla in (referencia, selecciones):
+        capas.append(
+            gpd.GeoDataFrame(
+                tabla.drop(columns="geometria"),
+                geometry=from_wkb(tabla.geometria.to_numpy()),
+                crs=25830,
+            )
+        )
+    referencia, selecciones = capas
+    selecciones["n_componentes"] = selecciones.id_seleccion.map(
+        referencia.groupby("id_seleccion").size()
     )
-    agrupacion = any(o.get("alcance") == "agrupacion_cubiertas" for o in observaciones)
-    anomala = any(a > presentes[0] for a in ausentes) if presentes else False
-    primera = presentes[0] if presentes else None
-    dudosas = any(o["decision"] in ("dudosa", "no_evaluable") for o in observaciones)
-    pendientes = sorted(set(anios) - set(por_anio))
-    ref = por_anio.get(2023, {}).get("decision", "pendiente")
-    estado = "pendiente"
-    inferior = superior = None
-    if anomala:
-        estado = "secuencia_anomala"
-    elif agrupacion:
-        estado = "agrupacion_sin_resolver"
-    elif primera is not None:
-        anteriores = [a for a in anios if a < primera]
-        desconocidos = [a for a in anteriores if a not in por_anio or a not in ausentes]
-        if desconocidos:
-            estado = "primera_presencia_intervalo_no_resuelto"
-        elif anteriores:
-            inferior, superior = max(anteriores), primera
-            estado = "intervalo_observado"
-        else:
-            superior = primera
-            estado = "presente_desde_primera_campania"
-    elif not pendientes and not dudosas:
-        estado = "sin_presencia_observada"
-    if ref == "referencia_incorrecta" and not presentes:
-        estado = "referencia_descartada"
-    return {
-        "primera_presencia": primera,
-        "aparicion_despues_de": inferior,
-        "aparicion_hasta": superior,
-        "estado_historia": estado,
-        "secuencia_anomala": anomala,
-        "referencia_2023": ref,
-        "campanias_pendientes": pendientes,
-        "dudoso_no_evaluable": dudosas,
-    }
+    referencia["superficie_horizontal_m2"] = referencia.geometry.area
+    referencia["anio_referencia"] = 2023
+    referencia["revision_completa"] = False
+    referencia["fuente_geometria"] = "modelo_2023"
+    referencia["borde_imagen"] = referencia.borde_imagen.astype(bool)
+    return referencia, selecciones, respuestas
 
 
 class AlmacenSeguimiento:
-    """Base persistente con transacciones y registro reversible de acciones."""
+    """Conserva la base heredada para actualizar únicamente sus asociaciones."""
 
     def __init__(self, ruta: Path = BASE):
         """Abre la base persistente y crea las tablas que falten.
@@ -389,24 +191,15 @@ class AlmacenSeguimiento:
                 decision TEXT NOT NULL, alcance TEXT, etiquetas TEXT, notas TEXT,
                 segundos REAL, fecha_utc TEXT, original TEXT,
                 PRIMARY KEY(emplazamiento, anio));
-            CREATE TABLE IF NOT EXISTS acciones (
-                id INTEGER PRIMARY KEY, tipo TEXT, objetivo TEXT, anio INTEGER,
-                anterior TEXT, posterior TEXT, fecha_utc TEXT, deshecha INTEGER DEFAULT 0);
-            CREATE TABLE IF NOT EXISTS tareas (
-                id TEXT PRIMARY KEY, tipo TEXT, datos TEXT, estado TEXT DEFAULT 'pendiente',
-                error TEXT DEFAULT '', fecha_utc TEXT);
-            CREATE TABLE IF NOT EXISTS contextos (
-                emplazamiento TEXT REFERENCES emplazamientos(id),
-                ventana TEXT REFERENCES ventanas(id), PRIMARY KEY(emplazamiento,ventana));
         """)
 
     def cerrar(self):
-        """Cierra una base cuyos cambios ya se han confirmado después de cada acción."""
+        """Cierra la base de datos."""
 
         self.db.close()
 
     def filas(self, sql: str, parametros: tuple = ()) -> list[dict]:
-        """Lee filas como diccionarios para la interfaz y las exportaciones.
+        """Lee filas como diccionarios.
 
         Args:
             sql: Consulta SQL de lectura.
@@ -418,24 +211,8 @@ class AlmacenSeguimiento:
 
         return [dict(f) for f in self.db.execute(sql, parametros)]
 
-    def meta(self, clave: str, defecto=None):
-        """Lee un metadato JSON opcional.
-
-        Args:
-            clave: Nombre del metadato.
-            defecto: Valor devuelto cuando el metadato no existe.
-
-        Returns:
-            object: Metadato decodificado o valor predeterminado.
-        """
-
-        fila = self.db.execute(
-            "SELECT valor FROM metadatos WHERE clave=?", (clave,)
-        ).fetchone()
-        return json.loads(fila[0]) if fila else defecto
-
     def poner_meta(self, clave: str, valor):
-        """Confirma inmediatamente un metadato de preparación o navegación.
+        """Guarda un metadato de la referencia geográfica.
 
         Args:
             clave: Nombre del metadato.
@@ -447,338 +224,3 @@ class AlmacenSeguimiento:
                 "INSERT OR REPLACE INTO metadatos VALUES (?,?)",
                 (clave, json.dumps(valor, ensure_ascii=False)),
             )
-
-    def guardar_observacion(
-        self,
-        sitio: str,
-        anio: int,
-        decision: str,
-        segundos: float = 0,
-        alcance: str = "emplazamiento_completo",
-        etiquetas: list | None = None,
-        notas: str = "",
-        original=None,
-        referencia: dict | None = None,
-    ):
-        """Guarda y registra una decisión en una sola transacción durable.
-
-        Args:
-            sitio: Identificador estable del emplazamiento.
-            anio: Campaña observada.
-            decision: Presencia, ausencia, duda, no evaluable o referencia incorrecta.
-            segundos: Tiempo empleado, conservado también al corregir.
-            alcance: Completo, zona visible o agrupación sin resolver.
-            etiquetas: Indicadores secundarios extensibles.
-            notas: Comentario libre.
-            original: Fila del piloto, conservada sin reinterpretarla.
-            referencia: Respuesta explícita de 2023 incluida en el primer clic
-                histórico.
-
-        Raises:
-            ValueError: Si la decisión no es válida para esta campaña.
-        """
-
-        if decision not in DECISIONES or (
-            decision == "referencia_incorrecta" and anio != 2023
-        ):
-            raise ValueError("La referencia incorrecta solo se aplica a 2023")
-        anterior = self.filas(
-            "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=?",
-            (sitio, anio),
-        )
-        registro = {
-            "emplazamiento": sitio,
-            "anio": anio,
-            "decision": decision,
-            "alcance": alcance,
-            "etiquetas": json.dumps(etiquetas or [], ensure_ascii=False),
-            "notas": notas,
-            "segundos": round(segundos, 2),
-            "fecha_utc": ahora(),
-            "original": json.dumps(original, ensure_ascii=False)
-            if original
-            else (anterior[0]["original"] if anterior else None),
-        }
-        ref_previa = self.filas(
-            "SELECT * FROM observaciones WHERE emplazamiento=? AND anio=2023", (sitio,)
-        )
-        if (
-            referencia
-            and anio != 2023
-            and (not ref_previa or referencia.get("corregir"))
-        ):
-            if referencia["decision"] not in DECISIONES:
-                raise ValueError("Respuesta de referencia no válida")
-            ref = {
-                **registro,
-                "anio": 2023,
-                "decision": referencia["decision"],
-                "alcance": referencia["alcance"],
-                "etiquetas": json.dumps(
-                    referencia.get("etiquetas", []), ensure_ascii=False
-                ),
-                "notas": referencia.get("notas", ""),
-                "segundos": 0,
-                "original": ref_previa[0]["original"] if ref_previa else None,
-            }
-            with self.db:
-                self._escribir_observacion(ref)
-                self._escribir_observacion(registro)
-                self._accion(
-                    "comparacion",
-                    sitio,
-                    anio,
-                    {
-                        "referencia": ref_previa[0] if ref_previa else None,
-                        "historica": anterior[0] if anterior else None,
-                    },
-                    {"referencia": ref, "historica": registro},
-                )
-            return
-        with self.db:
-            self._escribir_observacion(registro)
-            self._accion(
-                "observacion", sitio, anio, anterior[0] if anterior else None, registro
-            )
-
-    def _escribir_observacion(self, registro: dict):
-        """Escribe una observación dentro de la transacción de quien la llama.
-
-        Args:
-            registro: Datos de la observación que se guarda.
-        """
-
-        self.db.execute(
-            "INSERT OR REPLACE INTO observaciones VALUES (?,?,?,?,?,?,?,?,?)",
-            tuple(
-                registro[c]
-                for c in (
-                    "emplazamiento",
-                    "anio",
-                    "decision",
-                    "alcance",
-                    "etiquetas",
-                    "notas",
-                    "segundos",
-                    "fecha_utc",
-                    "original",
-                )
-            ),
-        )
-
-    def _accion(self, tipo, sitio, anio, anterior, posterior):
-        """Registra el cambio para permitir su consulta y deshacerlo.
-
-        Args:
-            tipo: Tipo de acción que se registra.
-            sitio: Identificador del emplazamiento que se revisa.
-            anio: Año de la campaña observada.
-            anterior: Estado previo de la acción, o None si no existía.
-            posterior: Estado resultante de la acción.
-        """
-
-        self.db.execute(
-            (
-                "INSERT INTO acciones(tipo,objetivo,anio,anterior,posterior,fecha_utc) "
-                "VALUES (?,?,?,?,?,?)"
-            ),
-            (
-                tipo,
-                sitio,
-                anio,
-                json.dumps(anterior, ensure_ascii=False),
-                json.dumps(posterior, ensure_ascii=False),
-                ahora(),
-            ),
-        )
-
-    def modificar_sitio(self, sitio: str, **cambios):
-        """Corrige soporte, asociación o notas sin cambiar las observaciones.
-
-        Args:
-            sitio: Identificador del emplazamiento que se revisa.
-            cambios: Campos del emplazamiento y sus nuevos valores.
-
-        Raises:
-            ValueError: Se indican campos, soportes o relaciones catastrales no
-                permitidos.
-        """
-
-        permitidos = {
-            "soporte",
-            "relacion",
-            "edificios",
-            "cubiertas",
-            "agrupacion",
-            "etiquetas",
-            "notas",
-        }
-        if not cambios or not set(cambios) <= permitidos:
-            raise ValueError("Campos de emplazamiento no permitidos")
-        if "soporte" in cambios and cambios["soporte"] not in SOPORTES:
-            raise ValueError("Soporte desconocido")
-        if "relacion" in cambios and cambios["relacion"] not in RELACIONES:
-            raise ValueError("Relación desconocida")
-        if "edificios" in cambios and "cubiertas" not in cambios:
-            cambios["cubiertas"] = []
-        anterior = self.filas("SELECT * FROM emplazamientos WHERE id=?", (sitio,))[0]
-        anterior = {c: anterior[c] for c in cambios}
-        posterior = {
-            c: json.dumps(v, ensure_ascii=False) if isinstance(v, list) else v
-            for c, v in cambios.items()
-        }
-        with self.db:
-            self.db.execute(
-                "UPDATE emplazamientos SET "
-                + ",".join(c + "=?" for c in posterior)
-                + " WHERE id=?",
-                (*posterior.values(), sitio),
-            )
-            self._accion("sitio", sitio, None, anterior, posterior)
-
-    def deshacer(self) -> dict | None:
-        """Revierte la última acción humana manteniendo su registro y el resto del trabajo.
-
-        Returns:
-            dict | None: Acción revertida, o None si no quedan acciones reversibles.
-        """
-
-        filas = self.filas(
-            "SELECT * FROM acciones WHERE deshecha=0 AND tipo IN "
-            "('observacion','comparacion','sitio','agrupacion') ORDER BY id DESC "
-            "LIMIT 1"
-        )
-        if not filas:
-            return None
-        accion = filas[0]
-        anterior = json.loads(accion["anterior"])
-        with self.db:
-            if accion["tipo"] == "comparacion":
-                for anio, campo in (
-                    (2023, "referencia"),
-                    (accion["anio"], "historica"),
-                ):
-                    self.db.execute(
-                        "DELETE FROM observaciones WHERE emplazamiento=? AND anio=?",
-                        (accion["objetivo"], anio),
-                    )
-                    if anterior[campo]:
-                        self._escribir_observacion(anterior[campo])
-            elif accion["tipo"] == "observacion":
-                self.db.execute(
-                    "DELETE FROM observaciones WHERE emplazamiento=? AND anio=?",
-                    (accion["objetivo"], accion["anio"]),
-                )
-                if anterior:
-                    self._escribir_observacion(anterior)
-            elif accion["tipo"] == "sitio":
-                self.db.execute(
-                    "UPDATE emplazamientos SET "
-                    + ",".join(c + "=?" for c in anterior)
-                    + " WHERE id=?",
-                    (*anterior.values(), accion["objetivo"]),
-                )
-            else:
-                for sitio, activo in anterior["activos"].items():
-                    self.db.execute(
-                        "UPDATE emplazamientos SET activo=? WHERE id=?", (activo, sitio)
-                    )
-                for componente, sitio in anterior["miembros"].items():
-                    self.db.execute(
-                        "UPDATE miembros SET emplazamiento=? WHERE componente=?",
-                        (sitio, componente),
-                    )
-                for nuevo in anterior["nuevos"]:
-                    self.db.execute(
-                        "UPDATE emplazamientos SET activo=0 WHERE id=?", (nuevo,)
-                    )
-            self.db.execute(
-                "UPDATE acciones SET deshecha=1 WHERE id=?", (accion["id"],)
-            )
-        return accion
-
-    def reorganizar(self, sitios: list[str], grupos: list[list[str]]) -> list[str]:
-        """Divide o fusiona grupos conservando los originales y sus observaciones.
-
-        Args:
-            sitios: Emplazamientos que se reorganizan.
-            grupos: Componentes para cada nuevo emplazamiento, sin duplicarlos.
-
-        Returns:
-            list[str]: Identificadores nuevos pendientes de validación; los anteriores
-                quedan consultables.
-
-        Raises:
-        ValueError: Si la distribución pierde o repite componentes, o deja grupos
-            vacíos.
-        """
-
-        interrogantes = ",".join("?" for _ in sitios)
-        miembros = self.filas(
-            f"SELECT * FROM miembros WHERE emplazamiento IN ({interrogantes})",
-            tuple(sitios),
-        )
-        originales = {m["componente"]: m["emplazamiento"] for m in miembros}
-        propuestos = [c for grupo in grupos for c in grupo]
-        if (
-            not grupos
-            or any(not g for g in grupos)
-            or len(propuestos) != len(set(propuestos))
-            or set(propuestos) != set(originales)
-        ):
-            raise ValueError("Reparte todos los componentes una sola vez")
-        anteriores = self.filas(
-            f"SELECT * FROM emplazamientos WHERE id IN ({interrogantes})", tuple(sitios)
-        )
-        nuevos = []
-        with self.db:
-            for grupo in grupos:
-                nuevo = identificador(
-                    "emplazamiento",
-                    ("|".join(sorted(grupo)) + "|manual|" + ahora()).encode(),
-                )
-                datos = self.filas(
-                    "SELECT * FROM componentes WHERE id IN ("
-                    + ",".join("?" for _ in grupo)
-                    + ")",
-                    tuple(grupo),
-                )
-                geometria = union_all([from_wkb(c["geometria"]) for c in datos])
-                self.db.execute(
-                    (
-                        "INSERT INTO "
-                        "emplazamientos(id,ventana,geometria,municipio,codigo_municipal,origen,etiquetas)"
-                        " VALUES (?,?,?,?,?,?,?)"
-                    ),
-                    (
-                        nuevo,
-                        datos[0]["ventana"],
-                        geometria.wkb,
-                        datos[0]["municipio"],
-                        datos[0]["codigo_municipal"],
-                        "reagrupacion_manual",
-                        json.dumps(
-                            ["agrupacion_pendiente", "observaciones_en_originales"]
-                        ),
-                    ),
-                )
-                self.db.executemany(
-                    "UPDATE miembros SET emplazamiento=? WHERE componente=?",
-                    [(nuevo, c) for c in grupo],
-                )
-                nuevos.append(nuevo)
-            self.db.executemany(
-                "UPDATE emplazamientos SET activo=0 WHERE id=?", [(s,) for s in sitios]
-            )
-            self._accion(
-                "agrupacion",
-                ",".join(sitios),
-                None,
-                {
-                    "activos": {s["id"]: s["activo"] for s in anteriores},
-                    "miembros": originales,
-                    "nuevos": nuevos,
-                },
-                {"nuevos": nuevos, "originales": sitios},
-            )
-        return nuevos

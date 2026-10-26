@@ -1,130 +1,191 @@
 # Paneles solares en Cantabria
 
-El proyecto detecta superficies fotovoltaicas en ortofotos PNOA de 2023 y las
-resume por edificio y municipio. Compara U-Net con YOLO y estima potencia y
-producción eléctrica. También permite revisar en qué campañas históricas
-aparecen los paneles.
+Detección de paneles en ortofotos PNOA, etiquetado con LabelMe y análisis de
+superficie y periodos de instalación. U-Net y YOLO comparten las anotaciones.
+Las edificaciones y parcelas aportan contexto: no se excluyen terrenos,
+aparcamientos ni zonas sin edificios.
 
-El recorrido es: **ortofotos → etiquetado → entrenamiento → detección →
-indicadores → estimación de energía**. La revisión histórica se hace después,
-con ayuda de un visor y decisiones manuales.
+## Entorno y datos
 
-## Qué hay en cada carpeta
-
-| Carpeta | Para qué sirve |
-| --- | --- |
-| `src/paneles_solares/` | Código del proyecto, separado por etapas. |
-| `data/` | Ortofotos, geografía, etiquetas originales y datasets preparados. |
-| `weights/` | Pesos de los modelos actuales y anteriores. |
-| `runs/` | Evaluaciones, mapas, indicadores y resultados de las ejecuciones. |
-| `docs/` | Memoria técnica, figuras y guía detallada. |
-| `outputs/` | Auditoría de datos conservada de una ejecución anterior. |
-
-Dentro del código, `geografia/` prepara los datos geográficos; `etiquetado/`
-permite seleccionar y anotar imágenes; `datos/` organiza los datasets;
-`modelos/` entrena, evalúa y detecta; `visualizacion/` genera mapas y el visor.
-`rutas.py` reúne las rutas compartidas.
-
-## Preparar el entorno
-
-Se necesita Python 3.10 o posterior. Ejecuta los comandos desde la raíz:
+Python 3.10 o posterior. Ejecutar desde la raíz del repositorio:
 
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-`pyproject.toml` permite instalar el proyecto y encontrar sus módulos.
-`requirements.txt` contiene las bibliotecas necesarias.
+Los datos y pesos no se distribuyen con el código:
 
-Las ortofotos originales deben estar en `data/pnoa/`. Las anotaciones manuales
-se conservan en `data/pool/annotations/`; las máscaras U-Net y etiquetas YOLO
-se generan desde esos JSON.
+| Carpeta | Contenido |
+| --- | --- |
+| `data/pnoa/` | Ortofotos PNOA 2023 locales: RGB, EPSG:25830, 0,15 m. |
+| `data/raw/catastro/2023/` | Descargas oficiales y licencia. |
+| `data/geografia/` | Límites municipales, edificaciones y parcelas preparadas. |
+| `data/pool/` | Imágenes y anotaciones originales del dataset. |
+| `data/datasets/` | Exportaciones para modelos y revisiones de otras campañas. |
+| `weights/`, `runs/entrenamiento/` | Pesos de U-Net y YOLO. |
+| `runs/` | Evaluaciones, indicadores y visualización. |
 
-## Ejecutar el flujo
+Las ortofotos se obtienen del Gobierno de Cantabria o del CNIG. El etiquetado
+histórico también puede descargar recortes del WCS sin tener el TIFF completo.
+Para inferir se necesitan los pesos; para volver a entrenar, el dataset y los
+pesos iniciales definidos en `modelos/entrenar_unet.py` o `entrenar_yolo.py`.
 
-Prepara Catastro, municipios e índice de teselas cuando cambien los datos:
+## 1. Preparar la geografía de 2023
 
 ```powershell
-.\.venv\Scripts\python.exe -m paneles_solares.geografia.catastro
 .\.venv\Scripts\python.exe -m paneles_solares.geografia.municipios
-.\.venv\Scripts\python.exe -m paneles_solares.geografia.teselas
+.\.venv\Scripts\python.exe -m paneles_solares.geografia.catastro
+.\.venv\Scripts\python.exe -m paneles_solares.geografia.regenerar
 ```
 
-Para ampliar el etiquetado, selecciona imágenes, anótalas en LabelMe con la
-clase `panel_solar` y luego incorpóralas al dataset. Los negativos también
-necesitan su JSON vacío:
+Se utilizan el parcelario oficial de principios de 2023 y CBT23/LULC23, derivado
+de Catastro y otras fuentes de 2023. Las unidades cartográficas no equivalen
+necesariamente a edificios físicos completos. Se conservan sus usos oficiales
+sin inferir titularidad pública ni tipo de vivienda.
+
+`regenerar` prepara el índice territorial y actualiza el contexto de los
+manifiestos. Retira indicadores, avances y paneles invalidados por el cambio de
+referencia; no se ejecuta para reanudar una inferencia. Las etiquetas se conservan.
+La [revisión de la referencia](docs/revision_catastro_2023.md) recoge las fuentes.
+
+## 2. Etiquetar y preparar el dataset
 
 ```powershell
 .\.venv\Scripts\python.exe -m paneles_solares.etiquetado.crear_labeling
-# Etiquetar los PNG de data/labeling/images/ antes del siguiente paso.
+.\.venv\Scripts\labelme.exe data/labeling/images --output data/labeling/annotations --labels panel_solar --flags dudosa,descartar --config '{with_image_data: false, auto_save: true, keep_prev: false}'
 .\.venv\Scripts\python.exe -m paneles_solares.etiquetado.incorporar_labeling
 .\.venv\Scripts\python.exe -m paneles_solares.datos.decidir_dataset
 .\.venv\Scripts\python.exe -m paneles_solares.datos.sincronizar
 ```
 
-Entrena y evalúa cada modelo por separado. Estos comandos pueden sustituir
-pesos o resultados anteriores; revisa las constantes de los scripts antes
-de ejecutarlos:
+Se dibujan polígonos `panel_solar`. Una imagen negativa necesita un JSON vacío
+guardado; no se interpreta la falta de anotación como ausencia. Las banderas
+`dudosa` y `descartar` excluyen imágenes. Validación y test se mantienen separados
+al incorporar nuevas muestras. `sincronizar` exporta máscaras U-Net y etiquetas
+YOLO desde el mismo pool.
+
+Los módulos `modelos.entrenar_unet`, `modelos.evaluar_unet`,
+`modelos.entrenar_yolo` y `modelos.evaluar_yolo` usan esas exportaciones.
+
+## 3. Inferir sobre las ortofotos locales
+
+Probar primero con una zona pequeña:
 
 ```powershell
-.\.venv\Scripts\python.exe -m paneles_solares.modelos.entrenar_unet
-.\.venv\Scripts\python.exe -m paneles_solares.modelos.evaluar_unet
-.\.venv\Scripts\python.exe -m paneles_solares.modelos.entrenar_yolo
-.\.venv\Scripts\python.exe -m paneles_solares.modelos.evaluar_yolo
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_unet --bbox 387515.6 4799608.4 387692.4 4799785.2
 ```
 
-U-Net es el modelo utilizado para los indicadores regionales. La inferencia
-guarda GeoPackage de edificios y municipios; después se estima energía con
-PVGIS y se genera el panel:
+La prueba se guarda en `runs/prueba_2023/indicadores/`. Para procesar todo el
+territorio local o reanudar desde la última hoja terminada:
 
 ```powershell
 .\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_unet
-.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.estimar_energia
-.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores
 ```
 
-Las salidas quedan en `runs/indicadores/unet_actual/`. Si ya existen los
-indicadores y la producción, basta el último comando para regenerar el panel:
-no repite inferencia ni consultas PVGIS.
+El avance está en `runs/indicadores/.unet_actual_avance/`; se comprueban pesos,
+referencias, índice y código para no mezclar ejecuciones. La exportación regional
+se publica en `runs/indicadores/unet_actual/` al terminar.
 
-## Validación y revisión histórica
+Se conservan detecciones completas, cobertura procesada y relaciones con
+edificios, parcelas y municipios. `comparacion_cobertura.csv` mide el área dentro
+y fuera de edificios. Los recuentos son componentes detectados, no instalaciones.
 
-La [guía](docs/guia.md) detalla la validación a otra resolución, el visor
-histórico, sus resultados y sus limitaciones. Las opciones se editan junto
-a cada flujo, sin archivos de configuración separados:
-
-| Opciones | Dónde se cambian |
-| --- | --- |
-| Campañas históricas, lote y precarga | `CONFIGURACION` en [datos/seguimiento.py](src/paneles_solares/datos/seguimiento.py). |
-| Campaña de validación y tamaño de muestra | `CAMPANIAS` en [datos/validacion.py](src/paneles_solares/datos/validacion.py). |
-
-Para continuar la revisión o generar un avance sin modificar las respuestas:
+Después de terminar y revisar la inferencia regional, el escenario energético
+uniforme se calcula con:
 
 ```powershell
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.estimar_energia
+```
+
+Exporta producción anual y mensual en CSV y una figura. Usa densidades de
+0,17/0,20/0,23 kWp/m², orientación sur, inclinación de 30° y pérdidas del 14 %.
+Es un escenario agregado sin periodos individuales, distinto del seguimiento.
+
+## 4. Etiquetar otras campañas
+
+Para un lote nuevo se parte de un CSV con `ventana,xmin,ymin,xmax,ymax`, en
+EPSG:25830. Incluir también la campaña de referencia permite revisar su área.
+No hace falta la base de datos del antiguo visor.
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --ventanas ventanas.csv --anios 2023 2020 2017 2014
+.\.venv\Scripts\labelme.exe data/datasets/seguimiento/labelme/images --labels panel_solar --flags ausente,dudosa --config '{with_image_data: false, auto_save: true, keep_prev: false, display_label_popup: false}'
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --finalizar data/datasets/seguimiento/labelme/manifest.csv
 .\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos
 ```
 
-El progreso manual queda en `data/datasets/seguimiento/seguimiento.sqlite`.
-La recuperación histórica regional sigue pendiente.
+Dibujar todos los paneles de cada imagen, con polígonos separados y sin Group ID.
+Marcar `ausente` si no hay ninguno y `dudosa` si no se puede decidir. Los PNG se
+preparan a resolución nativa; los JSON quedan a su lado. Repetir la preparación
+conserva el trabajo. `--config` permite definir otras campañas.
 
-## Interpretar los resultados
+`--finalizar` registra qué imágenes están terminadas. El autoguardado de LabelMe
+también conserva trabajo parcial, por lo que guardar un JSON no cierra la revisión.
+Una anotación modificada después del cierre necesita finalizarse otra vez.
+El seguimiento necesita algún polígono positivo en al menos una campaña;
+las otras campañas pueden estar completamente vacías.
 
-Una detección es una predicción del modelo. La superficie es planimétrica;
-la corrección `superficie_detectada / 0.9246` utiliza el sesgo del test de 2023
-y no garantiza precisión por edificio. La evaluación U-Net de ese test obtuvo
-Dice 0,856 y sesgo de superficie −7,54 %.
+El [ejemplo pequeño y la guía](docs/guia.md#etiquetado-histórico) explican los
+encuadres, la reanudación, la recuperación antigua y la incorporación de negativos.
 
-La potencia y la energía son estimaciones. Los escenarios usan 0,17 kWp/m²
-sobre superficie detectada, o 0,20 y 0,23 sobre superficie corregida.
-PVGIS supone 30° de inclinación, orientación sur y pérdidas del 14 %.
-El perfil de 8.760 horas es representativo, no producción medida.
+### Lote histórico ya revisado de este proyecto
 
-La [memoria técnica](docs/memoria_tecnica.pdf) reúne metodología, resultados
-y limitaciones. Su fuente editable es `docs/memoria_tecnica.tex`; requiere
-LaTeX para recompilarla. Los mapas se regeneran con:
+Las 1.486 imágenes actuales están cerradas. Para regenerar sus resultados,
+aprovechando las respuestas antiguas y la referencia estimada de 2023:
 
 ```powershell
-.\.venv\Scripts\python.exe docs/generar_mapas.py
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos --base data/datasets/seguimiento/seguimiento.sqlite
 ```
+
+`--base` es una opción de recuperación, no un requisito del flujo general.
+Sus respuestas se leen sin modificar la base. Las agrupaciones, superficies
+y periodos se guardan en `runs/indicadores/seguimiento_historico/`.
+Para probar un subconjunto, usar `--limite 20 --salida runs/prueba_historico/resultados`.
+
+## 5. Generar el panel
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores
+```
+
+Abrir `runs/visualizacion/panel_indicadores.html` en el navegador. Los filtros
+seleccionan campaña, municipio, uso cartográfico y estado de la atribución.
+El mapa permite ver máscaras, edificios y parcelas sobre la ortofoto de cada año.
+
+El panel obtiene los años de las observaciones. La comparación usa una muestra
+común con áreas revisadas en todas las campañas comparables. El inventario
+conserva también estimaciones del modelo y estados pendientes. Un dato
+desconocido no equivale a cero; los recuentos siguen siendo provisionales.
+
+La sección de energía muestra tres escenarios, sus supuestos y fuentes.
+La estimación corresponde al inventario observado, sin extrapolar a toda
+Cantabria. Las áreas se agregan sin duplicar solapes.
+
+En la misma carpeta se guardan los CSV municipales, producción estimada,
+factores por emplazamiento, hipótesis y procedencia. Las consultas PVGIS se
+conservan en `pvgis_anual.json`. El HTML incluye los datos; Leaflet, el mapa base
+y las ortofotos necesitan conexión. `--carpeta` y `--salida` permiten usar otra
+salida histórica, por ejemplo la prueba pequeña descrita en la guía.
+
+## Documentación y pruebas
+
+- [Guía de etiquetado, validación y seguimiento](docs/guia.md).
+- [Memoria técnica](docs/memoria_tecnica.tex).
+- [Fuentes catastrales de 2023](docs/revision_catastro_2023.md).
+
+Los mapas estáticos incluidos en la memoria se regeneran después del panel:
+
+```powershell
+.\.venv\Scripts\python.exe docs/generar_mapas.py --anio 2023
+```
+
+La memoria se conserva en LaTeX; para obtener el PDF se necesita una instalación
+de LaTeX y compilar desde `docs/` para resolver las rutas de las figuras.
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+Datos del Gobierno de Cantabria, Dirección General del Catastro e IGN/CNIG.
+La licencia CBT23 se conserva en `data/raw/catastro/2023/licencia.txt`.

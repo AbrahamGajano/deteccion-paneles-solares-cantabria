@@ -44,9 +44,18 @@ def leer_anotacion(ruta: Path) -> dict:
             raise ValueError(f"Polígono incompleto: {ruta}")
 
         # YOLO necesita coordenadas dentro de la imagen para normalizarlas a 0–1.
-        for x, y in forma["points"]:
-            if not (0 <= x <= datos["imageWidth"] and 0 <= y <= datos["imageHeight"]):
+        for punto in forma["points"]:
+            x, y = punto
+            if not (
+                -1e-6 <= x <= datos["imageWidth"] + 1e-6
+                and -1e-6 <= y <= datos["imageHeight"] + 1e-6
+            ):
                 raise ValueError(f"Coordenadas fuera de la imagen: {ruta}")
+            # LabelMe puede guardar -1e-14 al arrastrar un vértice al borde.
+            punto[:] = [
+                min(max(x, 0), datos["imageWidth"]),
+                min(max(y, 0), datos["imageHeight"]),
+            ]
 
     return datos
 

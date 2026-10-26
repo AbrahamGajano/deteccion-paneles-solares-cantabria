@@ -19,7 +19,6 @@ from paneles_solares.rutas import (
 
 # La validación solo sale de imágenes aleatorias para que sea representativa.
 FRACCION_VAL_ALEATORIAS = 0.25
-REHACER_VALIDACION = True
 
 # Además de los fallos de los modelos, añadimos algunos fondos fáciles.
 MAX_NEGATIVAS_FACILES = 100
@@ -305,18 +304,6 @@ def decidir_dataset(manifest: pd.DataFrame) -> pd.DataFrame:
     # Una descartada se conserva en el pool, pero nunca entra en un dataset.
     descartadas = manifest.index[manifest["estado"] == "descartada"]
     asignar_uso(manifest, descartadas, "no_usar", "descartada en LabelMe")
-
-    # Podemos aprovechar la validación anterior para entrenar el nuevo modelo.
-    if REHACER_VALIDACION:
-        validacion_antigua = manifest.index[
-            (manifest["uso"] == "val") & (manifest["motivo"] != MOTIVO_VALIDACION)
-        ]
-        asignar_uso(
-            manifest,
-            validacion_antigua,
-            "train",
-            "antigua validacion pasada a train",
-        )
 
     pendientes = manifest[(manifest["estado"] == "valida") & (manifest["uso"] == "pendiente")]
 

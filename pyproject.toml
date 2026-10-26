@@ -13,3 +13,6 @@ dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"paneles_solares.visualizacion" = ["plantillas/*"]

@@ -24,6 +24,24 @@ def ruta_proyecto(ruta: str | Path) -> Path:
     return RAIZ / ruta
 
 
+def ruta_registrada(ruta: str | Path) -> str:
+    """Guarda rutas del proyecto relativas y conserva absolutas las externas.
+
+    Args:
+        ruta: Archivo cuya ubicación se registra en un manifiesto o metadato.
+
+    Returns:
+        str: Ruta relativa al proyecto cuando el archivo está dentro de él.
+    """
+
+    ruta = ruta_proyecto(ruta).resolve()
+
+    if ruta.is_relative_to(RAIZ):
+        return ruta.relative_to(RAIZ).as_posix()
+
+    return str(ruta)
+
+
 PNOA = ruta_proyecto("data/pnoa")
 INDICE_TESELAS = ruta_proyecto("data/manifests/teselas.csv")
 EDIFICIOS_CATASTRO = ruta_proyecto("data/geografia/catastro/edificios_cantabria.gpkg")
@@ -38,10 +56,31 @@ EVALUACION_UNET = ruta_proyecto("runs/evaluacion/unet_actual")
 INDICADORES_UNET = ruta_proyecto("runs/indicadores/unet_actual")
 EVALUACION_SEGUIMIENTO = ruta_proyecto("runs/evaluacion/seguimiento")
 INDICADORES_SEGUIMIENTO = ruta_proyecto("runs/indicadores/seguimiento_historico")
+VISUALIZACION = ruta_proyecto("runs/visualizacion")
 PRODUCCION_CONFIG = INDICADORES_UNET / "produccion_config.json"
 PRODUCCION_MUNICIPAL = INDICADORES_UNET / "produccion_municipal.csv"
 PRODUCCION_MENSUAL = INDICADORES_UNET / "produccion_mensual.csv"
-PRODUCCION_HORARIA = INDICADORES_UNET / "produccion_horaria_representativa.csv"
+
+
+def retirar_panel() -> None:
+    """Retira las salidas del panel cuando cambian sus datos de entrada.
+
+    La caché de PVGIS se conserva: cada consulta identifica sus parámetros.
+    El mapa del test de los modelos es una salida independiente.
+    """
+
+    archivos = [
+        "panel_indicadores.html",
+        "resumen_indicadores.png",
+        "resumen_municipal.csv",
+        "procedencia_panel.json",
+        "produccion_estimada.csv",
+        "factores_energia.csv",
+        "hipotesis_energia.json",
+    ]
+
+    for nombre in archivos:
+        (VISUALIZACION / nombre).unlink(missing_ok=True)
 
 
 def huella_archivo(ruta: Path) -> str:
@@ -62,7 +101,7 @@ def huella_archivo(ruta: Path) -> str:
 
 
 def version_indicadores() -> dict[str, dict[str, int | str]]:
-    """Identifica los GeoPackage usados para estimar producción y dibujar el panel.
+    """Identifica los GeoPackage usados para estimar la producción regional.
 
     Returns:
         dict[str, dict[str, int | str]]: Tamaño y fechas de los GeoPackage de edificios

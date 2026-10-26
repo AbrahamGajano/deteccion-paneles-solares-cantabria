@@ -30,9 +30,9 @@
 \vspace*{3.2cm}
 {\Large Memoria técnica\par}
 \vspace{0.8cm}
-{\Huge\bfseries Detección de superficies fotovoltaicas en cubiertas de Cantabria mediante ortofotografía aérea\par}
+{\Huge\bfseries Detección de superficies fotovoltaicas en Cantabria mediante ortofotografía aérea\par}
 \vspace{1.2cm}
-{\large De la transferencia de un modelo entrenado en Francia a indicadores municipales y producción estimada\par}
+{\large Detección, revisión histórica y estimación de producción\par}
 \vfill
 \begin{tabular}{rl}
 Autor: & \rule{8cm}{0.4pt}\\[0.7cm]
@@ -44,18 +44,17 @@ Fecha de entrega: & \rule{8cm}{0.4pt}
 
 \section{Resumen}
 
-Se analizaron ortofotos PNOA 2023 de Cantabria para detectar superficie fotovoltaica sobre edificios catastrales. El primer intento consistió en aplicar directamente un modelo YOLO entrenado en Francia; su rendimiento cayó al pasar a Cantabria y motivó la creación de un conjunto local etiquetado. Tras comparar YOLO con dos versiones de U-Net, se eligió la U-Net con codificador ResNet34: en el test local obtuvo Dice 0,8560, IoU 0,7482 y un sesgo global de superficie del \(-7{,}54\,\%\).
+Se analizaron ortofotos PNOA 2023 de Cantabria para detectar superficie fotovoltaica. El primer intento consistió en aplicar un modelo YOLO entrenado en Francia; sus resultados motivaron la creación de un conjunto local etiquetado. Tras comparar YOLO con dos versiones de U-Net, se eligió la U-Net con codificador ResNet34: en el test local obtuvo Dice 0,8560, IoU 0,7482 y un sesgo global de superficie del \(-7{,}54\,\%\).
 
-La inferencia actual registra 3.188 edificios con detección entre 153.003 analizados y 202.786~m\textsuperscript{2} de superficie fotovoltaica planimétrica detectada. Una calibración experimental del sesgo eleva la estimación de superficie a 219.323~m\textsuperscript{2}. Bajo hipótesis comunes de potencia por superficie y rendimiento de PVGIS, el escenario central estima 43,86~MWp y 51,01~GWh anuales. Son estimaciones derivadas de imágenes, no registros de potencia instalada ni medidas de producción.
+Las edificaciones y parcelas de 2023 se utilizan para relacionar las detecciones con su entorno, incluidas las que quedan fuera de edificios. La revisión manual de campañas anteriores permite estudiar presencia, superficie e intervalos de aparición. Los resultados históricos describen una selección de emplazamientos; la exportación territorial completa sigue pendiente.
 
 \section{Planteamiento y evolución}
 
 El propósito inicial era localizar paneles en Cantabria reutilizando un detector YOLO entrenado con ejemplos franceses. La evaluación en Francia parecía suficiente para ensayar la transferencia, pero los resultados descendieron con fuerza al probarlo sobre imágenes cántabras.
 
-% Fuente: cifras históricas facilitadas en el encargo de la memoria. No se localizó el archivo original de evaluación Francia--Cantabria en el repositorio.
 \begin{table}[H]
 \centering
-\caption{Primera transferencia del modelo YOLO. Los valores proceden del registro facilitado para esta memoria; falta la salida original para verificarlos de forma independiente.}
+\caption{Resultados históricos de la primera transferencia de YOLO. No se conservan sus archivos de evaluación; se incluyen como antecedente.}
 \begin{tabular}{lrrrr}
 \toprule
 Prueba & Precisión & Recall & mAP50 & mAP50--95\\
@@ -70,14 +69,13 @@ La caída indica un cambio de dominio. Podían influir la resolución, el aspect
 
 \section{Datos}
 
-La imagen de entrada procede de PNOA 2023 \cite{pnoa}. Los TIF usados tienen tres bandas RGB, sistema EPSG:25830 y píxeles de 0,15~m, comprobados en los archivos locales. Las huellas de edificios proceden de Catastro INSPIRE \cite{catastro}. El índice espacial contiene 100.591 teselas de hasta \(512\times512\) píxeles que intersectan algún edificio. En los bordes de las ortofotos puede haber ventanas menores.
+La imagen de entrada procede de PNOA 2023 \cite{pnoa}. Los TIF usados tienen tres bandas RGB, sistema EPSG:25830 y píxeles de 0,15~m, comprobados en los archivos locales. Las edificaciones proceden de CBT23/LULC23 del Gobierno de Cantabria, elaborado con imágenes de agosto de 2023, LiDAR de octubre de 2023 y datos de Catastro. Se incorpora el parcelario oficial de principios de 2023. No es un volcado INSPIRE BU histórico. Se conservan los usos cartográficos oficiales sin inferir titularidad pública. El índice abarca todo el territorio disponible, incluido el territorio comunal de Campoo y Cabuérniga, y no exige intersección con edificios. Cada ventana tiene hasta \(512\times512\) píxeles.
 
 Las imágenes seleccionadas se etiquetaron con polígonos en LabelMe. Para U-Net, cada etiqueta se convierte en una máscara binaria: un píxel marcado indica superficie fotovoltaica anotada y uno sin marcar indica fondo. La clase usada es \texttt{panel\_solar}. El mismo material etiquetado se exporta también al formato de segmentación de YOLO.
 
-% Fuente: data/pool/manifest.csv y recuento directo de PNG en data/datasets/unet/masks/{train,val,test}.
 \begin{table}[H]
 \centering
-\caption{Conjunto local usado en la comparación final. Los positivos se comprobaron en las máscaras actuales.}
+\caption{Conjunto utilizado en la comparación de los modelos guardados.}
 \begin{tabular}{lrrr}
 \toprule
 Partición & Teselas & Positivas & Negativas\\
@@ -89,13 +87,15 @@ Test & 988 & 31 & 957\\
 \end{tabular}
 \end{table}
 
-Cada identificador de tesela aparece una sola vez y la cuadrícula de 512 píxeles evita que dos teselas del índice compartan píxeles. El test se reservó como grupo separado; la validación actual se seleccionó entre muestras aleatorias. La separación no incluye un margen geográfico: el manifiesto muestra 37 teselas de test contiguas a alguna de entrenamiento o validación. Este límite se considera en la interpretación del test.
+Después de esa evaluación se incorporaron 60 negativos históricos a entrenamiento, que ahora contiene 3.094 imágenes. Otras nueve imágenes negativas quedaron fuera por solaparse con localizaciones reservadas. Este añadido no reentrena los pesos ni cambia las métricas de los modelos guardados.
+
+Cada identificador de tesela aparece una sola vez. Los solapes entre ortofotos se resuelven durante la inferencia usando la cobertura válida de cada hoja. El test se reservó como grupo separado; la validación actual se seleccionó entre muestras aleatorias del antiguo marco con edificios. La separación no incluye un margen geográfico: el manifiesto muestra 37 teselas de test contiguas a alguna de entrenamiento o validación.
 
 \section{Metodología}
 
 Se entrenó una U-Net \cite{unet} con codificador ResNet34 \cite{resnet}. El codificador se creó con pesos ImageNet; la versión actual se ajustó a partir de los pesos de una U-Net anterior del proyecto. Las imágenes se leen en RGB, se dividen por 255 y se normalizan con media y desviación estándar ImageNet. La entrada es de \(512\times512\) píxeles y la máscara predicha se binariza con umbral 0,5. En entrenamiento se usan volteos y giros, pérdida BCE más Dice, optimizador AdamW y selección del mejor peso por Dice de validación.
 
-El YOLO11s local \cite{yolo} se evaluó sobre el mismo test en términos de superficie segmentada por píxel. Para Cantabria se eligió la U-Net y se aplicó por ventanas: las predicciones se georreferencian, se acumulan sin contar dos veces las zonas compartidas y se intersectan con las huellas catastrales. Cada edificio se asigna a un municipio. El resultado conserva su geometría y superficies planimétricas; no cuenta instalaciones físicas individuales.
+El YOLO11s local \cite{yolo} se evaluó sobre el mismo test en términos de superficie segmentada por píxel. Para Cantabria se eligió la U-Net. Las predicciones completas se georreferencian y se conservan también fuera de edificios. Las relaciones con edificaciones y parcelas se exportan aparte sin recortar las máscaras. Se eliminan solapes entre ortofotos y se registra la cobertura procesada. Las unidades cartográficas no equivalen necesariamente a edificios físicos completos ni a instalaciones.
 
 \section{Evaluación}
 
@@ -152,151 +152,74 @@ La revisión automática de imágenes clasificó 970 como aceptables, 10 como fa
 \caption{Dos errores guardados por la evaluación U-Net. Verde indica coincidencia cuando la hay.}
 \end{figure}
 
-\section{Indicadores territoriales}
+\section{Seguimiento histórico}
 
-Los GeoPackage conservan una fila por edificio y otra por municipio. Una cubierta con píxeles predichos tiene \emph{detección fotovoltaica}; una máscara puede fragmentar un grupo o unir varios, por lo que el número de edificios positivos no equivale al de instalaciones. El área se calcula en el plano proyectado a 0,15~m por píxel. La corrección \(A_{\mathrm{corr}}=A_{\mathrm{detectada}}/0{,}9246\) utiliza el sesgo redondeado del test como calibración experimental y mantiene separado el valor original.
+Se revisaron 1.486 imágenes de 2014, 2017 y 2020 en LabelMe: 1.417 contenían paneles y 69 se marcaron como negativas. Los polígonos se georreferencian con el encuadre y la resolución de cada imagen. Las respuestas anteriores del visor se conservan como evidencia de presencia o ausencia, no como superficie por instalación.
 
-% Fuente: runs/indicadores/unet_actual/municipios.csv y municipios.gpkg; totales de sus 102 filas.
-\begin{figure}[H]
-\begin{minipage}[c]{0.63\linewidth}
-\includegraphics[width=\linewidth]{figuras/mapa_detecciones.png}
-\end{minipage}\hfill
-\begin{minipage}[c]{0.34\linewidth}
+Los paneles se relacionan por intersección con edificios y parcelas. Una atribución clara necesita al menos el 80\,\% de solape y ningún segundo soporte con un 20\,\% o más. La agrupación por edificio y solape entre campañas produce 4.118 candidatos, todavía sin confirmar como instalaciones físicas. Compartir parcela o aparecer en un mismo recorte no basta para agruparlos.
+
+La comparación de áreas usa 2.353 candidatos con superficies revisadas en 2014, 2017 y 2020. Su superficie horizontal conjunta es de 6.407, 6.280 y 6.787 m\textsuperscript{2}, respectivamente. Muchos todavía estaban ausentes en esas fechas. Los ceros por ausencia comprobada se conservan; los casos sin evidencia suficiente permanecen desconocidos. Las superficies estimadas por el modelo en 2023 se muestran aparte y no cierran una comparación de área medida hasta ese año.
+
+Se guardan las máscaras originales, sus relaciones con soportes, miembros de las agrupaciones, estados por campaña y límites del intervalo de aparición. La primera presencia fecha el emplazamiento de forma aproximada, no cada módulo de una ampliación.
+
+\section{Producción estimada del inventario}
+
+La energía se calcula sobre el inventario observado, sin extrapolarlo a toda Cantabria. PVGIS \cite{pvgis} aporta rendimientos medios anuales por municipio para silicio cristalino y montaje ventilado. La superficie inclinada se aproxima como \(A_h/\cos\beta\), donde \(A_h\) es la proyección horizontal y \(\beta\) la inclinación supuesta. Los solapes se disuelven antes de agregar áreas y su reparto energético se pondera por superficie.
+
+La eficiencia inicial depende de la época, utilizando la tabla del JRC \cite{eficiencia}: 16,3\,\% en 2014, 17,7\,\% en 2017, 20\,\% en 2020 y 21,8\,\% en 2023, con interpolación anual. Antes de 2014 se suponen 10\,\% en 1989, 12\,\% en 2000 y 15\,\% en 2010. Son referencias de mercado e hipótesis, no especificaciones conocidas de los módulos locales.
+
+\begin{table}[H]
+\centering
+\caption{Escenarios de producción del inventario histórico.}
 \small
-\begin{tabular}{@{}lr@{}}
+\begin{tabular}{lrrrrr}
 \toprule
-Municipios & 102\\
-Edificios analizados & 153.003\\
-Con detección & 3.188\\
-Proporción & 2,08\,\%\\
-Por 1.000 edificios & 20,84\\
-Área detectada & 202.786 m\textsuperscript{2}\\
-Área corregida & 219.323 m\textsuperscript{2}\\
-Cubierta ocupada & 0,51\,\%\\
-\bottomrule
-\end{tabular}
-\end{minipage}
-\caption{Distribución municipal de edificios con detección y resumen de Cantabria. El porcentaje de cubierta usa superficie detectada sin corregir. Límites municipales: IGN/CNIG.}
-\end{figure}
-
-% Fuente: runs/indicadores/unet_actual/municipios.csv; ordenado por superficie_fv_corregida_test_total_m2.
-\begin{table}[H]
-\centering
-\caption{Municipios con mayor superficie fotovoltaica corregida.}
-\begin{tabular}{lrrr}
-\toprule
-Municipio & Edificios positivos & Área corregida (m\textsuperscript{2}) & Por 1.000\\
+Escenario & Inclinación & Orientación & Pérdidas & Degradación anual & Eficiencia de época\\
 \midrule
-Santander & 335 & 28.720 & 31,2\\
-Camargo & 223 & 18.335 & 49,3\\
-El Astillero & 78 & 17.129 & 56,9\\
-Polanco & 54 & 12.338 & 36,8\\
-Medio Cudeyo & 67 & 10.938 & 33,5\\
+Conservador & 15° & Oeste & 18\,\% & 1\,\% & $\times 0{,}85$\\
+Central & 30° & Sur & 10\,\% & 0,5\,\% & $\times 1$\\
+Favorable & 40° & Sur & 5\,\% & 0,2\,\% & $\times 1{,}15$\\
 \bottomrule
 \end{tabular}
 \end{table}
 
-% Fuente: runs/indicadores/unet_actual/resumen_indicadores.png; copia exacta en docs/figuras/.
+En el escenario central se usa el punto medio del intervalo de aparición como aproximación a la edad de los módulos. Cuando falta un límite inferior compatible se supone un intervalo desde 25 años antes de la primera geometría. La degradación central del 0,5\,\% anual toma como referencia la revisión de NREL \cite{degradacion}. PVGIS se consulta con pérdidas adicionales nulas y después se aplican las pérdidas operativas y el envejecimiento una sola vez.
+
+El escenario conservador usa la fecha más antigua supuesta; el favorable permite módulos nuevos del año de la imagen. No se fechan ampliaciones a partir de diferencias entre máscaras del modelo y dibujos manuales. Para el inventario de 2023, la producción central es de 35,9 GWh/año, frente a 16,6 y 64,6 GWh/año en los otros escenarios. Aproximadamente el 57\,\% del área necesita el supuesto de antigüedad. El rango expresa sensibilidad a las hipótesis, no un intervalo de confianza ni energía medida durante el año del vuelo.
+
 \begin{figure}[H]
 \centering
-\includegraphics[width=\textwidth]{figuras/resumen_indicadores.png}
-\caption{Superficies, tasas de detección y distribución entre edificios positivos. La superficie corregida no sustituye a la detectada.}
+\includegraphics[width=\linewidth]{figuras/mapa_detecciones.png}
+\caption{Superficie horizontal del inventario de 2023, estimada por el modelo. Los municipios sin datos no representan ausencia de instalaciones.}
 \end{figure}
-\section{Potencia y producción estimadas}
 
-La potencia pico no procede de registros eléctricos. Se aproxima a partir del área planimétrica asignada a cada municipio y una densidad efectiva:
-\[
-P_{\mathrm{kWp}}=A_{\mathrm{FV}}\,d_{\mathrm{kWp/m^2}},
-\qquad
-E_{\mathrm{kWh}}=P_{\mathrm{kWp}}\,Y_{\mathrm{PVGIS}}.
-\]
-\(Y_{\mathrm{PVGIS}}\) es el rendimiento de referencia en kWh/kWp. No se aplica una corrección geométrica adicional por inclinación.
-
-% Fuente: runs/indicadores/unet_actual/produccion_config.json y produccion_municipal.csv.
-\begin{table}[H]
-\centering
-\caption{Hipótesis de los tres escenarios. Las densidades son supuestos, no medidas.}
-\begin{tabular}{lll}
-\toprule
-Escenario & Superficie usada & Densidad (kWp/m\textsuperscript{2})\\
-\midrule
-Conservador & Detectada sin corregir & 0,17\\
-Central & Corregida con el test & 0,20\\
-Superior & Corregida con el test & 0,23\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Para cada municipio con detecciones se consultó PVGIS 5.3 \cite{pvgis} con una posición media de edificios positivos ponderada por su área detectada. \texttt{PVcalc} dio doce rendimientos medios mensuales para 1~kWp. \texttt{seriescalc} aportó la forma horaria de 2019; cada mes de esa serie se normalizó hasta igualar el rendimiento mensual medio. El resultado contiene 8.760 horas UTC por municipio, pero es un \emph{perfil representativo}, no producción observada de 2019. Dos municipios sin detecciones tienen potencia y energía cero y no necesitan consulta.
-
-Las condiciones comunes son 30\(^{\circ}\) de inclinación, orientación PVGIS 0\(^{\circ}\) (sur), pérdidas del 14\,\%, tecnología \texttt{crystSi} y base de radiación PVGIS-SARAH3. No se conocen la inclinación, orientación ni sombras reales de cada cubierta.
-
-% Fuente: runs/indicadores/unet_actual/produccion_municipal.csv; sumas de 102 municipios. Comprobación con produccion_mensual.csv.
-\begin{table}[H]
-\centering
-\caption{Totales estimados de Cantabria.}
-\begin{tabular}{lrr}
-\toprule
-Escenario & Potencia pico (MWp) & Producción anual (GWh)\\
-\midrule
-Conservador & 34,47 & 40,09\\
-Central & 43,86 & 51,01\\
-Superior & 50,44 & 58,66\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-% Fuente: runs/indicadores/unet_actual/municipios.gpkg y produccion_municipal.csv; mapa estático generado a partir de ambas salidas.
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.96\textwidth]{figuras/mapa_produccion.png}
-\caption{Producción anual central estimada por municipio. La escala colorea MWh/año, no potencia instalada. Límites municipales: IGN/CNIG.}
+\includegraphics[width=\linewidth]{figuras/mapa_produccion.png}
+\caption{Producción anual del inventario de 2023 bajo el escenario central. No representa la generación total regional.}
 \end{figure}
 
-% Fuente: runs/indicadores/unet_actual/produccion_municipal.csv; ordenado por produccion_anual_central_kwh.
-\begin{table}[H]
-\centering
-\caption{Municipios con mayor producción anual estimada en el escenario central.}
-\begin{tabular}{lrr}
-\toprule
-Municipio & Potencia central (MWp) & Producción central (GWh/año)\\
-\midrule
-Santander & 5,74 & 6,91\\
-Camargo & 3,67 & 4,41\\
-El Astillero & 3,43 & 3,94\\
-Polanco & 2,47 & 2,92\\
-Reocín & 2,18 & 2,51\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-La producción mensual central total varía entre 2,54~GWh en enero y 5,47~GWh en julio, según \texttt{produccion\_mensual.csv}. La banda entre 40,09 y 58,66~GWh anuales expresa las tres hipótesis de superficie y densidad; no es un intervalo estadístico de confianza.
-
-% Fuente: runs/indicadores/unet_actual/resumen_produccion.png, generado con produccion_municipal.csv, produccion_mensual.csv y produccion_horaria_representativa.csv; copia exacta.
-\begin{figure}[H]
-\centering
-\includegraphics[width=\textwidth]{figuras/resumen_produccion.png}
-\caption{Producción mensual y perfil diario de referencia, municipios principales y relación entre potencia y energía en el escenario central. La banda mensual une los escenarios conservador y superior.}
-\end{figure}
 \section{Limitaciones}
 
 Solo 31 de las 988 teselas de test contienen paneles anotados (3,14\,\%). Aunque las 988 imágenes permiten una primera evaluación amplia de fondos y errores, ofrecen pocos positivos para estimar con precisión el rendimiento sobre paneles. Además, 37 teselas de test son contiguas a alguna tesela de entrenamiento o validación. La inferencia regional multiplica las oportunidades de falsos positivos al analizar muchas cubiertas. Conviene revisar visualmente los municipios extremos antes de interpretar diferencias pequeñas.
 
-La corrección del \(-7{,}54\,\%\) refleja el sesgo global de un test concreto. No convierte cada edificio en una medida exacta y su incertidumbre no está cuantificada. Con 0,15~m por píxel, estructuras pequeñas o bordes complejos pueden ser difíciles de segmentar. El área estimada es planimétrica y no representa la superficie inclinada real de los módulos.
+La corrección del \(-7{,}54\,\%\) refleja el sesgo global de un test seleccionado con edificios y no se aplica a la nueva superficie territorial completa. No convierte cada edificio en una medida exacta y su incertidumbre no está cuantificada. Con 0,15~m por píxel, estructuras pequeñas o bordes complejos pueden ser difíciles de segmentar. El área estimada es planimétrica y no representa la superficie inclinada real de los módulos.
 
-La potencia depende de densidades supuestas. PVGIS aporta rendimientos de referencia bajo geometría y pérdidas homogéneas; no incorpora la orientación e inclinación propia de cada cubierta, sus sombras ni datos reales de equipos. Las huellas catastrales y las ortofotos pueden corresponder a momentos distintos. Por todo ello, el inventario registra \emph{cubiertas con detección}, no instalaciones verificadas.
+La potencia depende de eficiencias y edades supuestas. PVGIS no identifica la orientación e inclinación de cada cubierta, sombras locales ni equipos averiados. El escenario central puede infravalorar ampliaciones recientes de emplazamientos antiguos. Los intervalos de aparición tampoco son fechas exactas de instalación. El inventario conserva agrupaciones provisionales y detecciones pendientes, no instalaciones verificadas.
 
 \section{Conclusiones y trabajo futuro}
 
-La transferencia directa del modelo francés no funcionó bien en Cantabria. El conjunto local permitió entrenar y comparar alternativas sobre una referencia común; la U-Net actual redujo el error de superficie y alcanzó Dice 0,8560. El inventario resultante describe edificios y municipios, mientras que los 43,86~MWp y 51,01~GWh/año centrales son estimaciones condicionadas por supuestos explícitos.
+La transferencia directa del modelo francés no funcionó bien en Cantabria. El conjunto local permitió entrenar y comparar alternativas sobre una referencia común; la U-Net actual redujo el error de superficie y alcanzó Dice 0,8560. La nueva inferencia territorial permitirá incluir las detecciones exteriores y revisar indicadores por unidades cartográficas y municipios, sin contar instalaciones todavía.
 
 Como validación final se plantea reunir unas 1.000 teselas nuevas, elegidas completamente al azar y con separación espacial respecto a entrenamiento y validación. Después se podrán calcular intervalos de confianza, revisar municipios extremos, incorporar inclinación y orientación derivadas de LiDAR y ajustar el modelo con la siguiente cobertura PNOA disponible. Una comparación con registros oficiales requeriría comprobar previamente que ambos conjuntos describen las mismas fechas y unidades.
 
 \begingroup\small
 \begin{thebibliography}{9}
 \bibitem{pnoa} Instituto Geográfico Nacional y Centro Nacional de Información Geográfica. \emph{Plan Nacional de Ortofotografía Aérea, PNOA Imagen}. \href{https://pnoa.ign.es/}{pnoa.ign.es}. Ortofotos y límites derivados: © IGN/CNIG; origen reconocido conforme a su \href{https://centrodedescargas.cnig.es/CentroDescargas/politica-datos}{política de datos}, compatible con CC BY 4.0.
-\bibitem{catastro} Dirección General del Catastro. \emph{Servicios INSPIRE de edificios y licencia de acceso y uso}. \href{https://www.catastro.hacienda.gob.es/webinspire/index.html}{catastro.hacienda.gob.es/webinspire}. Los indicadores son un producto transformado; no son cartografía catastral oficial.
+\bibitem{catastro} Gobierno de Cantabria y Dirección General del Catastro. \emph{Edificaciones CBT23/LULC23 y parcelario Catastro 2023}. \href{https://geoservicios.cantabria.es/Series2/CBT23_LULC23/DOC_AUX/Documentacion_LULC_Cantabria_v2_0.pdf}{Metodología CBT23/LULC23}; \href{https://geoservicios.cantabria.es/inspire/rest/services/Cdt/MapServer/15}{parcelario de 2023}. Las edificaciones son cartografía derivada, no el registro INSPIRE BU histórico.
 \bibitem{pvgis} Joint Research Centre, Comisión Europea. \emph{PVGIS 5.3: API non-interactive service}. \href{https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/using-pvgis-5/api-non-interactive-service_en}{Documentación de la API}.
+\bibitem{eficiencia} Joint Research Centre. \emph{Photovoltaics in the European Union, Status Report 2025}, tabla 2. \href{https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf}{Informe JRC144141}.
+\bibitem{degradacion} D. C. Jordan y S. R. Kurtz. \emph{Photovoltaic Degradation Risk}. NREL, 2012. \href{https://docs.nrel.gov/docs/fy12osti/53712.pdf}{Informe NREL/CP-5200-53712}.
 \bibitem{unet} O. Ronneberger, P. Fischer y T. Brox. \emph{U-Net: Convolutional Networks for Biomedical Image Segmentation}, 2015. \href{https://arxiv.org/abs/1505.04597}{arXiv:1505.04597}.
 \bibitem{resnet} K. He, X. Zhang, S. Ren y J. Sun. \emph{Deep Residual Learning for Image Recognition}. CVPR, 2016. \href{https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html}{Versión abierta}.
 \bibitem{yolo} Ultralytics. \emph{YOLO11: documentación de modelos y segmentación}. \href{https://docs.ultralytics.com/models/yolo11/}{docs.ultralytics.com/models/yolo11}.

@@ -1,255 +1,222 @@
-"""Descarga municipal de Catastro y unión de edificios en un GeoPackage."""
+"""Descarga las edificaciones CBT23 y las parcelas catastrales de 2023."""
 
-import http.client
-import shutil
-import ssl
-import urllib.error
-import urllib.parse
-import urllib.request
-import xml.etree.ElementTree as ET
+import hashlib
+import json
+import warnings
 import zipfile
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
+import requests
+from shapely import make_valid, normalize
 
-from paneles_solares.rutas import (
-    EDIFICIOS_CATASTRO,
-    ruta_proyecto,
-)
+from paneles_solares.rutas import EDIFICIOS_CATASTRO, huella_archivo, ruta_proyecto
 
-# Conserva la excepción SSL del acceso original a Catastro.
-CONTEXTO_SSL = ssl._create_unverified_context()
-
-URL_CATASTRO = "https://www.catastro.hacienda.gob.es/INSPIRE/buildings/39/ES.SDGC.bu.atom_39.xml"
-
-CARPETA_ZIPS = ruta_proyecto("data/raw/catastro/zips")
-CARPETA_GMLS = ruta_proyecto("data/geografia/catastro/gml")
-ARCHIVO_FINAL = EDIFICIOS_CATASTRO
-
-# None procesa todos los municipios.
-LIMITE = None
+REST = "https://geoservicios.cantabria.es/inspire/rest/services"
+HOJAS = f"{REST}/Servicio_de_Descarga/MapServer/67"
+PARCELAS = f"{REST}/Cdt/MapServer/15"
+DESCARGAS = "https://geoservicios.cantabria.es/Series2/CBT23_LULC23"
+ORIGINALES = ruta_proyecto("data/raw/catastro/2023")
 
 
-def preparar_url(url: str) -> str:
-    """Codifica el nombre del archivo para poder descargarlo.
+def consultar(url: str, parametros: dict) -> dict:
+    """Consulta el servicio y muestra también los errores que devuelve como JSON."""
+    respuesta = requests.get(url, params={"f": "json", **parametros}, timeout=120)
+    respuesta.raise_for_status()
+    datos = respuesta.json()
+    if "error" in datos:
+        raise RuntimeError(f"{url}: {datos['error']}")
+    return datos
 
-    Args:
-        url: Enlace original, que puede contener espacios, eñes o acentos.
 
-    Returns:
-        str: Enlace con la ruta codificada para una petición HTTP.
-    """
+def descargar_hoja(fila: dict, carpeta: Path) -> tuple[gpd.GeoDataFrame, dict]:
+    """Reutiliza el ZIP de una hoja y lee sus edificios sin extraer otro GeoPackage."""
+    destino = carpeta / "hojas" / fila["GPKG"]
+    destino.parent.mkdir(parents=True, exist_ok=True)
+    url = f"{DESCARGAS}/GPKG/{destino.name}"
 
-    partes = urllib.parse.urlsplit(url.strip())
-    ruta_codificada = urllib.parse.quote(urllib.parse.unquote(partes.path), safe="/")
+    if not destino.exists():
+        temporal = destino.with_suffix(".part")
+        with requests.get(url, stream=True, timeout=120) as respuesta:
+            respuesta.raise_for_status()
+            with temporal.open("wb") as archivo:
+                for bloque in respuesta.iter_content(1024 * 1024):
+                    archivo.write(bloque)
+        temporal.replace(destino)
 
-    partes_codificadas = (
-        partes.scheme,
-        partes.netloc,
-        ruta_codificada,
-        partes.query,
-        partes.fragment,
+    with zipfile.ZipFile(destino) as archivo:
+        nombre = next(n for n in archivo.namelist() if n.endswith(".gpkg"))
+        licencia = carpeta / "licencia.txt"
+        if not licencia.exists():
+            licencia.write_text(
+                archivo.read("Licencia de uso.txt").decode("cp1252"),
+                encoding="utf-8",
+            )
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message="Measured .*geometry types.*")
+        edificios = gpd.read_file(
+            f"/vsizip/{destino.resolve().as_posix()}/{nombre}",
+            layer="CBT23_Edificaciones",
+            force_2d=True,
+        )
+    edificios["hoja_origen"] = fila["Num_Hoja"]
+    fuente = {
+        "hoja": fila["Num_Hoja"],
+        "url": url,
+        "sha256": huella_archivo(destino),
+        "elementos": len(edificios),
+    }
+    return edificios, fuente
+
+
+def descargar_pagina(inicio: int, carpeta: Path) -> Path:
+    """Guarda una página del parcelario completo de 2023, si todavía falta."""
+    destino = carpeta / f"{inicio:07d}.geojson"
+    if not destino.exists():
+        datos = consultar(
+            PARCELAS + "/query",
+            {
+                "f": "geojson",
+                "where": "1=1",
+                "outSR": 25830,
+                "outFields": "OBJECTID,MUNICIPIO,MASA,TIPO,PARCELA,ID_PARCELA",
+                "orderByFields": "OBJECTID",
+                "resultOffset": inicio,
+                "resultRecordCount": 1000,
+            },
+        )
+        temporal = destino.with_suffix(".part")
+        temporal.write_text(json.dumps(datos, ensure_ascii=False), encoding="utf-8")
+        temporal.replace(destino)
+    return destino
+
+
+def descargar_parcelas(carpeta: Path) -> gpd.GeoDataFrame:
+    """Une las páginas del parcelario, conservando referencias y códigos oficiales."""
+    carpeta.mkdir(parents=True, exist_ok=True)
+    total = consultar(
+        PARCELAS + "/query",
+        {
+            "where": "1=1",
+            "returnCountOnly": "true",
+        },
+    )["count"]
+
+    with ThreadPoolExecutor(max_workers=3) as ejecutor:
+        paginas = ejecutor.map(
+            lambda inicio: descargar_pagina(inicio, carpeta), range(0, total, 1000)
+        )
+        tablas = [gpd.read_file(ruta) for ruta in paginas]
+    parcelas = gpd.GeoDataFrame(pd.concat(tablas, ignore_index=True), crs=25830)
+    if len(parcelas) != total or parcelas.OBJECTID.duplicated().any():
+        raise ValueError(
+            "La descarga del parcelario está incompleta o tiene duplicados"
+        )
+
+    parcelas = parcelas.rename(
+        columns={
+            "ID_PARCELA": "referencia_catastral",
+            "MUNICIPIO": "municipio_catastro",
+        }
     )
-
-    return urllib.parse.urlunsplit(partes_codificadas)
-
-
-def obtener_urls_de_zips() -> list[str]:
-    """Consulta el índice de Catastro y recoge los enlaces a los municipios.
-
-    Returns:
-        list[str]: Enlaces a los ZIP, ordenados y sin duplicados.
-    """
-
-    with urllib.request.urlopen(URL_CATASTRO, context=CONTEXTO_SSL) as respuesta:
-        contenido_xml = respuesta.read()
-
-    raiz = ET.fromstring(contenido_xml)
-    urls = []
-
-    for elemento in raiz.iter():
-        href = elemento.attrib.get("href")
-
-        if href and href.lower().endswith(".zip"):
-            urls.append(preparar_url(href))
-
-    return sorted(set(urls))
+    parcelas.geometry = make_valid(parcelas.geometry)
+    parcelas["id_parcela"] = "cp2023_" + parcelas.OBJECTID.astype(str)
+    parcelas["anio_fuente"] = 2023
+    return parcelas
 
 
-def nombre_desde_url(url: str) -> str:
-    """Obtiene el nombre del archivo situado al final de una URL.
-
-    Args:
-        url: Enlace de descarga.
-
-    Returns:
-        str: Nombre del archivo, con los espacios y acentos recuperados.
-    """
-
-    ruta = urllib.parse.urlsplit(url).path
-    ruta_decodificada = urllib.parse.unquote(ruta)
-
-    return Path(ruta_decodificada).name
-
-
-def descargar_zip(url: str, destino: Path) -> str:
-    """Descarga un municipio, salvo que ya exista un ZIP válido.
-
-    Args:
-        url: Enlace del municipio.
-        destino: Ruta donde se guardará el ZIP.
-
-    Returns:
-        str: Texto que indica si se ha descargado o ya existía.
-
-    Raises:
-        ValueError: La respuesta descargada no es un ZIP válido.
-    """
-
-    if destino.exists() and zipfile.is_zipfile(destino):
-        return "ya existía"
-
-    with (
-        urllib.request.urlopen(url, context=CONTEXTO_SSL) as respuesta,
-        destino.open("wb") as archivo,
-    ):
-        shutil.copyfileobj(respuesta, archivo)
-
-    # No conservar una página de error del servidor como si fuera un ZIP.
-    if not zipfile.is_zipfile(destino):
-        destino.unlink()
-        raise ValueError("El archivo descargado no es un ZIP")
-
-    return "descargado"
+def unir_edificios(tablas: list[gpd.GeoDataFrame]) -> gpd.GeoDataFrame:
+    """Crea identificadores estables y elimina polígonos repetidos entre hojas."""
+    edificios = gpd.GeoDataFrame(pd.concat(tablas, ignore_index=True), crs=25830)
+    edificios.geometry = normalize(make_valid(edificios.geometry))
+    edificios = edificios.explode(index_parts=False).reset_index(drop=True)
+    edificios = edificios[edificios.geom_type == "Polygon"].copy()
+    edificios["id_edificio"] = edificios.geometry.apply(
+        lambda geometria: "cbt23_" + hashlib.sha256(geometria.wkb).hexdigest()[:24]
+    )
+    edificios = edificios.drop_duplicates("id_edificio").reset_index(drop=True)
+    edificios["anio_fuente"] = 2023
+    edificios["fuente"] = "Gobierno de Cantabria, CBT23, derivado de Catastro"
+    edificios["uso_fuente"] = "CBT23/LULC23; uso cartográfico, no uso registral"
+    return edificios
 
 
-def descargar_zips(urls: list[str]) -> list[Path]:
-    """Descarga los municipios y continúa si alguno falla.
-
-    Args:
-        urls: Enlaces de los municipios que se quieren descargar.
-
-    Returns:
-        list[Path]: Rutas de los ZIP descargados o reutilizados.
-    """
-
-    CARPETA_ZIPS.mkdir(parents=True, exist_ok=True)
-    zips_correctos = []
-
-    for numero, url in enumerate(urls, start=1):
-        destino = CARPETA_ZIPS / nombre_desde_url(url)
-
-        try:
-            estado = descargar_zip(url, destino)
-            zips_correctos.append(destino)
-            print(f"[{numero}/{len(urls)}] {destino.name}: {estado}")
-
-        except (OSError, ValueError, http.client.HTTPException, urllib.error.URLError) as error:
-            print(f"[{numero}/{len(urls)}] ERROR: {error}")
-
-    return zips_correctos
+def relacionar(objetos, entidades, id_objeto, id_entidad):
+    """Relaciona polígonos por solape, conservando todos los candidatos."""
+    parejas = gpd.sjoin(
+        objetos[[id_objeto, "geometry"]],
+        entidades[[id_entidad, "geometry"]],
+        how="inner",
+        predicate="intersects",
+    )
+    geometrias = entidades.geometry.loc[parejas.index_right]
+    intersecciones = parejas.geometry.intersection(geometrias, align=False)
+    parejas["interseccion_m2"] = intersecciones.area
+    parejas["fraccion_objeto"] = parejas.interseccion_m2 / parejas.geometry.area
+    columnas = [id_objeto, id_entidad, "interseccion_m2", "fraccion_objeto"]
+    return parejas.loc[parejas.interseccion_m2 > 0, columnas].reset_index(drop=True)
 
 
-def extraer_edificios(zips: list[Path]) -> list[Path]:
-    """Extrae las geometrías de edificios de cada municipio.
+def preparar(salida: Path = EDIFICIOS_CATASTRO, originales: Path = ORIGINALES) -> None:
+    """Prepara la referencia regional. No modifica etiquetas ni resultados del modelo."""
+    originales.mkdir(parents=True, exist_ok=True)
+    indice = consultar(
+        HOJAS + "/query",
+        {
+            "where": "1=1",
+            "outFields": "GPKG,Num_Hoja",
+            "returnGeometry": "false",
+            "orderByFields": "OBJECTID",
+            "resultRecordCount": 2000,
+        },
+    )
+    if indice.get("exceededTransferLimit"):
+        raise ValueError("El índice de hojas CBT23 está incompleto")
 
-    Args:
-        zips: Archivos ZIP descargados de Catastro.
-
-    Returns:
-        list[Path]: Rutas de los GML de edificios.
-    """
-
-    CARPETA_GMLS.mkdir(parents=True, exist_ok=True)
-    gmls = []
-
-    for archivo_zip in zips:
-        with zipfile.ZipFile(archivo_zip) as comprimido:
-            for nombre_interno in comprimido.namelist():
-                # Catastro también incluye partes de edificios y otras construcciones.
-                if not nombre_interno.lower().endswith(".building.gml"):
-                    continue
-
-                destino = CARPETA_GMLS / Path(nombre_interno).name
-
-                if not destino.exists():
-                    with (
-                        comprimido.open(nombre_interno) as origen,
-                        destino.open("wb") as salida,
-                    ):
-                        shutil.copyfileobj(origen, salida)
-
-                gmls.append(destino)
-                print(f"Extraído: {destino.name}")
-
-    return gmls
-
-
-def unir_edificios(gmls: list[Path], salida: Path = ARCHIVO_FINAL) -> None:
-    """Une los municipios en un GeoPackage con las coordenadas de PNOA.
-
-    Args:
-        gmls: Archivos de edificios que se van a unir.
-        salida: GeoPackage donde se guardará el conjunto.
-
-    Raises:
-        RuntimeError: No se ha obtenido ningún archivo de edificios.
-    """
-
-    municipios = []
-
-    for numero, archivo_gml in enumerate(gmls, start=1):
-        edificios = gpd.read_file(archivo_gml)
-
-        # Para buscar teselas solo hacen falta las geometrías, no los datos catastrales.
-        edificios = edificios.to_crs("EPSG:25830")
-        edificios = edificios[["geometry"]]
-        municipios.append(edificios)
-
-        print(f"[{numero}/{len(gmls)}] {archivo_gml.name}: {len(edificios)} edificios leidos")
-
-    if not municipios:
-        raise RuntimeError("No se encontro ningun archivo de edificios")
-
-    todos = pd.concat(municipios, ignore_index=True)
-    todos = gpd.GeoDataFrame(todos, geometry="geometry", crs="EPSG:25830")
+    filas = [elemento["attributes"] for elemento in indice["features"]]
+    with ThreadPoolExecutor(max_workers=3) as ejecutor:
+        resultados = list(
+            ejecutor.map(lambda fila: descargar_hoja(fila, originales), filas)
+        )
+    tablas, fuentes = zip(*resultados)
+    edificios = unir_edificios(list(tablas))
+    parcelas = descargar_parcelas(originales / "parcelas")
 
     salida.parent.mkdir(parents=True, exist_ok=True)
-    salida.unlink(missing_ok=True)
-    todos.to_file(salida, layer="edificios", driver="GPKG")
+    temporal = salida.with_name(".catastro_preparando.gpkg")
+    temporal.unlink(missing_ok=True)
+    edificios.to_file(temporal, layer="edificios", index=False)
+    parcelas.to_file(temporal, layer="parcelas", index=False)
+    relaciones = relacionar(edificios, parcelas, "id_edificio", "id_parcela")
+    relaciones = relaciones.merge(parcelas[["id_parcela", "referencia_catastral"]])
+    relaciones.to_csv(salida.parent / "edificios_parcelas.csv", index=False)
+    temporal.replace(salida)
 
-    print(f"\nTotal de edificios: {len(todos)}")
-    print(f"Archivo creado: {salida}")
-
-
-def main() -> None:
-    """Descarga y prepara los edificios de Catastro de Cantabria.
-
-    Raises:
-        ValueError: El límite configurado de municipios no es positivo.
-    """
-
-    if LIMITE is not None and LIMITE <= 0:
-        raise ValueError("El límite de municipios debe ser positivo")
-
-    print("1. Buscando los enlaces en el XML...")
-    urls = obtener_urls_de_zips()
-
-    if LIMITE is not None:
-        urls = urls[:LIMITE]
-
-    print(f"Se procesaran {len(urls)} municipios")
-
-    print("\n2. Descargando los ZIP...")
-    zips = descargar_zips(urls)
-
-    print("\n3. Extrayendo los archivos de edificios...")
-    gmls = extraer_edificios(zips)
-
-    print("\n4. Uniendo los edificios...")
-    unir_edificios(gmls, salida=ARCHIVO_FINAL)
+    pd.DataFrame(fuentes).to_csv(originales / "descargas.csv", index=False)
+    fuente = {
+        "anio_referencia": 2023,
+        "descargado_utc": datetime.now(timezone.utc).isoformat(),
+        "edificios": len(edificios),
+        "parcelas": len(parcelas),
+        "hojas": len(filas),
+        "edificaciones": DESCARGAS,
+        "parcelario": PARCELAS,
+        "metodologia": f"{DESCARGAS}/DOC_AUX/Documentacion_LULC_Cantabria_v2_0.pdf",
+        "fecha_edificaciones": "Imágenes de agosto y LiDAR de octubre de 2023",
+        "fecha_parcelario": "Principios de 2023; anuncio del 01-02-2023",
+        "limitacion": "CBT23 es cartografía derivada, no un volcado INSPIRE BU histórico.",
+        "licencia": str(originales / "licencia.txt"),
+        "sha256_gpkg": huella_archivo(salida),
+    }
+    salida.with_suffix(".json").write_text(
+        json.dumps(fuente, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    print(f"Referencia de 2023: {len(edificios)} unidades y {len(parcelas)} parcelas")
 
 
 if __name__ == "__main__":
-    main()
+    preparar()

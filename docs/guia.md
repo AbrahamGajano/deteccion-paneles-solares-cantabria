@@ -4,8 +4,8 @@ Esta guía reúne los flujos complementarios al proceso de 2023 descrito en el
 [README](../README.md). Los comandos se ejecutan desde la raíz del repositorio.
 
 - [Validación de otras resoluciones](#validación-de-otras-resoluciones)
-- [Revisión histórica fotovoltaica](#revisión-histórica-fotovoltaica)
-- [Indicadores históricos](#indicadores-históricos)
+- [Etiquetado histórico](#etiquetado-histórico)
+- [Superficies y periodos](#atribución-agrupación-y-superficies-históricas)
 
 ## Validación de otras resoluciones
 
@@ -175,294 +175,391 @@ y la rejilla de la ortofoto son magnitudes distintas. El bootstrap no corrige
 dependencia espacial ni error de etiquetado. No se aplica la corrección
 del −7,54 % del test completo de 2023 a esta campaña.
 
-## Revisión histórica fotovoltaica
+## Etiquetado histórico
 
-Prepara y revisa 2020, 2017 y 2014 con 2023 como referencia fija.
-Desde la raíz del repositorio:
+El flujo general parte de ventanas geográficas y campañas de ortofoto. No
+necesita las respuestas del antiguo visor ni ejecuta un modelo para decidir
+qué dibujar. Se preparan recortes RGB y se etiquetan directamente en LabelMe.
+Las mismas ventanas físicas permiten comparar campañas con distinta resolución.
 
-```powershell
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento
+### Preparar las imágenes
+
+Un CSV de entrada define las ventanas en **EPSG:25830**:
+
+```csv
+ventana,xmin,ymin,xmax,ymax
+zona_001,395238.8,4801655.6,395315.6,4801732.4
 ```
 
-La configuración está en `CONFIGURACION`, al principio de
-`src/paneles_solares/datos/seguimiento.py`. El lote comprende 12 imágenes
-compartidas por defecto; todas las detecciones de una imagen van seguidas.
-El recorrido es **2020 → 2017 → 2014 → siguiente emplazamiento**.
-Una ausencia o duda no elimina campañas anteriores. Las predicciones son ayuda
-visual y no se convierten automáticamente en observaciones humanas.
+Cada ventana es un recorte, no una instalación. El identificador debe ser único
+para ese encuadre. Se pueden seleccionar recortes a partir de detecciones
+revisadas, edificios o localizaciones conocidas, incluidas instalaciones en
+suelo; el preparador no aplica filtros de Catastro. La selección de entrada
+se conserva para poder reproducir la muestra.
 
-### Datos y recuperación
-
-El índice original tenía 100.591 teselas de 512 píxeles de 63 ortofotos locales.
-Seleccionaba teselas con edificios; los indicadores contaban píxeles asociados
-a Catastro y edificios con cobertura completa. Las 3.188 entradas positivas
-eran registros catastrales internos, no instalaciones verificadas.
-El piloto seleccionó 400 registros, divididos en 412 candidatas por cubierta,
-y conservó 44 decisiones.
-
-Las máscaras regionales U-Net no se guardaron y los resúmenes YOLO no permiten
-reconstruir polígonos. Recuperar la señal exige inferencia con los pesos
-congelados, sin presentarla como copia exacta de predicciones perdidas.
-
-Se recuperaron los componentes de los 400 recortes iniciales de 2023,
-sin mínimo de superficie ni recorte catastral:
-
-| Grupo | Componentes | Superficie aproximada |
-| --- | ---: | ---: |
-| Antes de Catastro | 1.180 | 24.450 m² |
-| Intersectan edificios, incluidas intersecciones parciales | 1.067 | 23.530 m² |
-| Próximos sin intersección | 36 | 210 m² |
-| Exteriores más alejados | 77 | 710 m² |
-| Total completamente fuera | 113 | 920 m² |
-
-Los componentes parciales aportan unos 1.480 m² fuera de Catastro.
-Son superficies predichas, no confirmadas, de esos recortes iniciales.
-Los resultados actuales añaden ejemplos del pool y lotes regionales por origen.
-
-En 275 componentes parciales mayores de 1 m², la distancia de un punto interior
-del desborde al edificio tuvo mediana 0,42 m y percentil 95 de 1,30 m.
-Ese percentil describe proximidad: no estima desplazamiento físico ni corrige
-máscaras. Una asociación próxima no confirma presencia ni soporte.
-
-`runs/evaluacion/seguimiento/auditoria_visual.html` muestra distintos tamaños,
-bordes y relaciones catastrales. No representa cobertura regional completa.
-Los otros 2.788 registros del inventario son localizaciones pendientes.
-Las zonas sin componentes de 2023 asignados se apartan del recorrido principal,
-conservando respuestas y acceso desde las herramientas avanzadas.
-
-Para recuperar ventanas de las ortofotos de 2023 ya descargadas:
+Prueba pequeña con el CSV de ejemplo incluido en el repositorio:
 
 ```powershell
-# Ventanas del índice original, conservando toda la señal.
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento region --modo indice --lote 100
-# Ventanas excluidas por no tener edificios.
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento region --modo fuera_indice --lote 100
-# Recorrido completo por ventanas locales.
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento region --modo todas --lote 100
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --ventanas docs/ejemplo_ventanas_historicas.csv --anios 2023 2020 2017 2014 --salida runs/prueba_historico
 ```
 
-Repetir continúa el cursor y omite ventanas terminadas, incluso al cambiar
-de modo. Se guardan PNG donde hay detecciones y metadatos para los negativos.
-Los componentes solapados conservan su origen: sus áreas no se deben sumar
-como superficie regional única. La recuperación regional completa sigue pendiente.
-
-### Revisión en el visor
-
-La unidad es un **emplazamiento observado**, con agrupación corregible.
-No equivale a una titularidad o instalación administrativa. Componentes
-originales, asociaciones, agrupaciones y respuestas se conservan por separado.
-
-Izquierda: 2023. Derecha: campaña histórica. Rueda para ampliar y arrastre para
-desplazar ambas fotos. El zoom se conserva entre años del mismo caso.
-**Centrar objetivo** recupera el caso si quedó fuera de vista.
-
-| Localizador o capa | Interpretación |
-| --- | --- |
-| Objetivo naranja | Caso al que se asignan las respuestas, localizado con sus componentes originales. |
-| Otro caso azul | Candidato vecino; pulsarlo cambia de caso sin copiar respuestas. |
-| Zona provisional gris y discontinua | Ubicación antigua sin componentes de 2023 asociados; no acredita presencia ni ausencia. |
-| Predicción verde | Señal del modelo para la foto visible. |
-| Geometría original gris | Grupo conservado del emplazamiento. |
-| Catastro amarillo | Huellas opcionales, sin carácter histórico por campaña. |
-
-Los localizadores siguen visibles al ocultar capas. En el histórico señalan
-la ubicación del objetivo de 2023, no una máscara de paneles de ese año.
-Si las fotos se desplazan, comprueba el entorno.
-
-La primera comparación comprueba también la foto izquierda. Sin respuesta de
-2023, el selector propone presencia en casos localizados y duda en provisionales
-o candidatos manuales; se confirma al responder al histórico. Cámbialo si
-la referencia es ausente, dudosa o no evaluable. Las referencias ya revisadas
-se conservan salvo corrección explícita.
-
-| Tecla | Acción |
-| --- | --- |
-| 1 | Hay paneles en la campaña histórica. |
-| 2 | No hay paneles; exige visibilidad suficiente para descartarlos. |
-| 3 | No está claro si el objeto es un panel. |
-| 4 | La resolución, sombras o cobertura impiden evaluar. |
-| 5 | No hay paneles en ambas fotos; corrige 2023 y guarda ausencia histórica. |
-| ← / → | Anterior / siguiente pendiente; saltar no inventa respuestas. |
-| Ctrl+Z | Deshacer la última acción, incluso de otra sesión. |
-| F1 | Guía breve del visor. |
-
-Los atajos numéricos se desactivan al editar texto. Cada respuesta guarda
-y avanza al año anterior; después de 2014 abre otro emplazamiento en 2020.
-Una foto peor no equivale a ausencia. Si 2023 es falso pero antes había
-paneles, corrige solo el selector y responde presencia al histórico.
-
-**Cambio entre las fotos** anota más paneles, menos paneles o distinta
-distribución en 2023 respecto al histórico mostrado, conservando su decisión
-y notas. Si 2023 sigue pendiente, el cambio queda como borrador hasta la primera
-comparación. No exige contar módulos ni estimar porcentajes sobre fotos borrosas.
-
-El soporte se indica por emplazamiento: cubierta, cubierta catastrada,
-construcción no catastrada, marquesina, suelo, mixto o desconocido.
-Notas y etiquetas describen retiradas, reinstalaciones, cambios de edificio,
-sombras o incertidumbre sin alterar las respuestas de otras campañas.
-
-**Confirmar agrupación** se usa al comprobar qué pertenece al emplazamiento
-y es independiente de las respuestas por año. Fuera del piloto, componentes
-que se tocan o se separan hasta 0,6 m pueden proponerse juntos. Compartir
-edificio no basta y un grupo revisado no se amplía automáticamente.
-
-Las herramientas avanzadas corrigen asociaciones, dividen o fusionan grupos
-y muestran originales archivados. Al repartir componentes, las comas separan
-componentes y el punto y coma separa grupos. Originales y observaciones
-se conservan; sus respuestas no se copian a los nuevos grupos.
-Los identificadores de cubiertas se mantienen separados de los componentes.
-
-**Más contexto** prepara ventanas pequeñas alrededor de los componentes
-conservando caso, año y notas. Si no se ve todo, usa `zona_visible`;
-una ausencia parcial no fecha el emplazamiento completo. Para una agrupación
-de cubiertas sin resolver, usa `agrupacion_cubiertas`.
-
-**Añadir candidato histórico** permite señalar una instalación retirada antes
-de 2023 o que el modelo omitió. Pulsa sobre cualquiera de las fotos; Esc cancela.
-Reutiliza las fotos y crea un caso independiente. Pulsar sobre un caso localizado
-lo selecciona sin duplicarlo.
-
-### Persistencia y lotes
-
-El progreso se guarda en `data/datasets/seguimiento/seguimiento.sqlite`.
-Decisiones, correcciones, notas y posición del visor se confirman mediante
-transacciones. La primera comparación guarda ambas respuestas como una acción
-reversible: deshacer restaura las dos juntas. Al abrir se recupera el cursor.
-
-Los CSV, GeoPackage y PNG del piloto son fuentes de importación conservadas.
-Después de importar, editar `revisiones.csv` no cambia el progreso de SQLite.
-Borradores y versiones anteriores quedan en metadatos e historial de acciones.
-
-El visor prepara hasta un lote de reserva en segundo plano y permite usar
-cada imagen terminada. Un fallo conserva respuestas y permite reintentar;
-`precarga: false` desactiva la anticipación. Los cálculos geográficos se hacen
-fuera de transacciones de escritura para permitir responder durante la preparación.
-
-2023 reutiliza recortes o lee ventanas de TIFF locales. Los históricos usan
-el WCS configurado: coberturas 13/2020 a 15 cm y 11/2017 y 10/2014 a 25 cm.
-El RGB uint16 de 2017 se divide por 257. Se conserva el encuadre y resolución
-nativa; el modelo recibe 512 píxeles. La validación de 2024 queda fuera.
-Se comprueban cobertura, formato y espacio libre; los GeoTIFF de descarga
-permanecen en memoria.
+Para preparar una selección propia:
 
 ```powershell
-# Preparar recursos sin abrir el visor.
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento preparar --lote 12
-# Recuperar un lote del piloto y regenerar su auditoría.
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento auditar --lote 12
-# Regenerar resultados; --gpkg añade geometrías.
-.\.venv\Scripts\python.exe -m paneles_solares.seguimiento resumen --gpkg
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --ventanas ventanas.csv --anios 2023 2020 2017 2014
 ```
 
-### Resultados y límites
+Por defecto se escribe `data/datasets/seguimiento/labelme/`. `--salida` permite
+preparar otra muestra y `--limite N` limita las filas del CSV para una prueba.
+Una columna opcional `anio` permite solicitar solo una campaña por fila.
+Si ya existe un PNG local, se puede indicar su ruta en `origen`, junto con su
+año; si falta, se recupera el encuadre desde el WCS oficial.
 
-`runs/evaluacion/seguimiento/` contiene resúmenes, observaciones, emplazamientos,
-agrupaciones, acciones, intervalos, distribución de aparición, resultados
-municipales y auditoría. La exportación opcional añade `seguimiento.gpkg`.
-Cerrar el visor actualiza los CSV y el resumen.
+Las campañas se definen en `datos/seguimiento.py`: 2020 y 2023 a 15 cm, 2014 y
+2017 a 25 cm. `--config archivo.json` admite otra configuración con la misma
+lista `campanias` y los campos `anio`, `resolucion_m`, `cobertura`, `etiqueta`
+y `divisor_rgb`; `url` es opcional. Se comprueba una vez la cobertura y su
+resolución antes de descargar. No se amplían fotos antiguas para aparentar
+más detalle: 76,8 m corresponden aproximadamente a 307 píxeles a 25 cm.
+En un lote nuevo se incluye 2023 si se necesita medir también su superficie.
+El análisis y el panel obtienen las campañas del manifiesto; no es necesario
+cambiar sus listas de años en el código.
 
-Primera presencia significa primera campaña en que se observó el emplazamiento.
-El intervalo requiere ausencias anteriores claras y completas. Presencia en
-2014 significa «ya visible en 2014», sin fecha inicial inventada.
-Dudas, campañas pendientes y agrupaciones ambiguas conservan la incertidumbre.
-Presencia seguida de ausencia se señala como anomalía, sin corregirla automáticamente.
+Las coberturas usan los nombres publicados por el
+[WCS oficial](https://geoservicios.cantabria.es/inspire/services/Ortofoto_Series_WCS/MapServer/WCSServer?SERVICE=WCS&VERSION=1.0.0&REQUEST=GetCapabilities),
+por ejemplo `Ortofoto_de_2020`. Las configuraciones antiguas con números
+se consultan por su etiqueta, conservando los metadatos de las muestras existentes.
 
-Los recuentos distinguen candidatos, observaciones y emplazamientos con
-agrupación y secuencia resueltas. Tiempo medio y trabajo pendiente se calculan
-sobre las tres respuestas históricas por caso, incluyendo comprobar 2023
-en el primer par y las pausas. No estiman las regiones todavía sin recuperar.
+Cada imagen se llama `ventana__anio.png`. `manifest.csv` conserva su campaña,
+fuente, encuadre, escala real por píxel y rutas relativas del PNG y el JSON.
+También sirve como entrada para volver a preparar las mismas imágenes.
 
-El [avance de indicadores históricos](#indicadores-históricos) exporta por
-separado una instantánea de solo lectura con periodos y cobertura municipal.
-Muestra agrupaciones pendientes sin certificarlas como instalaciones.
+Repetir el comando reutiliza los PNG existentes y descarga solo los que faltan.
+El manifiesto conserva las filas de preparaciones anteriores, aunque se ejecute
+un subconjunto. Si se interrumpe una descarga, se conservan los recortes ya
+terminados. No se cambian los encuadres de imágenes existentes ni se escriben
+JSON vacíos o predicciones que puedan confundirse con anotaciones manuales.
 
-## Indicadores históricos
+### Etiquetar en LabelMe
 
-Se puede generar un resultado provisional mientras continúa el etiquetado:
+Para la carpeta habitual, ya preparada:
 
 ```powershell
-.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos
+.\.venv\Scripts\labelme.exe data/datasets/seguimiento/labelme/images --labels panel_solar --flags ausente,dudosa --config '{with_image_data: false, auto_save: true, keep_prev: false, display_label_popup: false}'
 ```
 
-Este comando es independiente del visor. Abre SQLite en modo de solo lectura,
-copia una instantánea en memoria por bloques pequeños y cierra el origen antes
-de calcular indicadores. No escribe respuestas, metadatos, agrupaciones ni la
-posición del visor. No descarga imágenes, ejecuta inferencia, consulta PVGIS ni
-modifica el mapa o los resultados anteriores. Si no consigue obtener la
-instantánea en diez segundos, se detiene y puede reintentarse después.
+Para otra muestra cambia solo la carpeta, por ejemplo a
+`runs/prueba_historico/images`.
 
-Cada ejecución crea una carpeta nueva en
-`runs/indicadores/seguimiento_historico/avance_FECHA_HORA/` con:
+1. Dibuja todos los paneles visibles con `panel_solar`, incluidos los que
+   omitió el modelo. Usa polígonos separados para conjuntos separados; no
+   asignes Group ID ni unas casas diferentes. Ctrl+N crea y Ctrl+J edita.
+2. Cada cambio se guarda automáticamente. D pasa a la siguiente imagen y A
+   vuelve atrás. Ctrl+Z deshace. Los JSON quedan junto a los PNG.
+3. En una selección nueva que incluya imágenes vacías, marca `ausente` si no
+   hay ningún panel en toda la foto. Esa marca guarda también el JSON vacío.
+   Marca `dudosa` si la imagen no permite decidir; no inventes contornos.
 
-| Archivo | Contenido |
-| --- | --- |
-| `avance_historico.html` | Informe visual autocontenido, con barras por periodo y cobertura municipal. Se abre directamente en el navegador. |
-| `emplazamientos_historicos.csv` | Decisiones, intervalos, estado de revisión y agrupación de cada emplazamiento activo. |
-| `indicadores_municipales.csv` | Cobertura de revisión, referencias presentes y casos con periodo utilizable. |
-| `despliegue_por_periodo.csv` | Recuentos y ritmo medio nominal por municipio y periodo entre vuelos. |
-| `emplazamientos_mapa.geojson` | Puntos WGS84 de los objetivos localizados, con los atributos del CSV. Preparado para incorporar al mapa después. |
-| `resumen.json` | Totales, fecha UTC de la instantánea, última respuesta y última acción disponibles, alcance y limitaciones. |
+Al volver, selecciona en la lista la imagen donde te quedaste. Tener JSON no
+significa que esté terminada: el autoguardado conserva trabajo parcial. La
+preparación nunca modifica los JSON ni da por revisadas imágenes por tenerlos.
 
-Los archivos son una fotografía del progreso, no un panel que se actualice en
-directo. Una nueva ejecución incluye las respuestas guardadas hasta esa nueva
-instantánea y conserva los avances anteriores. Opcionalmente se puede elegir
-otra base con `--base` o una carpeta nueva con `--salida`.
+### Recuperar la revisión anterior de este proyecto
 
-### Cómo interpretar el resultado
+La recuperación es una opción específica del mismo preparador:
 
-Se reutiliza la derivación de intervalos del seguimiento. La primera presencia
-observada no se convierte en un año exacto de instalación. `aparicion_despues_de`
-es un límite abierto: ausencia en 2017 y presencia en 2020 sitúan la aparición
-después del vuelo de 2017 y hasta el de 2020. La clase `hasta_2014` indica presencia
-en el primer vuelo, sin límite inferior conocido.
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --recuperar
+```
 
-`incluir_en_despliegue` exige un objetivo no provisional, las cuatro campañas
-respondidas, presencia humana en 2023 e historia resuelta. Las dudas, ausencias
-de alcance parcial que no permiten acotar la aparición, secuencias anómalas y
-observaciones con agrupación de cubiertas sin resolver no se reparten entre
-periodos. Sus respuestas y motivos permanecen en el CSV individual. Una duda
-posterior a una primera presencia ya acotada puede conservar ese intervalo;
-se exportan las decisiones para revisar la evidencia.
+Lee `data/datasets/seguimiento/seguimiento.sqlite` en modo de solo lectura.
+Recupera observaciones humanas `presente` anteriores a 2023, relacionándolas
+con sus ventanas y recursos, y entrega esas filas al preparador general.
+`--base` permite indicar otra copia de la base. Se incluyen positivos
+históricos aunque la selección se descartara en 2023. Las respuestas originales
+no se modifican y las imágenes y anotaciones ya preparadas se conservan.
 
-La confirmación de agrupación se presenta por separado. No se exige pulsar
-Confirmar agrupación para mostrar el trabajo hecho ni se cambia su estado a
-confirmado. Los recuentos con agrupaciones pendientes son **emplazamientos
-observados**, no instalaciones administrativas verificadas. No se cuentan
-componentes de máscara ni edificios como si fueran instalaciones distintas.
+Con las respuestas actuales son 754 selecciones y 1.486 imágenes: 402 de 2014,
+440 de 2017 y 644 de 2020. No equivalen a 754 instalaciones. El manifiesto
+conserva las selecciones positivas de origen para poder recuperar su alcance.
 
-Las zonas provisionales del inventario sin componentes de 2023 asignados se
-conservan en el CSV y se contabilizan aparte. Los originales archivados no se
-cuentan. Los candidatos manuales siguen disponibles aunque no tengan máscara;
-en ese caso no se inventa una superficie ni un punto de paneles.
+Las ausencias antiguas solo afectan a lo que se seleccionó entonces, nunca a
+toda la imagen. Un positivo significaba que seguía al menos uno de esos paneles,
+no que siguieran todos. Esas respuestas no son superficies ni se propagan
+como etiquetas completas de entrenamiento. El modelo de 2023 tampoco tenía
+la misma fiabilidad en campañas anteriores, por lo que no se precargan máscaras.
 
-El porcentaje municipal divide respuestas históricas guardadas entre respuestas
-esperadas de los candidatos localizados de la instantánea. Puede cambiar al
-localizar nuevos casos. Si no hay objetivos localizados se deja vacío, no se
-interpreta como ausencia de fotovoltaica en ese municipio.
+Los casos que solo aparecen en 2023 no necesitan dibujos de años anteriores
+cuando sus ausencias ya tienen un alcance suficiente. Su geometría de 2023
+se recupera como una estimación del modelo; todavía puede requerir revisión.
+Se relacionan polígonos, edificios, parcelas y candidatos para obtener
+superficies planimétricas e intervalos entre vuelos.
+No se deduce un año exacto de instalación ni la superficie inclinada del panel.
 
-El ritmo medio divide apariciones de un periodo cerrado entre la diferencia de
-años de las campañas: por ejemplo, 60 casos entre 2020 y 2023 dan 20 casos/año.
-Es una media nominal del intervalo, no evidencia de que apareciesen 20 cada año.
-No se calcula un ritmo anterior al primer vuelo. Comparar municipios requiere
-considerar su cobertura de revisión y de detección; no se extrapola a los casos
-pendientes. Las retiradas anteriores a 2023 no están recuperadas sistemáticamente.
+### Cerrar la revisión e incorporar negativos
 
-### Superficie y siguiente fase
+Cuando el revisor termina el lote se registra su cierre:
 
-`superficie_fv_detectada_2023_m2` es el área planimétrica de la unión de los
-componentes originales asignados, sin duplicar sus solapes y sin utilizar el
-área del edificio. Es una predicción, no una delimitación manual certificada.
-Se conserva incluso en candidatos rechazados para permitir auditoría; hay que
-usar las decisiones humanas para elegir los casos de un análisis de potencia.
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --finalizar data/datasets/seguimiento/labelme/manifest.csv
+```
 
-Este avance todavía no estima potencia por época ni generación histórica.
-La siguiente fase podrá combinar intervalos y coeficientes documentados de
-potencia por m² para escenarios conservador, central y superior. Se deberán
-mantener separados los supuestos sobre superficie, tecnología y fecha. No se
-puede atribuir toda la superficie de 2023 a la primera aparición: ampliaciones
-o sustituciones pueden contener módulos de distintas épocas. No anotar un
-cambio tampoco certifica que la superficie se haya mantenido constante.
+El manifiesto conserva el estado, la confirmación de revisión y el SHA256 de
+cada JSON. Si se modifica después, deja de considerarse confirmado hasta
+finalizarlo de nuevo. Las imágenes dudosas siguen sin confirmar. Las imágenes
+sin JSON siguen pendientes por defecto.
 
-El GeoJSON permite preparar la futura capa de periodos sin modificar el mapa
-actual. Los CSV y el informe ya permiten mostrar el avance de la revisión sin
-otra ronda de etiquetado.
+En el lote recuperado de este proyecto, el revisor confirmó que las imágenes
+sin dibujos eran falsos positivos. Ese cierre se ejecutó con la excepción
+`--sin-json-negativos`, que crea sus JSON vacíos con `ausente`. No debe usarse
+en lotes que sigan pendientes de revisión. Quedaron 1.417 imágenes positivas
+y 69 negativas, todas con su anotación y procedencia.
+
+Los negativos confirmados se incorporan al pool habitual y se sincronizan:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.incorporar_labeling --historico data/datasets/seguimiento/labelme/manifest.csv
+.\.venv\Scripts\python.exe -m paneles_solares.datos.sincronizar
+```
+
+Se copian los recortes al pool conservando el archivo histórico original.
+Cada muestra conserva año, ventana y límites. Las
+huellas de validación y test de 2023 se comprueban antes de asignar otras
+campañas a entrenamiento: 60 negativos entraron en train y 9 quedaron en
+el pool con `no_usar` por solape con validación. No se añaden casos seleccionados
+por errores a la validación ni se cambia el test. Los negativos producen TXT
+vacíos para YOLO y máscaras vacías para U-Net. Esto no reentrena los modelos.
+U-Net adapta RGB y máscara a 512 píxeles al cargar cada muestra; las máscaras
+usan vecino más próximo. Así pueden convivir campañas de 307 y 512 píxeles
+en un lote. Los archivos originales y la escala usada para medir no cambian;
+ampliar una imagen antigua no recupera el detalle que no tiene.
+
+### Atribución, agrupación y superficies históricas
+
+Después de etiquetar el ejemplo pequeño, se puede completar el flujo sin
+ninguna base de datos anterior:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --finalizar runs/prueba_historico/manifest.csv
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos --manifest runs/prueba_historico/manifest.csv --salida runs/prueba_historico/resultados
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores --carpeta runs/prueba_historico/resultados --salida runs/prueba_historico/panel
+```
+
+Se georreferencian los polígonos con el encuadre y tamaño reales de cada imagen.
+`--limite 20` permite reducir la prueba a veinte ventanas. Para repetir casos
+concretos se puede añadir `--ventana identificador` varias veces. Un JSON
+guardado puede estar incompleto hasta cerrar la revisión.
+Las imágenes sin anotación, dudosas o con geometría inválida
+no se convierten en ausencias ni en superficie cero. Los cruces de contorno
+se reparan en las geometrías derivadas y se cuentan en `observaciones.csv`,
+sin cambiar los dibujos originales. Las geometrías sin superficie válida
+quedan pendientes. Se señala también si un polígono toca el borde de la imagen.
+
+Para regenerar el lote recuperado de este proyecto:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos --base data/datasets/seguimiento/seguimiento.sqlite
+```
+
+Una atribución a edificio o parcela necesita al menos el 80 % de solape con
+un candidato y ningún segundo candidato que alcance el 20 %. Se conservan
+todas las intersecciones para revisar los casos ambiguos. No se asigna un
+edificio por proximidad. Un panel exterior a CBT23 puede estar sobre una
+cubierta que falta en la cartografía: no se clasifica automáticamente como suelo.
+Las referencias y los usos cartográficos son de 2023, también en otras campañas.
+
+La salida completa está en `runs/indicadores/seguimiento_historico/`:
+
+- `atribucion.gpkg`: paneles, candidatos a instalación y contexto de edificios y parcelas de 2023.
+- `observaciones.csv`: estado de cada imagen, superficie visible y selección antigua.
+- `paneles_edificios.csv` y `paneles_parcelas.csv`: todos los candidatos y sus solapes.
+- `miembros_instalaciones.csv`: pertenencia propuesta de cada polígono y su origen.
+- `enlaces_espaciales.csv`: solapes que proponen relaciones o generan conflictos.
+- `superficies_por_instalacion.csv`: superficie horizontal observada por candidato y año.
+- `serie_historica.csv`: estados por campaña, áreas manuales y estimadas separadas y evidencia de las ausencias.
+- `periodos_instalacion.csv`: intervalo de inicio y sus limitaciones por candidato.
+- `cambios_superficie.csv`: diferencias entre campañas consecutivas cuando las áreas son comparables.
+- `revision_anterior.csv`: respuestas originales recuperadas con `--base`.
+- `resumen.json`: alcance y recuentos, sin presentarlos como censo.
+
+La carpeta completa se sustituye al terminar la exportación. Una interrupción
+no publica una mezcla de archivos nuevos y anteriores. Las capas adicionales
+`referencia_2023` y `selecciones_anteriores` conservan la procedencia recuperada.
+Al sustituir los resultados habituales se retira el panel anterior; el comando
+del panel vuelve a generarlo. Las pruebas necesitan una salida distinta de la
+carpeta del lote completo.
+
+La agrupación propone candidatos con estas reglas:
+
+- Los paneles atribuidos claramente a una misma huella de edificio comparten candidato.
+- Entre campañas, un solape de al menos el 50 % del polígono menor propone un vínculo.
+- En el mismo año, se exige el 80 % del polígono mayor para vincular posibles duplicados.
+- Si una cadena de vínculos conecta edificios distintos, se conserva la separación
+  y se señala el conflicto. Compartir parcela o estar cerca no une conjuntos.
+
+Las reglas son hipótesis para revisar, no una identificación automática de
+instalaciones reales. CBT23 puede representar solo una parte de un edificio
+o incluir varias viviendas en una misma huella. También pueden quedar separados
+conjuntos de una instalación en suelo que no se solapan entre años. La capa de
+candidatos muestra la unión de las huellas observadas, no toda la finca.
+
+Los polígonos idénticos de un mismo año se deduplican conservando sus ventanas
+de origen. La agregación por candidato y año usa la unión geométrica para no
+sumar dos veces un solape; su área también queda indicada para revisar
+anotaciones discordantes. No se rellenan con cero los años sin polígonos.
+La superficie es horizontal. `anotaciones_completas` distingue los dibujos
+cerrados; `recorte_en_borde` advierte de paneles posiblemente cortados por
+el encuadre. Terminar el dibujo no confirma la extensión de toda la instalación.
+Los tipos son los usos originales de CBT23: no se inventan categorías de
+chalet, urbanización ni titularidad pública.
+
+Para corregir una agrupación se puede proporcionar `--vinculos ruta.csv`, con
+columnas `id_panel,id_instalacion,instalacion_confirmada`. Las filas indican
+qué polígonos separar o reunir, incluso entre varias cubiertas. Se confirma
+un grupo solo si todos sus miembros tienen confirmación explícita (`True`).
+No se pide Group ID al dibujar ni se modifican los JSON. Los identificadores
+automáticos son provisionales; las correcciones usan el identificador elegido
+para la instalación y deben revisarse si se redibuja un polígono.
+
+Confirmar la agrupación no confirma que estén dibujados todos sus paneles:
+`cobertura_completa_confirmada` permanece en falso. La primera campaña con
+paneles tampoco es una fecha exacta de instalación.
+
+### Intervalos y reutilización de las ausencias
+
+El flujo general funciona con las campañas de LabelMe. La opción `--base`
+añade la recuperación de este proyecto: máscaras de 2023 y respuestas humanas
+del visor, sin usar sus predicciones de 2014, 2017 o 2020. Las referencias de
+2023 marcadas como falsas no entran en la agrupación activa. Las demás siguen
+siendo geometrías estimadas: `fuente_geometria` y `fuente_superficie` impiden
+confundirlas con los dibujos manuales. No se añaden sus áreas a la columna
+de superficie anotada de la serie temporal.
+
+Una respuesta positiva antigua solo confirma presencia en un candidato si
+todos los componentes de aquella selección han quedado relacionados con él.
+Si se reparten entre varias casas, cada detección permanece sin confirmar.
+Un intervalo basado únicamente en esas detecciones lleva
+`estado_periodo=presencia_por_confirmar`: depende de comprobar esa presencia.
+
+Una ausencia antigua completa se puede aplicar a todos los conjuntos de la
+selección. Se exige que la unión de selecciones ausentes cubra toda la huella
+conocida del candidato, sin extenderla a la imagen, edificio o parcela.
+Las respuestas con alcance `zona_visible` no certifican ausencia completa.
+Se conservan la fracción cubierta y los identificadores de las selecciones.
+
+Para LabelMe se aceptan las imágenes vacías confirmadas. En una foto positiva,
+la falta de solape con la posición de otra campaña no basta: puede ser un
+desplazamiento o un vínculo sin resolver. Solo se deduce ausencia si está
+revisado todo el soporte de referencia y no hay otros paneles sin relacionar
+en él. Una campaña sin evidencia queda como `desconocido`, con área vacía.
+
+`instalacion_desde` es la última ausencia anterior a la primera presencia y
+es un límite exclusivo; `instalacion_hasta` es la primera presencia y es
+inclusivo. Por ejemplo, `2017 < instalación ≤ 2020`. Sin ausencia anterior,
+el límite inferior queda vacío. Una revisión completa de LabelMe sustituye
+una respuesta antigua incompatible, dejando `respuesta_anterior_superada`
+para auditoría. No vuelve a pedir revisar las imágenes vacías que ya se
+confirmaron. Las contradicciones sin resolver y ausencias posteriores a una
+presencia se señalan, sin decidir si son retirada, desplazamiento o error.
+
+Este intervalo fecha el inicio del candidato, no toda su superficie posterior.
+`cambios_superficie.csv` compara únicamente dibujos cerrados o ceros acreditados,
+con la misma huella revisada y sin paneles cortados por el borde. Las áreas
+del modelo de 2023 y los casos dudosos no producen diferencias medidas.
+Un aumento de área todavía no identifica la época de cada módulo. El escenario
+energético central usa la época del emplazamiento como aproximación explícita;
+no convierte ese aumento en una fecha de instalación de módulos.
+
+### Energía y antigüedad
+
+Se han preparado los cálculos por cohorte en `estimar_energia.estimar_cohorte`.
+Cada cohorte representa módulos de una misma época; una ampliación tiene
+su propia edad y no rejuvenece los paneles anteriores. Se distinguen:
+
+- Potencia inicial por m² de módulo, según tecnología y época.
+- Degradación acumulada por antigüedad.
+- Pérdidas operativas de inversor, cableado y otros efectos.
+
+La fórmula es `A_módulos × potencia_inicial_por_m² × rendimiento_PVGIS ×
+(1 - pérdidas_operativas) × (1 - degradación_anual)^edad`. El rendimiento debe
+consultarse con `loss=0`, pues las pérdidas operativas se aplican fuera una sola
+vez. Los efectos de radiación, temperatura y orientación los calcula PVGIS.
+La función recibe superficie inclinada de módulos; no debe confundirse con la
+superficie horizontal de las máscaras. La inclinación seguirá siendo una hipótesis
+cuando no exista medición del tejado o de los módulos.
+
+El [JRC](https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/general-information/data-sources-calculation-methods_en)
+explica que el 14 % recomendado para PVGIS ya incluye envejecimiento medio.
+Por eso no se añade otra degradación al resultado del método uniforme anterior.
+La función por cohortes parte provisionalmente de 10 % de pérdidas operativas
+y 0,5 % anual de degradación, configurables. El 10 % es una hipótesis de trabajo,
+no una pérdida medida. El 0,5 % procede de la mediana de la
+[revisión de Jordan y Kurtz, NREL](https://nrel.gov/docs/fy12osti/51664.pdf).
+
+La potencia inicial por m² es un parámetro separado: el
+[informe fotovoltaico de Fraunhofer ISE](https://www.ise.fraunhofer.de/en/publications/studies/photovoltaics-report.html)
+documenta mejoras tecnológicas, pero no identifica la placa de cada tejado de
+Cantabria. Todavía no se fija una tabla de eficiencias locales por año ni se
+atribuyen cambios de tecnología a partir del color de la ortofoto.
+
+Para una instalación entre 2017 y 2020, la edad en 2023 queda entre 3 y 6 años.
+Se calculan extremos y un escenario central situado a mitad del intervalo.
+Ese punto medio no es una fecha observada. Si ya existía en el primer vuelo,
+solo se conoce una edad mínima: el cálculo deja sin determinar la edad máxima,
+la producción mínima y el valor central. El rango calculado cubre la duda en
+antigüedad, no toda la incertidumbre de orientación, tecnología o sombras.
+
+El panel único conecta esta función con las superficies del inventario. Se usa
+una posición municipal ponderada por área y tres consultas PVGIS con `loss=0`,
+clima medio SARAH3, silicio cristalino, montaje ventilado y horizonte del terreno.
+Los intervalos siguen siendo provisionales. La salida es producción anual
+representativa de los equipos de cada imagen, no consumo, producción medida
+durante el año del vuelo ni una extrapolación a toda Cantabria.
+
+| Supuesto | Conservador | Central | Favorable |
+| --- | --- | --- | --- |
+| Inclinación | 15° | 30° | 40° |
+| Orientación | Oeste | Sur | Sur |
+| Pérdidas operativas | 18 % | 10 % | 5 % |
+| Degradación anual | 1 % | 0,5 % | 0,2 % |
+| Eficiencia inicial respecto a su época | × 0,85 | × 1 | × 1,15 |
+| Fecha de los módulos | Inicio supuesto del intervalo | Punto medio del intervalo | Año de la imagen |
+
+La eficiencia se interpola a partir de la tabla 2 del
+[informe JRC 2025](https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf):
+16,3 % en 2014, 17,7 % en 2017, 20 % en 2020 y 21,8 % en 2023, conservando
+también sus valores anuales intermedios. Son referencias de mercado, no medidas
+locales. Antes de 2014 se suponen 10 % en 1989, 12 % en 2000 y 15 % en 2010.
+
+Sin límite inferior compatible se supone un intervalo desde 25 años antes de
+la primera geometría hasta esa primera observación. Se conserva como edad
+modelada, sin modificar el intervalo observado original. El escenario central
+puede infravalorar ampliaciones o renovaciones recientes; el favorable permite
+que toda el área sea de equipos nuevos. Esto evita rejuvenecer automáticamente
+los módulos por diferencias entre el modelo de 2023 y los dibujos anteriores.
+
+El área de módulos es `área_horizontal / cos(inclinación)`. Por emplazamiento y
+municipio se disuelven máscaras del mismo año. Para agregar emplazamientos con
+solapes, la mezcla de producciones se escala al área de su unión; el reparto
+de esos solapes se pondera por superficie. El total es la suma de municipios
+y del área sin adscripción. No se duplica producción por repetir un contorno.
+
+La amplitud de los escenarios describe sensibilidad a estas hipótesis, no un
+intervalo de confianza. No cuantifica errores de detección, pendientes reales,
+sombras locales, fallos ni omisiones. Las máscaras de 2023 siguen siendo
+estimadas. Confirmar instalaciones y fechar cada ampliación permitiría sustituir
+las hipótesis, pero no es una condición para mostrar este cálculo exploratorio.
+
+El comando del panel regenera `produccion_estimada.csv`, `factores_energia.csv`
+y `hipotesis_energia.json` junto al HTML. La caché `pvgis_anual.json` conserva
+respuestas y parámetros, sin mezclar el 14 % del escenario regional uniforme.
+
+### Entrenamiento posterior
+
+Los negativos históricos confirmados ya están incorporados según el flujo
+anterior. Los positivos permanecen como referencia manual para comparar
+predicciones y seleccionar casos difíciles, respetando las zonas de
+validación y test también entre años. Hay que revisar además imágenes sin
+detecciones para encontrar falsos negativos; seleccionar solo errores visibles
+en detecciones dejaría esas omisiones fuera.
+

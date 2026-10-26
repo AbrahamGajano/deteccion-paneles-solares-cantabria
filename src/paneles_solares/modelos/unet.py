@@ -88,6 +88,16 @@ class DatasetPaneles(Dataset):
         imagen = Image.open(ruta_imagen).convert("RGB")
         mascara = Image.open(ruta_mascara).convert("L")
 
+        # Las campañas antiguas tienen otra resolución, pero el lote necesita
+        # un tamaño común. Los originales conservan su escala para medir áreas.
+        if imagen.size != (TAM_ENTRADA, TAM_ENTRADA):
+            imagen = imagen.resize(
+                (TAM_ENTRADA, TAM_ENTRADA), Image.Resampling.BILINEAR
+            )
+            mascara = mascara.resize(
+                (TAM_ENTRADA, TAM_ENTRADA), Image.Resampling.NEAREST
+            )
+
         imagen = np.array(imagen, dtype=np.float32)
         mascara = np.array(mascara)
 
@@ -143,7 +153,7 @@ def aumentar_datos(
     return imagen, mascara
 
 
-def crear_modelo() -> nn.Module:
+def crear_modelo(preentrenado: bool = True) -> nn.Module:
     """Crea la arquitectura ResNet34 utilizada por los pesos actuales.
 
     Returns:
@@ -152,7 +162,7 @@ def crear_modelo() -> nn.Module:
 
     return smp.Unet(
         encoder_name="resnet34",
-        encoder_weights="imagenet",
+        encoder_weights="imagenet" if preentrenado else None,
         in_channels=3,
         classes=1,
         activation=None,
@@ -173,7 +183,7 @@ def cargar_modelo(
         nn.Module: U-Net con los pesos indicados, en modo de evaluación.
     """
 
-    modelo = crear_modelo()
+    modelo = crear_modelo(preentrenado=False)
     pesos = torch.load(
         ruta_pesos,
         map_location=dispositivo,
@@ -185,5 +195,3 @@ def cargar_modelo(
     modelo.eval()
 
     return modelo
-
-

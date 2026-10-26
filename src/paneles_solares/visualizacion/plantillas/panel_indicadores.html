@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Fotovoltaica · Cantabria</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>{{ESTILOS}}</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Paneles solares en Cantabria</h1>
+      <p>Superficie, emplazamientos y producción estimada por campaña.</p>
+    </div>
+    <a class="exportar" href="resumen_municipal.csv" download>Descargar datos ↗</a>
+  </header>
+
+  <main>
+    <nav aria-label="Vista del inventario">
+      <button id="inventario" class="activo" type="button">Inventario por campaña</button>
+      <button id="muestra" type="button">Evolución de la muestra común</button>
+    </nav>
+    <div class="filtros">
+      <label>Campaña<select id="anio"></select></label>
+      <label>Municipio / territorio<select id="municipio"></select></label>
+      <label>Uso cartográfico · 2023<select id="uso"></select></label>
+      <label>Atribución pendiente<select id="revision"></select></label>
+      <label>Color del mapa<select id="metrica"><option value="superficie_m2">Superficie horizontal · m²</option>
+        <option value="con_mascara">Candidatos con máscara</option>
+        <option value="produccion_central_mwh">Producción estimada · MWh/año</option></select></label>
+    </div>
+    <p id="alcance" class="aviso" role="status"></p>
+    <section id="totales" class="totales" aria-label="Resumen de la selección"></section>
+
+    <section class="tarjeta bloque-energia" aria-label="Producción eléctrica estimada">
+      <div class="titulo-ficha"><div>
+        <h2>Producción eléctrica estimada</h2></div>
+        <a class="exportar" href="produccion_estimada.csv" download>Descargar energía ↗</a></div>
+      <p id="energia-alcance" class="nota"></p>
+      <div id="energia-totales" class="totales"></div>
+      <p id="energia-edades" class="nota"></p>
+      <details class="supuestos">
+        <summary>Supuestos utilizados y fuentes</summary>
+        <div id="energia-supuestos"></div>
+      </details>
+    </section>
+
+    <div class="espacio-mapa">
+      <section class="tarjeta cartografia" aria-label="Mapa">
+        <div id="mapa"></div>
+        <div class="leyenda">
+          <strong id="leyenda-titulo"></strong><div class="gradiente"></div>
+          <div id="escala" class="escala"></div>
+          <p><i class="sin-datos"></i> Sin superficie / estado suficiente <i class="cero"></i> Cero observado en la muestra</p>
+          <p>Escala fija entre campañas y filtros; raíz cuadrada para distinguir los valores bajos.</p>
+        </div>
+      </section>
+      <aside class="tarjeta ficha">
+        <div class="titulo-ficha"><h2>Explorar un emplazamiento</h2><button id="cerrar" type="button" aria-label="Cerrar selección">×</button></div>
+        <div id="detalle"><p>Selecciona un punto para ver el detalle por campaña.</p></div>
+        <p class="nota">Acerca el mapa para ver puntos y máscaras. Azul: anotación manual. Ámbar: modelo de 2023. Edificio: contorno violeta; parcela: discontinuo.</p>
+      </aside>
+    </div>
+
+    <section class="graficos">
+      <article class="tarjeta"><p class="eyebrow">Misma muestra en todas las fechas</p>
+        <h2 id="evolucion-titulo">Superficie observada</h2><div id="evolucion"></div><p id="cohorte" class="nota"></p></article>
+      <article class="tarjeta"><p class="eyebrow">Primera presencia con ausencia previa</p>
+        <h2>Intervalo de aparición</h2><div id="periodos"></div><p id="periodos-nota" class="nota"></p></article>
+      <article class="tarjeta"><p class="eyebrow">Paneles en alguna de las dos fechas</p>
+        <div class="titulo-ficha"><h2>Cambio de superficie</h2><select id="intervalo" aria-label="Intervalo del cambio">
+          </select></div>
+        <div id="cambios"></div><p id="cambios-nota" class="nota"></p></article>
+    </section>
+
+    <details class="metodologia tarjeta">
+      <summary>Qué representan estos datos</summary>
+      <p>Las agrupaciones son candidatos a instalación: no se ha confirmado que sean unidades físicas o de explotación. CBT23 y el parcelario de 2023 contextualizan todas las campañas; no reconstruyen los edificios antiguos. «Uso cartográfico» no acredita uso registral, tipo de vivienda ni titularidad pública.</p>
+      <p>Las superficies son proyecciones horizontales de las máscaras, sin corrección de pendiente. En los totales se disuelven los solapes; el área municipal se recorta al límite y los recuentos se adscriben por punto interior del candidato. Una misma máscara puede cruzar un límite municipal.</p>
+      <p>Las campañas comparables se obtienen de las superficies revisadas. La muestra común conserva los candidatos con datos válidos en todas esas fechas, incluidos los ceros por ausencia comprobada. El histograma separa los ausentes en ambas fechas. Las áreas estimadas por el modelo se conservan en el inventario y no se mezclan con diferencias medidas. La selección inicial estaba sesgada hacia cubiertas.</p>
+      <p>Los intervalos son (última ausencia, primera presencia]; no son años exactos de instalación ni fechan ampliaciones. Las respuestas antiguas «presente» no validan todos los conjuntos del recorte. Una falta de datos permanece desconocida.</p>
+      <p>Ortofotos de cada campaña: Gobierno de Cantabria / IGN-CNIG. Contexto: CBT23/LULC23 y parcelario oficial de 2023. Límites y mapa de calles: IGN. Las teselas y el mapa base requieren conexión; los datos y gráficos están incluidos en este HTML.</p>
+    </details>
+  </main>
+  <footer>Datos: Gobierno de Cantabria · IGN/CNIG · Dirección General del Catastro</footer>
+  <script id="datos" type="application/json">{{DATOS}}</script>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>{{CODIGO}}</script>
+</body>
+</html>

@@ -10,6 +10,7 @@ from paneles_solares.datos.anotaciones import (
     texto_yolo,
 )
 from paneles_solares.datos.coleccion import POOL, SPLITS, cargar_manifest
+
 from paneles_solares.rutas import (
     DATASETS,
 )
@@ -158,7 +159,6 @@ def sincronizar() -> None:
     """Sincroniza todos los datasets conocidos."""
 
     seleccion = obtener_seleccion()
-
     for formato in ("yolo", "unet"):
         dataset = DATASETS / formato
         dataset.mkdir(parents=True, exist_ok=True)

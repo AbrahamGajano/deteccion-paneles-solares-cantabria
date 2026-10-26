@@ -3,6 +3,7 @@
 import json
 import os
 import time
+from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -13,7 +14,6 @@ import requests
 from paneles_solares.rutas import (
     INDICADORES_UNET,
     PRODUCCION_CONFIG,
-    PRODUCCION_HORARIA,
     PRODUCCION_MENSUAL,
     PRODUCCION_MUNICIPAL,
     version_indicadores,
@@ -31,7 +31,6 @@ SALIDA_GRAFICO = CARPETA / "resumen_produccion.png"
 URL_PVGIS = "https://re.jrc.ec.europa.eu/api/v5_3"
 VERSION_PVGIS = "5.3"
 BASE_RADIACION = "PVGIS-SARAH3"
-ANIO_PERFIL = 2019  # Año no bisiesto dentro de la cobertura SARAH3 (2005-2023).
 INCLINACION = 30
 ORIENTACION = 0  # En PVGIS, 0 grados significa sur.
 PERDIDAS = 14
@@ -41,9 +40,307 @@ MONTAJE = "free"
 USAR_HORIZONTE = 1
 ESCENARIOS = {
     "conservador": ("superficie_fv_detectada_total_m2", 0.17),
-    "central": ("superficie_fv_corregida_test_total_m2", 0.20),
-    "superior": ("superficie_fv_corregida_test_total_m2", 0.23),
+    "central": ("superficie_fv_detectada_total_m2", 0.20),
+    "superior": ("superficie_fv_detectada_total_m2", 0.23),
 }
+
+# Escenarios del inventario histórico; no son intervalos de confianza.
+ESCENARIOS_HISTORICOS = {
+    "min": {
+        "inclinacion_grados": 15,
+        "orientacion_grados": 90,
+        "perdidas_operativas_pct": 18,
+        "degradacion_anual": 0.01,
+        "factor_eficiencia": 0.85,
+    },
+    "central": {
+        "inclinacion_grados": 30,
+        "orientacion_grados": 0,
+        "perdidas_operativas_pct": 10,
+        "degradacion_anual": 0.005,
+        "factor_eficiencia": 1.0,
+    },
+    "max": {
+        "inclinacion_grados": 40,
+        "orientacion_grados": 0,
+        "perdidas_operativas_pct": 5,
+        "degradacion_anual": 0.002,
+        "factor_eficiencia": 1.15,
+    },
+}
+EFICIENCIA_POR_ANIO = {
+    1989: 0.10,
+    2000: 0.12,
+    2010: 0.15,
+    2014: 0.163,
+    2015: 0.170,
+    2016: 0.175,
+    2017: 0.177,
+    2018: 0.184,
+    2019: 0.192,
+    2020: 0.200,
+    2021: 0.209,
+    2022: 0.212,
+    2023: 0.218,
+}
+FUENTES_HISTORICAS = {
+    "PVGIS": "https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/using-pvgis-5/api-non-interactive-service_en",
+    "Eficiencia 2014–2023 (JRC, tabla 2)": "https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf",
+    "Degradación (NREL)": "https://docs.nrel.gov/docs/fy12osti/53712.pdf",
+}
+ANIOS_ANTIGUEDAD_SUPUESTA = 25
+TOTALES_ENERGIA = [
+    "produccion_min_mwh",
+    "produccion_central_mwh",
+    "produccion_max_mwh",
+    "potencia_central_kwp",
+    "superficie_antiguedad_supuesta_m2",
+]
+
+
+def estimar_cohorte(
+    superficie_modulos_m2: float,
+    densidad_inicial_kwp_m2: float,
+    rendimiento_sin_perdidas_kwh_kwp: float,
+    anio_calculo: int,
+    instalacion_hasta: int,
+    instalacion_desde: int | None = None,
+    degradacion_anual: float = 0.005,
+    perdidas_operativas_pct: float = 10,
+) -> dict:
+    """Estima producción de módulos de una misma época, conservando su incertidumbre.
+
+    Args:
+        superficie_modulos_m2: Superficie inclinada de módulos, no de tejado o parcela.
+        densidad_inicial_kwp_m2: Potencia por m² al instalarse; depende de la tecnología.
+        rendimiento_sin_perdidas_kwh_kwp: Rendimiento PVGIS consultado con loss=0.
+        anio_calculo: Año para el que se estima la producción anual esperada.
+        instalacion_hasta: Primera presencia, límite superior del periodo de instalación.
+        instalacion_desde: Última ausencia atribuida a estos módulos. None significa
+            que ya estaban en la primera campaña, sin antigüedad máxima conocida.
+        degradacion_anual: Pérdida fraccional por año; 0,5 % es una hipótesis de partida.
+        perdidas_operativas_pct: Inversor, cableado y otras pérdidas, sin envejecimiento.
+            El 10 % es un escenario provisional, no una medición de la instalación.
+
+    Returns:
+        dict: Potencia inicial y producción mínima, central y máxima. Sin límite
+            inferior de instalación no se inventan antigüedad máxima ni valor central.
+
+    Raises:
+        ValueError: El periodo es posterior al cálculo o las hipótesis son imposibles.
+    """
+
+    if anio_calculo < instalacion_hasta or (
+        instalacion_desde is not None and instalacion_desde > instalacion_hasta
+    ):
+        raise ValueError("Revisa el periodo de instalación y el año de cálculo")
+    if min(
+        superficie_modulos_m2, densidad_inicial_kwp_m2, rendimiento_sin_perdidas_kwh_kwp
+    ) < 0 or not (0 <= degradacion_anual < 1 and 0 <= perdidas_operativas_pct < 100):
+        raise ValueError("Superficies, potencias, rendimientos y pérdidas no válidos")
+    potencia = superficie_modulos_m2 * densidad_inicial_kwp_m2
+    base = (
+        potencia
+        * rendimiento_sin_perdidas_kwh_kwp
+        * (1 - perdidas_operativas_pct / 100)
+    )
+    edad_minima = anio_calculo - instalacion_hasta
+    edad_maxima = (
+        None if instalacion_desde is None else anio_calculo - instalacion_desde
+    )
+    return {
+        "potencia_inicial_kwp": potencia,
+        "edad_minima_anios": edad_minima,
+        "edad_maxima_anios": edad_maxima,
+        "produccion_max_kwh": base * (1 - degradacion_anual) ** edad_minima,
+        "produccion_min_kwh": None
+        if edad_maxima is None
+        else base * (1 - degradacion_anual) ** edad_maxima,
+        "produccion_central_kwh": None
+        if edad_maxima is None
+        else base * (1 - degradacion_anual) ** ((edad_minima + edad_maxima) / 2),
+    }
+
+
+def hipotesis_historicas() -> dict:
+    """Documenta los supuestos comunes a las tablas y al panel histórico."""
+
+    return {
+        "alcance": "Producción anual representativa de los paneles observados; no consumo ni total de Cantabria.",
+        "radiacion": f"PVGIS {VERSION_PVGIS}, {BASE_RADIACION}; clima medio, silicio cristalino, montaje ventilado, 1 kWp y loss=0. Un punto municipal ponderado por superficie; horizonte de terreno incluido.",
+        "escenarios": {
+            nombre: parametros.copy()
+            for nombre, parametros in ESCENARIOS_HISTORICOS.items()
+        },
+        "eficiencia_por_anio": EFICIENCIA_POR_ANIO,
+        "eficiencia": "Tabla JRC 2014–2023 e interpolación lineal. Antes de 2014: hipótesis de 10 % en 1989, 12 % en 2000 y 15 % en 2010. No identifica la tecnología de cada placa.",
+        "superficie": "Área de módulos = proyección horizontal / cos(inclinación). Los solapes se disuelven y su reparto energético se pondera por área.",
+        "antiguedad": "Central: punto medio del intervalo de aparición del emplazamiento, como aproximación a la edad de los módulos. Sin límite inferior compatible: desde 25 años antes de la primera geometría, como hipótesis explícita.",
+        "ampliaciones": "No se fechan módulos ni se interpretan diferencias del modelo como ampliaciones. El escenario favorable permite que toda el área sea de módulos nuevos del año de la imagen; el conservador usa la fecha más antigua supuesta. El central puede infravalorar renovaciones y ampliaciones recientes.",
+        "perdidas": "Operativas y degradación se aplican una sola vez, fuera de PVGIS. No se suma el 14 % del escenario regional uniforme.",
+        "limites": "Escenarios de sensibilidad, no intervalos de confianza. No cubren falsos positivos, omisiones, pendientes reales, sombras locales, averías ni indisponibilidad. Las áreas del modelo de 2023 siguen siendo estimadas.",
+        "periodo": "Un año completo representativo con los equipos de cada imagen; no la energía realmente generada durante el año del vuelo ni una predicción meteorológica.",
+        "fuentes": FUENTES_HISTORICAS,
+    }
+
+
+def factores_historicos(candidatos, paneles) -> pd.DataFrame:
+    """Calcula potencia y envejecimiento por m² horizontal, sin consultar radiación.
+
+    La edad central aproxima la época del emplazamiento. Las renovaciones no
+    observadas quedan en los escenarios; no se asignan fechas medidas a módulos.
+    """
+
+    primeras = paneles.groupby("id_instalacion").anio.min()
+    periodos = candidatos.set_index("id_instalacion")
+    filas = []
+    for identificador, anio in (
+        paneles[["id_instalacion", "anio"]]
+        .drop_duplicates()
+        .itertuples(index=False, name=None)
+    ):
+        periodo = periodos.loc[identificador]
+        hasta = min(float(primeras[identificador]), anio)
+        if pd.notna(periodo.instalacion_hasta):
+            hasta = min(hasta, float(periodo.instalacion_hasta))
+        desde = periodo.instalacion_desde
+        supuesta = (
+            pd.isna(desde)
+            or desde >= hasta
+            or periodo.estado_periodo == "revisar_cambio_o_contradiccion"
+        )
+        if supuesta:
+            desde = hasta - ANIOS_ANTIGUEDAD_SUPUESTA
+        fila = {
+            "id_instalacion": identificador,
+            "anio": anio,
+            "fecha_desde_modelada": desde,
+            "fecha_hasta_modelada": hasta,
+            "antiguedad_supuesta": bool(supuesta),
+        }
+        fechas = {"min": desde, "central": (desde + hasta) / 2, "max": anio}
+        for nombre, escenario in ESCENARIOS_HISTORICOS.items():
+            fecha = fechas[nombre]
+            densidad = (
+                float(
+                    np.interp(
+                        fecha,
+                        list(EFICIENCIA_POR_ANIO),
+                        list(EFICIENCIA_POR_ANIO.values()),
+                    )
+                )
+                * escenario["factor_eficiencia"]
+            )
+            estimacion = estimar_cohorte(
+                1 / np.cos(np.radians(escenario["inclinacion_grados"])),
+                densidad,
+                1,
+                anio,
+                fecha,
+                fecha,
+                degradacion_anual=escenario["degradacion_anual"],
+                perdidas_operativas_pct=escenario["perdidas_operativas_pct"],
+            )
+            fila[f"factor_{nombre}"] = estimacion["produccion_central_kwh"]
+            if nombre == "central":
+                fila["potencia_por_m2_kwp"] = estimacion["potencia_inicial_kwp"]
+        filas.append(fila)
+    return pd.DataFrame(filas)
+
+
+def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
+    """Consulta tres geometrías de montaje por municipio y conserva su respuesta."""
+
+    cache = carpeta / "pvgis_anual.json"
+    consultas = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
+    filas = []
+    with requests.Session() as sesion:
+        grupos = list(recortes.groupby("codigo"))
+        for i, (codigo, grupo) in enumerate(grupos, 1):
+            puntos = grupo.geometry.centroid
+            pesos = grupo.geometry.area
+            punto = (
+                gpd.GeoSeries(
+                    gpd.points_from_xy(
+                        [np.average(puntos.x, weights=pesos)],
+                        [np.average(puntos.y, weights=pesos)],
+                    ),
+                    crs=recortes.crs,
+                )
+                .to_crs(4326)
+                .iloc[0]
+            )
+            fila = {"codigo": codigo, "latitud": punto.y, "longitud": punto.x}
+            print(f"PVGIS anual: {codigo} ({i}/{len(grupos)})", flush=True)
+            for nombre, escenario in ESCENARIOS_HISTORICOS.items():
+                parametros = {
+                    "lat": round(punto.y, 6),
+                    "lon": round(punto.x, 6),
+                    "raddatabase": BASE_RADIACION,
+                    "peakpower": 1,
+                    "loss": 0,
+                    "angle": escenario["inclinacion_grados"],
+                    "aspect": escenario["orientacion_grados"],
+                    "pvtechchoice": TECNOLOGIA,
+                    "mountingplace": MONTAJE,
+                    "usehorizon": 1,
+                    "outputformat": "json",
+                }
+                clave = json.dumps([URL_PVGIS, parametros], sort_keys=True)
+                if clave not in consultas:
+                    consultas[clave] = solicitar_pvgis(sesion, "PVcalc", parametros)
+                    carpeta.mkdir(parents=True, exist_ok=True)
+                    temporal = cache.with_suffix(".tmp")
+                    temporal.write_text(
+                        json.dumps(consultas, ensure_ascii=False), encoding="utf-8"
+                    )
+                    temporal.replace(cache)
+                fila[f"rendimiento_{nombre}"] = consultas[clave]["outputs"]["totals"][
+                    "fixed"
+                ]["E_y"]
+            filas.append(fila)
+    return pd.DataFrame(filas)
+
+
+def preparar_energia_historica(candidatos, paneles, recortes, carpeta: Path):
+    """Prepara áreas por emplazamiento y municipio para reutilizar los desgloses."""
+
+    carpeta.mkdir(parents=True, exist_ok=True)
+    factores = factores_historicos(candidatos, paneles)
+    factores.to_csv(carpeta / "factores_energia.csv", index=False)
+    rendimiento = rendimientos_historicos(recortes, carpeta)
+    areas = recortes.dissolve(by=["id_instalacion", "anio", "codigo"])
+    areas["area_m2"] = areas.geometry.area
+    tabla = (
+        areas.drop(columns="geometry")
+        .reset_index()
+        .merge(factores, on=["id_instalacion", "anio"])
+        .merge(rendimiento, on="codigo")
+    )
+    for nombre in ESCENARIOS_HISTORICOS:
+        tabla[f"produccion_{nombre}_mwh"] = (
+            tabla.area_m2
+            * tabla[f"factor_{nombre}"]
+            * tabla[f"rendimiento_{nombre}"]
+            / 1000
+        )
+    tabla["potencia_central_kwp"] = tabla.area_m2 * tabla.potencia_por_m2_kwp
+    tabla["superficie_antiguedad_supuesta_m2"] = tabla.area_m2.where(
+        tabla.antiguedad_supuesta, 0
+    )
+    return tabla
+
+
+def energia_union(superficie_m2, partes: pd.DataFrame) -> dict:
+    """Escala la mezcla de épocas al área disuelta, sin duplicar energía por solapes."""
+
+    if superficie_m2 is None:
+        return dict.fromkeys(TOTALES_ENERGIA)
+    total = partes.area_m2.sum()
+    factor = superficie_m2 / total if total else 0
+    return {
+        columna: float(partes[columna].sum() * factor) for columna in TOTALES_ENERGIA
+    }
 
 
 def configuracion() -> dict:
@@ -57,15 +354,15 @@ def configuracion() -> dict:
         "url_pvgis": URL_PVGIS,
         "version_pvgis": VERSION_PVGIS,
         "base_radiacion": BASE_RADIACION,
-        "anio_perfil_horario": ANIO_PERFIL,
         "inclinacion_grados": INCLINACION,
         "orientacion_pvgis_grados": ORIENTACION,
         "perdidas_pct": PERDIDAS,
+        "tratamiento_antiguedad": "Escenario uniforme del 14 %, con envejecimiento medio implícito; todavía sin periodos individuales. No añadir otra degradación a estos resultados.",
         "potencia_referencia_kwp": POTENCIA_REFERENCIA_KWP,
         "tecnologia": TECNOLOGIA,
         "montaje": MONTAJE,
         "usar_horizonte_pvgis": bool(USAR_HORIZONTE),
-        "calibracion_test_superficie": "superficie detectada / 0.9246 (calculada en indicadores_unet.py)",
+        "calibracion_test_superficie": "No aplicada: pendiente validar cubiertas y exteriores en el marco territorial de 2023",
         "densidades_kwp_m2": {
             clave: densidad for clave, (_, densidad) in ESCENARIOS.items()
         },
@@ -75,37 +372,13 @@ def configuracion() -> dict:
         "indicadores_entrada": version_indicadores(),
         "descripcion": (
             "Potencia pico estimada sobre superficie planimétrica; orientación, "
-            "inclinación y pérdidas homogéneas. Perfil horario representativo "
-            "normalizado a medias mensuales PVGIS; no es producción observada."
+            "inclinación y pérdidas homogéneas; medias mensuales y anuales de PVGIS."
         ),
     }
 
 
-def calendario_horario() -> pd.DatetimeIndex:
-    """Devuelve 8.760 horas UTC sin crear una fecha ficticia en las salidas.
-
-    Returns:
-        pd.DatetimeIndex: Calendario de 8.760 horas UTC, sin el 29 de febrero.
-
-    Raises:
-        ValueError: El calendario no contiene exactamente 8.760 horas.
-    """
-
-    horas = pd.date_range(
-        f"{ANIO_PERFIL}-01-01",
-        f"{ANIO_PERFIL + 1}-01-01",
-        freq="h",
-        inclusive="left",
-        tz="UTC",
-    )
-    horas = horas[~((horas.month == 2) & (horas.day == 29))]
-    if len(horas) != 8760:
-        raise ValueError("El año elegido debe aportar exactamente 8.760 horas")
-    return horas
-
-
 def cargar_entradas() -> tuple[gpd.GeoDataFrame, dict[str, tuple[float, float]]]:
-    """Lee municipios y edificios positivos; calcula sus posiciones ponderadas.
+    """Comprueba recuentos y calcula posiciones usando todas las máscaras.
 
     Returns:
         tuple[gpd.GeoDataFrame, dict[str, tuple[float, float]]]: Municipios y posiciones
@@ -137,7 +410,10 @@ def cargar_entradas() -> tuple[gpd.GeoDataFrame, dict[str, tuple[float, float]]]
     edificios["codigo_municipal"] = edificios.codigo_municipal.astype(str)
     if municipios.codigo.duplicated().any():
         raise ValueError("Los municipios tienen códigos duplicados")
-    superficies = edificios.groupby("codigo_municipal").superficie_fv_detectada_m2.sum()
+    detecciones = pd.read_csv(
+        CARPETA / "detecciones_municipios.csv", dtype={"codigo": str}
+    )
+    superficies = detecciones.groupby("codigo").area_m2.sum()
     recuentos = edificios.groupby("codigo_municipal").size()
     if not np.allclose(
         municipios.superficie_fv_detectada_total_m2.to_numpy(dtype=float),
@@ -147,13 +423,12 @@ def cargar_entradas() -> tuple[gpd.GeoDataFrame, dict[str, tuple[float, float]]]
         municipios.edificios_con_deteccion.to_numpy(dtype=int),
         municipios.codigo.map(recuentos).fillna(0).to_numpy(dtype=int),
     ):
-        raise ValueError("Los edificios positivos y el resumen municipal no coinciden")
-    puntos = edificios.geometry.representative_point()
-    edificios["x"] = puntos.x
-    edificios["y"] = puntos.y
+        raise ValueError(
+            "Las detecciones o recuentos de cubiertas no coinciden con el resumen municipal"
+        )
     posiciones = {}
-    for codigo, grupo in edificios.groupby("codigo_municipal"):
-        pesos = grupo.superficie_fv_detectada_m2.to_numpy(dtype=float)
+    for codigo, grupo in detecciones.groupby("codigo"):
+        pesos = grupo.area_m2.to_numpy(dtype=float)
         if np.any(pesos < 0) or pesos.sum() <= 0:
             raise ValueError(f"Superficies detectadas inválidas en {codigo}")
         x = np.average(grupo.x, weights=pesos)
@@ -190,19 +465,12 @@ def preparar_cache(config: dict) -> dict[str, dict]:
             CACHE,
             PRODUCCION_MUNICIPAL,
             PRODUCCION_MENSUAL,
-            PRODUCCION_HORARIA,
+            (CARPETA / "produccion_horaria_representativa.csv"),
             SALIDA_GRAFICO,
         ):
             ruta.unlink(missing_ok=True)
         PRODUCCION_CONFIG.write_text(
             json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    elif not CACHE.is_file() and any(
-        ruta.is_file()
-        for ruta in (PRODUCCION_MUNICIPAL, PRODUCCION_MENSUAL, PRODUCCION_HORARIA)
-    ):
-        raise ValueError(
-            "Falta la caché PVGIS de los resultados existentes; no se pueden reanudar"
         )
     consultas = {}
     if CACHE.is_file():
@@ -226,7 +494,7 @@ def preparar_cache(config: dict) -> dict[str, dict]:
 
 
 def guardar_consulta(registro: dict) -> None:
-    """Persiste un municipio completo tras terminar ambas llamadas a PVGIS.
+    """Guarda los rendimientos mensuales consultados para un municipio.
 
     Args:
         registro: Consulta PVGIS completa de un municipio.
@@ -274,22 +542,17 @@ def consultar_referencia(
     codigo: str,
     latitud: float,
     longitud: float,
-    horas: pd.DatetimeIndex,
 ) -> dict:
-    """Obtiene medias mensuales y forma horaria de un único kWp.
+    """Consulta el rendimiento mensual de un kWp para el escenario regional.
 
     Args:
-        sesion: Sesión HTTP reutilizada para consultar PVGIS.
-        codigo: Código municipal.
-        latitud: Latitud de referencia en WGS84.
-        longitud: Longitud de referencia en WGS84.
-        horas: Calendario horario UTC del año representativo.
+        sesion: Sesión HTTP reutilizada.
+        codigo: Código del municipio.
+        latitud: Latitud WGS84 del punto de consulta.
+        longitud: Longitud WGS84 del punto de consulta.
 
     Returns:
-        dict: Rendimientos mensuales y potencias horarias para un kWp.
-
-    Raises:
-        ValueError: PVGIS devuelve meses, horas o potencias inválidos.
+        dict: Posición y doce medias mensuales de PVGIS, en kWh/kWp.
     """
 
     parametros = {
@@ -305,398 +568,133 @@ def consultar_referencia(
         "usehorizon": USAR_HORIZONTE,
         "outputformat": "json",
     }
-    mensual = solicitar_pvgis(sesion, "PVcalc", parametros)["outputs"]["monthly"][
-        "fixed"
-    ]
-    rendimientos = np.zeros(12, dtype=float)
+
+    datos = solicitar_pvgis(sesion, "PVcalc", parametros)
+    mensual = datos["outputs"]["monthly"]["fixed"]
+    rendimientos = [0.0] * 12
+
     for fila in mensual:
         rendimientos[int(fila["month"]) - 1] = float(fila["E_m"])
-    if (
-        len(mensual) != 12
-        or {int(fila["month"]) for fila in mensual} != set(range(1, 13))
-        or not np.all(np.isfinite(rendimientos))
-        or np.any(rendimientos < 0)
-    ):
-        raise ValueError(f"PVcalc devolvió meses inválidos para {codigo}")
-    horario = solicitar_pvgis(
-        sesion,
-        "seriescalc",
-        {
-            **parametros,
-            "pvcalculation": 1,
-            "startyear": ANIO_PERFIL,
-            "endyear": ANIO_PERFIL,
-        },
-    )["outputs"]["hourly"]
-    tiempos = pd.to_datetime(
-        [fila["time"] for fila in horario], format="%Y%m%d:%H%M", utc=True
-    ).floor("h")
-    potencias_w = np.array([float(fila["P"]) for fila in horario])
-    vigentes = ~((tiempos.month == 2) & (tiempos.day == 29))
-    tiempos = tiempos[vigentes]
-    potencias_w = potencias_w[vigentes]
-    if (
-        not tiempos.equals(horas)
-        or not np.all(np.isfinite(potencias_w))
-        or np.any(potencias_w < 0)
-    ):
-        raise ValueError(
-            f"seriescalc devolvió horas o potencias inválidas para {codigo}"
-        )
+
+    if len(mensual) != 12 or not np.isfinite(rendimientos).all():
+        raise ValueError(f"PVGIS no devolvió doce meses válidos para {codigo}")
+
     return {
         "codigo": codigo,
         "latitud": latitud,
         "longitud": longitud,
-        "rendimientos_mensuales": rendimientos.tolist(),
-        "potencias_horarias_w": potencias_w.tolist(),
+        "rendimientos_mensuales": rendimientos,
     }
-
-
-def normalizar_perfil(registro: dict, horas: pd.DatetimeIndex) -> np.ndarray:
-    """Ajusta la distribución horaria a cada media mensual PVcalc en kWh/kWp.
-
-    Args:
-        registro: Rendimientos mensuales y potencias horarias de la consulta PVGIS.
-        horas: Calendario horario UTC del año representativo.
-
-    Returns:
-        np.ndarray: Producción horaria representativa en kWh por kWp.
-
-    Raises:
-        ValueError: La caché está incompleta o una media mensual positiva tiene perfil
-            horario nulo.
-    """
-
-    forma = (
-        np.asarray(registro["potencias_horarias_w"], dtype=float) / 1000
-    )  # W medios durante una hora -> kWh.
-    meses = horas.month.to_numpy()
-    rendimiento = np.asarray(registro["rendimientos_mensuales"], dtype=float)
-    if (
-        len(forma) != 8760
-        or len(rendimiento) != 12
-        or np.any(forma < 0)
-        or np.any(rendimiento < 0)
-    ):
-        raise ValueError(f"Caché PVGIS incompleta para {registro['codigo']}")
-    normalizado = np.zeros(8760, dtype=float)
-    for mes in range(1, 13):
-        mascara = meses == mes
-        total = forma[mascara].sum()
-        if total == 0 and rendimiento[mes - 1] > 0:
-            raise ValueError(
-                f"Perfil horario nulo con producción mensual en {registro['codigo']}, mes {mes}"
-            )
-        if total > 0:
-            normalizado[mascara] = forma[mascara] * rendimiento[mes - 1] / total
-    return normalizado
 
 
 def calcular_resultados(
     municipios: gpd.GeoDataFrame,
     consultas: dict[str, dict],
-    horas: pd.DatetimeIndex,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Escala los rendimientos de referencia a los tres escenarios.
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Calcula potencia y producción municipal y mensual de los tres escenarios.
 
     Args:
-        municipios: Indicadores y geometrías municipales.
-        consultas: Respuestas PVGIS completas por código municipal.
-        horas: Calendario horario UTC del año representativo.
+        municipios: Superficie detectada por municipio.
+        consultas: Rendimientos mensuales de PVGIS por código municipal.
 
     Returns:
-        tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]: Resultados municipales,
-            mensuales y horarios para los tres escenarios.
-
-    Raises:
-        ValueError: El rendimiento de PVGIS queda fuera del intervalo admitido.
+        tuple[pd.DataFrame, pd.DataFrame]: Resumen municipal y detalle mensual.
     """
 
     filas_municipales = []
     filas_mensuales = []
-    filas_horarias = []
-    meses_horas = horas.month.to_numpy()
-    base_horas = pd.DataFrame(
-        {
-            "mes": meses_horas,
-            "dia": horas.day,
-            "hora_utc": horas.hour,
-        }
-    )
+
     for municipio in municipios.itertuples():
         codigo = str(municipio.codigo)
         registro = consultas.get(codigo)
-        if municipio.edificios_con_deteccion > 0 and registro is None:
-            raise ValueError(f"Falta la consulta PVGIS del municipio positivo {codigo}")
-        rendimiento_mensual = (
-            np.asarray(registro["rendimientos_mensuales"], dtype=float)
-            if registro
-            else np.zeros(12)
-        )
-        rendimiento_horario = (
-            normalizar_perfil(registro, horas) if registro else np.zeros(8760)
-        )
-        superficie_detectada = float(municipio.superficie_fv_detectada_total_m2)
-        superficie_corregida = float(municipio.superficie_fv_corregida_test_total_m2)
-        resumen = {
+
+        if municipio.superficie_fv_detectada_total_m2 > 0 and registro is None:
+            raise ValueError(f"Falta la consulta PVGIS del municipio {codigo}")
+
+        rendimientos = registro["rendimientos_mensuales"] if registro else [0.0] * 12
+        fila = {
             "codigo": codigo,
             "municipio": municipio.municipio,
-            "latitud": registro["latitud"] if registro else np.nan,
-            "longitud": registro["longitud"] if registro else np.nan,
-            "superficie_fv_detectada_m2": superficie_detectada,
-            "superficie_fv_corregida_test_m2": superficie_corregida,
-            "rendimiento_anual_kwh_kwp": rendimiento_mensual.sum(),
-            "inclinacion_grados": INCLINACION,
-            "orientacion_pvgis_grados": ORIENTACION,
-            "perdidas_pct": PERDIDAS,
-            "consultado_pvgis": registro is not None,
+            "superficie_fv_detectada_total_m2": municipio.superficie_fv_detectada_total_m2,
+            "rendimiento_anual_kwh_kwp": sum(rendimientos),
         }
-        meses = pd.DataFrame(
-            {
+
+        potencias = {}
+        for escenario, (campo, densidad) in ESCENARIOS.items():
+            potencia = getattr(municipio, campo) * densidad
+            potencias[escenario] = potencia
+            fila[f"potencia_{escenario}_kwp"] = potencia
+            fila[f"produccion_anual_{escenario}_kwh"] = potencia * sum(rendimientos)
+
+        filas_municipales.append(fila)
+
+        for mes, rendimiento in enumerate(rendimientos, 1):
+            mensual = {
                 "codigo": codigo,
                 "municipio": municipio.municipio,
-                "mes": np.arange(1, 13),
-                "rendimiento_mensual_kwh_kwp": rendimiento_mensual,
+                "mes": mes,
+                "rendimiento_mensual_kwh_kwp": rendimiento,
             }
-        )
-        serie = base_horas.copy()
-        serie.insert(0, "municipio", municipio.municipio)
-        serie.insert(0, "codigo", codigo)
-        serie["rendimiento_horario_kwh_kwp"] = rendimiento_horario
-        for escenario, (campo, densidad) in ESCENARIOS.items():
-            superficie = float(getattr(municipio, campo))
-            potencia = superficie * densidad
-            resumen[f"potencia_{escenario}_kwp"] = potencia
-            resumen[f"produccion_anual_{escenario}_kwh"] = (
-                rendimiento_mensual.sum() * potencia
-            )
-            meses[f"produccion_{escenario}_kwh"] = rendimiento_mensual * potencia
-            serie[f"produccion_{escenario}_kwh"] = rendimiento_horario * potencia
-        filas_municipales.append(resumen)
-        filas_mensuales.append(meses)
-        filas_horarias.append(serie)
-    return (
-        pd.DataFrame(filas_municipales),
-        pd.concat(filas_mensuales, ignore_index=True),
-        pd.concat(filas_horarias, ignore_index=True),
+            for escenario, potencia in potencias.items():
+                mensual[f"produccion_{escenario}_kwh"] = potencia * rendimiento
+
+            filas_mensuales.append(mensual)
+
+    return pd.DataFrame(filas_municipales), pd.DataFrame(filas_mensuales)
+
+
+def guardar_grafico(municipal: pd.DataFrame, mensual: pd.DataFrame) -> None:
+    """Guarda el escenario regional por mes y los municipios con mayor producción."""
+
+    figura, ejes = plt.subplots(1, 2, figsize=(12, 4.5), layout="constrained")
+    por_mes = mensual.groupby("mes").produccion_central_kwh.sum() / 1_000_000
+
+    ejes[0].bar(por_mes.index, por_mes.values, color="#28796f")
+    ejes[0].set_xticks(range(1, 13))
+    ejes[0].set_xlabel("Mes")
+    ejes[0].set_ylabel("Producción central (GWh/mes)")
+
+    mayores = municipal.nlargest(10, "produccion_anual_central_kwh")
+    ejes[1].barh(
+        mayores.municipio,
+        mayores.produccion_anual_central_kwh / 1_000_000,
+        color="#28796f",
     )
-
-
-def comprobar_resultados(
-    municipal: pd.DataFrame,
-    mensual: pd.DataFrame,
-    horaria: pd.DataFrame,
-) -> None:
-    """Comprueba orden de escenarios, calendario y conservación de energía.
-
-    Args:
-        municipal: Resultados energéticos por municipio.
-        mensual: Resultados energéticos por mes y municipio.
-        horaria: Perfil horario representativo por municipio.
-
-    Raises:
-        ValueError: Las superficies, potencias o agregaciones energéticas no son
-            coherentes.
-    """
-
-    for datos in (municipal, mensual, horaria):
-        columnas = [
-            nombre
-            for nombre in datos.columns
-            if nombre.startswith(
-                ("superficie_", "potencia_", "produccion_", "rendimiento_")
-            )
-        ]
-        valores = datos[columnas].to_numpy(dtype=float)
-        if not np.all(np.isfinite(valores)) or np.any(valores < 0):
-            raise ValueError(
-                "Hay superficies, potencias o energías negativas o no finitas"
-            )
-        magnitudes = (
-            [("potencia", "kwp"), ("produccion_anual", "kwh")]
-            if datos is municipal
-            else [("produccion", "kwh")]
-        )
-        for magnitud, unidad in magnitudes:
-            conservador = datos[f"{magnitud}_conservador_{unidad}"]
-            central = datos[f"{magnitud}_central_{unidad}"]
-            superior = datos[f"{magnitud}_superior_{unidad}"]
-            if np.any(conservador > central + 1e-8):
-                raise ValueError("El escenario conservador supera al central")
-            if np.any(central > superior + 1e-8):
-                raise ValueError("El escenario central supera al superior")
-    codigos = set(municipal.codigo)
-    if (
-        set(mensual.codigo) != codigos
-        or set(horaria.codigo) != codigos
-        or not mensual.groupby("codigo").mes.nunique().eq(12).all()
-        or not mensual.groupby("codigo").size().eq(12).all()
-        or not horaria.groupby("codigo").size().eq(8760).all()
-        or horaria.duplicated(["codigo", "mes", "dia", "hora_utc"]).any()
-    ):
-        raise ValueError("Faltan meses u horas en uno o varios municipios")
-    for escenario in ESCENARIOS:
-        columna = f"produccion_{escenario}_kwh"
-        suma_horaria = horaria.groupby(["codigo", "mes"])[columna].sum().sort_index()
-        suma_mensual = mensual.set_index(["codigo", "mes"])[columna].sort_index()
-        if not np.allclose(suma_horaria, suma_mensual, rtol=0, atol=1e-6):
-            raise ValueError(
-                f"El perfil horario no coincide con los meses: {escenario}"
-            )
-        anuales = mensual.groupby("codigo")[columna].sum().sort_index()
-        resumen = municipal.set_index("codigo")[
-            f"produccion_anual_{escenario}_kwh"
-        ].sort_index()
-        if not np.allclose(anuales, resumen, rtol=0, atol=1e-6):
-            raise ValueError(
-                f"Los meses no coinciden con la producción anual: {escenario}"
-            )
-        if not np.isclose(mensual[columna].sum(), resumen.sum(), rtol=0, atol=1e-6):
-            raise ValueError(f"El total de Cantabria no coincide: {escenario}")
-        if not np.isclose(horaria[columna].sum(), resumen.sum(), rtol=0, atol=1e-6):
-            raise ValueError(f"El perfil horario de Cantabria no coincide: {escenario}")
-
-
-def guardar_grafico(
-    municipal: pd.DataFrame, mensual: pd.DataFrame, horaria: pd.DataFrame
-) -> None:
-    """Dibuja cuatro vistas de potencia y producción para la memoria.
-
-    Args:
-        municipal: Resultados energéticos por municipio.
-        mensual: Resultados energéticos por mes y municipio.
-        horaria: Perfil horario representativo por municipio.
-    """
-
-    figura, ejes = plt.subplots(2, 2, figsize=(16, 12))
-    figura.subplots_adjust(
-        left=0.14, right=0.97, top=0.91, bottom=0.09, hspace=0.30, wspace=0.28
-    )
-    totales = (
-        mensual.groupby("mes")[[f"produccion_{e}_kwh" for e in ESCENARIOS]].sum() / 1e6
-    )
-    meses = totales.index.to_numpy()
-    ejes[0, 0].fill_between(
-        meses,
-        totales.produccion_conservador_kwh.to_numpy(),
-        totales.produccion_superior_kwh.to_numpy(),
-        alpha=0.25,
-        color="#2e78a6",
-    )
-    ejes[0, 0].plot(meses, totales.produccion_central_kwh, color="#155e75", lw=2)
-    ejes[0, 0].set(
-        title="Producción mensual estimada · Cantabria",
-        xlabel="Mes",
-        ylabel="GWh",
-        xticks=meses,
-    )
-
-    mayores = municipal.nlargest(15, "produccion_anual_central_kwh").iloc[::-1]
-    ejes[0, 1].barh(
-        mayores.municipio, mayores.produccion_anual_central_kwh / 1e6, color="#20705c"
-    )
-    ejes[0, 1].set(title="15 municipios con mayor producción central", xlabel="GWh/año")
-
-    perfil = horaria.groupby("hora_utc").produccion_central_kwh.sum() / 365 / 1000
-    ejes[1, 0].plot(perfil.index, perfil, color="#cc4c02", lw=2)
-    ejes[1, 0].set(
-        title="Perfil medio diario representativo · Cantabria",
-        xlabel="Hora UTC",
-        ylabel="MWh por hora",
-        xticks=np.arange(0, 24, 3),
-    )
-
-    ejes[1, 1].scatter(
-        municipal.potencia_central_kwp / 1000,
-        municipal.produccion_anual_central_kwh / 1000,
-        color="#8c4b9f",
-        alpha=0.7,
-        s=35,
-    )
-    ejes[1, 1].set(
-        title="Potencia pico y producción anual centrales",
-        xlabel="Potencia estimada (MWp)",
-        ylabel="Producción estimada (MWh/año)",
-    )
-    for eje in ejes.flat:
-        eje.grid(alpha=0.2)
-        eje.set_axisbelow(True)
-    figura.suptitle(
-        "Potencia pico y producción fotovoltaica estimadas · Cantabria", fontsize=17
-    )
-    figura.text(
-        0.5,
-        0.025,
-        f"Superficie planimétrica U-Net; corrección experimental del test. PVGIS {VERSION_PVGIS}: "
-        f"{INCLINACION}° de inclinación, {ORIENTACION}° de orientación, "
-        f"pérdidas {PERDIDAS} %. Perfil horario representativo.",
-        ha="center",
-        fontsize=9,
-    )
-    figura.savefig(SALIDA_GRAFICO, dpi=180, facecolor="white")
+    ejes[1].invert_yaxis()
+    ejes[1].set_xlabel("Producción central (GWh/año)")
+    figura.suptitle("Escenario regional uniforme · PVGIS")
+    figura.savefig(SALIDA_GRAFICO, dpi=170)
     plt.close(figura)
 
 
-def prueba() -> None:
-    """Consulta un municipio positivo y valida el cálculo sin escribir salidas."""
-
-    municipios, posiciones = cargar_entradas()
-    horas = calendario_horario()
-    municipio = municipios.loc[municipios.codigo.isin(posiciones)].iloc[[0]]
-    codigo = str(municipio.codigo.iloc[0])
-    with requests.Session() as sesion:
-        registro = consultar_referencia(sesion, codigo, *posiciones[codigo], horas)
-    resumen, mensual, horaria = calcular_resultados(
-        municipio, {codigo: registro}, horas
-    )
-    comprobar_resultados(resumen, mensual, horaria)
-    print(
-        f"Prueba correcta: {municipio.municipio.iloc[0]} ({codigo}); 12 meses, "
-        f"8.760 horas; 2 consultas PVGIS"
-    )
-    print(f"Potencia central: {resumen.potencia_central_kwp.iloc[0]:.2f} kWp")
-    print(
-        f"Producción anual central: {resumen.produccion_anual_central_kwh.iloc[0]:.2f} kWh"
-    )
-
-
 def main() -> None:
-    """Calcula Cantabria usando una única caché PVGIS reanudable.
-
-    Raises:
-        ValueError: Faltan municipios en las consultas necesarias para exportar.
-    """
+    """Calcula escenarios anuales y mensuales desde la inferencia regional terminada."""
 
     municipios, posiciones = cargar_entradas()
-    horas = calendario_horario()
     consultas = preparar_cache(configuracion())
+
     with requests.Session() as sesion:
         for codigo, (latitud, longitud) in posiciones.items():
-            if codigo in consultas:
-                if not np.allclose(
-                    [consultas[codigo]["latitud"], consultas[codigo]["longitud"]],
-                    [latitud, longitud],
-                    rtol=0,
-                    atol=1e-9,
-                ):
-                    raise ValueError(f"La posición en caché ha cambiado: {codigo}")
+            anterior = consultas.get(codigo)
+            if anterior and np.allclose(
+                [anterior["latitud"], anterior["longitud"]],
+                [latitud, longitud],
+                rtol=0,
+                atol=1e-9,
+            ):
                 continue
-            print(
-                f"PVGIS: {codigo} ({len(consultas) + 1}/{len(posiciones)})", flush=True
-            )
-            registro = consultar_referencia(sesion, codigo, latitud, longitud, horas)
+
+            print(f"PVGIS: {codigo}", flush=True)
+            registro = consultar_referencia(sesion, codigo, latitud, longitud)
             guardar_consulta(registro)
             consultas[codigo] = registro
-    municipal, mensual, horaria = calcular_resultados(municipios, consultas, horas)
-    comprobar_resultados(municipal, mensual, horaria)
+
+    municipal, mensual = calcular_resultados(municipios, consultas)
     municipal.to_csv(PRODUCCION_MUNICIPAL, index=False)
     mensual.to_csv(PRODUCCION_MENSUAL, index=False)
-    horaria.to_csv(PRODUCCION_HORARIA, index=False)
-    guardar_grafico(municipal, mensual, horaria)
+    guardar_grafico(municipal, mensual)
     print(f"Resultados de producción: {CARPETA}")
-    print(
-        "Actualiza el panel: python -m paneles_solares.visualizacion.panel_indicadores"
-    )
+    print("Escenario uniforme; no asigna antigüedades a instalaciones.")
 
 
 if __name__ == "__main__":
