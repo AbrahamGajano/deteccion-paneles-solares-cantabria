@@ -222,37 +222,90 @@ def resumir_periodos(serie: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(filas)
 
 
-def comparar_superficies(serie: pd.DataFrame) -> pd.DataFrame:
-    """Compara áreas anotadas en campañas consecutivas con la misma huella revisada.
+def unificar_serie(serie, instalaciones, superficies) -> pd.DataFrame:
+    """Reúne localización, observaciones, superficies y periodos en una tabla.
 
     Args:
-        serie: Áreas manuales y estimadas separadas, con cobertura y conflictos.
+        serie: Estados y áreas por instalación y campaña.
+        instalaciones: Agrupaciones con geometría, localización y soportes.
+        superficies: Resumen de las máscaras de cada instalación y campaña.
 
     Returns:
-        pd.DataFrame: Variaciones medidas; las comparaciones no fiables quedan vacías.
-            Un aumento de área no fecha ni identifica automáticamente nuevos módulos.
+        pd.DataFrame: Una fila por instalación y campaña. Las diferencias de área
+            solo se calculan entre campañas consecutivas comparables.
     """
 
-    filas = []
-    for identificador, grupo in serie.groupby("id_instalacion"):
-        ordenadas = list(grupo.sort_values("anio").itertuples())
-        for antes, despues in zip(ordenadas, ordenadas[1:]):
-            comparable = antes.superficie_comparable and despues.superficie_comparable
-            diferencia = (
-                despues.superficie_horizontal_anotada_m2
-                - antes.superficie_horizontal_anotada_m2
-                if comparable
-                else None
-            )
-            filas.append(
-                {
-                    "id_instalacion": identificador,
-                    "anio_desde": antes.anio,
-                    "anio_hasta": despues.anio,
-                    "comparable": comparable,
-                    "cambio_horizontal_m2": diferencia,
-                    "instalacion_confirmada": antes.instalacion_confirmada
-                    and despues.instalacion_confirmada,
-                }
-            )
-    return pd.DataFrame(filas)
+    datos = serie.merge(
+        instalaciones.drop(columns=["geometry", "instalacion_confirmada"]),
+        on="id_instalacion",
+    )
+    datos = datos.merge(
+        resumir_periodos(serie).drop(columns="instalacion_confirmada"),
+        on="id_instalacion",
+    )
+    datos = datos.merge(
+        superficies.drop(
+            columns=[
+                "instalacion_confirmada",
+                "superficie_horizontal_observada_m2",
+                "fuente_superficie",
+            ]
+        ),
+        on=["id_instalacion", "anio"],
+        how="left",
+    )
+    datos["n_conjuntos"] = datos.n_conjuntos.fillna(0).astype(int)
+    datos["solape_entre_anotaciones_m2"] = datos.solape_entre_anotaciones_m2.fillna(0)
+    for campo in (
+        "anotaciones_completas",
+        "recorte_en_borde",
+        "cobertura_completa_confirmada",
+    ):
+        datos[campo] = datos[campo].eq(True)
+
+    datos["superficie_horizontal_m2"] = (
+        datos.superficie_horizontal_anotada_m2.combine_first(
+            datos.superficie_horizontal_modelo_m2
+        )
+    )
+    datos["fuente_superficie"] = ""
+    datos.loc[datos.superficie_horizontal_modelo_m2.notna(), "fuente_superficie"] = (
+        "modelo_2023"
+    )
+    revisadas = datos.superficie_horizontal_anotada_m2.notna()
+    datos.loc[revisadas, "fuente_superficie"] = datos.loc[revisadas, "fuente_estado"]
+
+    datos = datos.sort_values(["id_instalacion", "anio"]).reset_index(drop=True)
+    anteriores = datos.groupby("id_instalacion")
+    datos["anio_anterior"] = anteriores.anio.shift().astype("Int64")
+    datos["cambio_comparable"] = (
+        datos.superficie_comparable
+        & anteriores.superficie_comparable.shift(fill_value=False)
+    )
+    datos["cambio_horizontal_m2"] = (
+        datos.superficie_horizontal_anotada_m2
+        - anteriores.superficie_horizontal_anotada_m2.shift()
+    ).where(datos.cambio_comparable)
+    for campo in ("instalacion_desde", "instalacion_hasta"):
+        datos[campo] = datos[campo].astype("Int64")
+
+    primeras = [
+        "id_instalacion",
+        "anio",
+        "municipio",
+        "codigo",
+        "latitud",
+        "longitud",
+        "estado",
+        "superficie_horizontal_m2",
+        "fuente_superficie",
+        "instalacion_desde",
+        "instalacion_hasta",
+        "estado_periodo",
+        "edificios",
+        "parcelas",
+        "referencias_catastrales",
+        "instalacion_confirmada",
+        "revision",
+    ]
+    return datos[primeras + [c for c in datos.columns if c not in primeras]]

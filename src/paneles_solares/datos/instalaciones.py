@@ -131,11 +131,12 @@ def agrupar_paneles(paneles: gpd.GeoDataFrame, vinculos: pd.DataFrame | None = N
     return datos, pd.DataFrame(enlaces, columns=columnas)
 
 
-def resumir_instalaciones(paneles: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
+def resumir_instalaciones(paneles, municipios) -> gpd.GeoDataFrame:
     """Describe candidatos sin convertir la primera presencia en fecha de instalación.
 
     Args:
         paneles: Miembros de los grupos automáticos o corregidos.
+        municipios: Límites municipales en el mismo sistema de coordenadas.
 
     Returns:
         gpd.GeoDataFrame: Huella observada, soportes y revisión pendiente por candidato.
@@ -162,6 +163,9 @@ def resumir_instalaciones(paneles: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                 "revision": revision,
                 "edificios": ";".join(edificios),
                 "parcelas": ";".join(parcelas),
+                "referencias_catastrales": ";".join(
+                    sorted(grupo.referencia_catastral.dropna().unique())
+                ),
                 "n_conjuntos_observados": len(grupo),
                 "primera_campania_con_paneles": int(grupo.anio.min()),
                 "ultima_campania_con_paneles": int(grupo.anio.max()),
@@ -171,7 +175,49 @@ def resumir_instalaciones(paneles: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
                 "geometry": union_all(grupo.geometry),
             }
         )
-    return gpd.GeoDataFrame(filas, geometry="geometry", crs=paneles.crs)
+    instalaciones = gpd.GeoDataFrame(filas, geometry="geometry", crs=paneles.crs)
+    puntos = instalaciones[["id_instalacion", "geometry"]].copy()
+    puntos.geometry = puntos.representative_point()
+    enlace = gpd.sjoin(
+        puntos,
+        municipios[["codigo", "municipio", "geometry"]],
+        how="left",
+        predicate="within",
+    )
+    instalaciones = instalaciones.merge(
+        enlace[["id_instalacion", "codigo", "municipio"]], on="id_instalacion"
+    )
+    instalaciones["codigo"] = instalaciones.codigo.fillna("fuera")
+    instalaciones["municipio"] = instalaciones.municipio.fillna("Fuera de límites")
+    coordenadas = puntos.to_crs(4326)
+    instalaciones["latitud"] = coordenadas.geometry.y.to_numpy()
+    instalaciones["longitud"] = coordenadas.geometry.x.to_numpy()
+    return instalaciones
+
+
+def georreferenciar_serie(paneles, serie) -> gpd.GeoDataFrame:
+    """Añade la huella de cada campaña a la tabla de instalaciones.
+
+    Args:
+        paneles: Polígonos originales agrupados, con año y fuente de geometría.
+        serie: Observaciones y superficies de instalaciones.csv.
+
+    Returns:
+        gpd.GeoDataFrame: Una fila por instalación y campaña. Las ausencias y
+            observaciones sin superficie disponible conservan geometría nula.
+            Cada huella usa la misma fuente que la superficie de esa fila.
+    """
+
+    claves = ["id_instalacion", "anio"]
+    datos = paneles.merge(serie[claves + ["fuente_superficie"]], on=claves)
+    datos = datos[datos.fuente_geometria.eq(datos.fuente_superficie)]
+    huellas = datos[claves + ["geometry"]].dissolve(by=claves, as_index=False)
+
+    return gpd.GeoDataFrame(
+        serie.merge(huellas, on=claves, how="left"),
+        geometry="geometry",
+        crs=paneles.crs,
+    )
 
 
 def resumir_superficies(paneles: gpd.GeoDataFrame) -> pd.DataFrame:

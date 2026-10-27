@@ -7,26 +7,28 @@ from pathlib import Path
 
 import geopandas as gpd
 import pandas as pd
-from shapely import make_valid, normalize, union_all
+from pyogrio import write_dataframe
+from shapely import box, make_valid, normalize, union_all
 from shapely.affinity import affine_transform
 from shapely.geometry import Polygon
 
 from paneles_solares.datos.anotaciones import leer_anotacion
 from paneles_solares.datos.instalaciones import (
     agrupar_paneles,
+    georreferenciar_serie,
     resumir_instalaciones,
     resumir_superficies,
 )
 from paneles_solares.datos.periodos import (
-    comparar_superficies,
     observar_campanias,
-    resumir_periodos,
+    unificar_serie,
 )
 from paneles_solares.datos.seguimiento import CARPETA, guardar_csv, recuperar_revision
 from paneles_solares.geografia.catastro import relacionar
 from paneles_solares.rutas import (
     EDIFICIOS_CATASTRO,
     INDICADORES_SEGUIMIENTO,
+    MUNICIPIOS_CANTABRIA,
     huella_archivo,
     reemplazar_carpeta,
     retirar_panel,
@@ -237,6 +239,40 @@ def elegir_relacion(relaciones: pd.DataFrame, campo: str) -> dict:
     return elegidas
 
 
+def leer_detecciones(ruta: Path, observaciones: pd.DataFrame):
+    """Lee las máscaras de U-Net de 2023 dentro de las ventanas del seguimiento.
+
+    Args:
+        ruta: GeoPackage producido por indicadores_unet, capa detecciones.
+        observaciones: Encuadres del lote histórico, estén revisados o pendientes.
+
+    Returns:
+        gpd.GeoDataFrame: Máscaras completas, sin recortarlas a edificios o imágenes.
+            Conservan los identificadores del detector y no cuentan como revisadas.
+    """
+
+    datos = gpd.read_file(ruta, layer="detecciones").to_crs(25830)
+    if not datos.anio.eq(2023).all():
+        raise ValueError("La referencia del modelo debe corresponder a 2023")
+
+    limites = observaciones[["xmin", "ymin", "xmax", "ymax"]].to_numpy().T
+    zona = union_all(box(*limites))
+    datos = datos[datos.geometry.intersects(zona)].copy()
+    datos = datos.rename(
+        columns={
+            "id_deteccion": "id_panel",
+            "tile_id": "ventanas",
+            "borde_tesela": "borde_imagen",
+        }
+    )
+    datos["superficie_horizontal_m2"] = datos.geometry.area
+    datos["anio_referencia"] = 2023
+    datos["revision_completa"] = False
+    datos["fuente_geometria"] = "modelo_2023"
+    datos["id_seleccion"] = ""
+    return datos
+
+
 def atribuir_paneles(paneles, edificios, parcelas):
     """Conserva todos los solapes y distingue atribución clara, ambigua y exterior.
 
@@ -288,10 +324,16 @@ def main() -> None:
         "--limite", type=int, help="Limitar ventanas para una prueba pequeña"
     )
     parser.add_argument("--ventana", action="append")
-    parser.add_argument(
+    referencia_modelo = parser.add_mutually_exclusive_group()
+    referencia_modelo.add_argument(
         "--base",
         type=Path,
         help="Recuperar referencia de 2023 y respuestas del visor anterior",
+    )
+    referencia_modelo.add_argument(
+        "--detecciones",
+        type=Path,
+        help="GeoPackage de U-Net de 2023; se incluyen las máscaras del ámbito del lote",
     )
     parser.add_argument(
         "--vinculos", type=Path, help="CSV opcional de agrupaciones revisadas"
@@ -324,6 +366,11 @@ def main() -> None:
         paneles = gpd.GeoDataFrame(
             pd.concat([paneles, activas], ignore_index=True), crs=25830
         )
+    elif args.detecciones:
+        detectadas = leer_detecciones(ruta_proyecto(args.detecciones), observaciones)
+        paneles = gpd.GeoDataFrame(
+            pd.concat([paneles, detectadas], ignore_index=True), crs=25830
+        )
     if paneles.empty:
         parser.error("No hay polígonos válidos guardados en las ventanas elegidas")
     print(
@@ -350,48 +397,39 @@ def main() -> None:
             dtype={"id_panel": str, "id_instalacion": str},
         )
     paneles, enlaces = agrupar_paneles(paneles, vinculos)
-    instalaciones = resumir_instalaciones(paneles)
+    municipios = gpd.read_file(MUNICIPIOS_CANTABRIA, layer="municipios").to_crs(
+        paneles.crs
+    )
+    municipios["codigo"] = municipios.codigo.astype(str)
+    instalaciones = resumir_instalaciones(paneles, municipios)
     serie = observar_campanias(
         paneles, observaciones, selecciones, respuestas, edificios
     )
-    periodos = resumir_periodos(serie)
+    serie = unificar_serie(serie, instalaciones, resumir_superficies(paneles))
+    periodos = serie.drop_duplicates("id_instalacion")
     salida = destino.with_name(f".{destino.name}_preparando")
     salida.mkdir(parents=True, exist_ok=True)
     (salida / "atribucion.gpkg").unlink(missing_ok=True)
-    (salida / "revision_anterior.csv").unlink(missing_ok=True)
-    guardar_csv(observaciones, salida / "observaciones.csv")
-    guardar_csv(
-        resumir_superficies(paneles), salida / "superficies_por_instalacion.csv"
-    )
-    guardar_csv(enlaces, salida / "enlaces_espaciales.csv")
-    guardar_csv(serie, salida / "serie_historica.csv")
-    guardar_csv(periodos, salida / "periodos_instalacion.csv")
-    guardar_csv(comparar_superficies(serie), salida / "cambios_superficie.csv")
-    if respuestas is not None:
-        guardar_csv(respuestas, salida / "revision_anterior.csv")
-    columnas = [
-        "id_panel",
-        "id_instalacion",
-        "anio",
-        "ventanas",
-        "origen_agrupacion",
-        "instalacion_confirmada",
-        "fuente_geometria",
-    ]
-    guardar_csv(paneles[columnas], salida / "miembros_instalaciones.csv")
-    guardar_csv(relaciones_edificios, salida / "paneles_edificios.csv")
-    guardar_csv(relaciones_parcelas, salida / "paneles_parcelas.csv")
+    guardar_csv(serie, salida / "instalaciones.csv")
+    limites = observaciones[["xmin", "ymin", "xmax", "ymax"]].to_numpy().T
+    cobertura = gpd.GeoDataFrame(observaciones, geometry=box(*limites), crs=paneles.crs)
     ruta = salida / "atribucion.gpkg"
     for nombre, capa in (
         ("paneles", paneles),
-        ("candidatos_instalacion", instalaciones),
+        ("instalaciones", georreferenciar_serie(paneles, serie)),
+        ("emplazamientos", instalaciones),
+        ("observaciones", cobertura),
         ("edificios_2023", edificios),
         ("parcelas_2023", parcelas),
+        ("paneles_edificios", relaciones_edificios),
+        ("paneles_parcelas", relaciones_parcelas),
+        ("enlaces_espaciales", enlaces),
     ):
-        capa.to_file(ruta, layer=nombre, index=False)
+        write_dataframe(capa, ruta, layer=nombre, driver="GPKG")
     if referencia is not None:
         referencia.to_file(ruta, layer="referencia_2023", index=False)
         selecciones.to_file(ruta, layer="selecciones_anteriores", index=False)
+        write_dataframe(respuestas, ruta, layer="revision_anterior", driver="GPKG")
     resumen = {
         "alcance": "revision_historica_no_censo_ni_instalaciones_confirmadas",
         "ventanas": observaciones.ventana.nunique(),
