@@ -6,8 +6,8 @@ const numero = (valor, decimales = 0) => valor == null ? 'Sin dato' :
 const texto = valor => String(valor ?? '').replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const etiquetas = {
-    comprobar_edificio: 'Comprobar edificio', resolver_atribucion: 'Resolver atribución',
-    comprobar_emplazamiento_exterior: 'Comprobar emplazamiento exterior',
+    comprobar_edificio: 'Edificio asignado', resolver_atribucion: 'Atribución dudosa',
+    comprobar_emplazamiento_exterior: 'Sin coincidencia cartográfica',
     conflicto_entre_edificios: 'Conflicto entre edificios', presente: 'Presencia confirmada',
     ausente: 'Ausencia confirmada', desconocido: 'Desconocido',
     detectado_sin_confirmar: 'Detección sin confirmar', vinculo_pendiente: 'Vínculo pendiente',
@@ -31,6 +31,8 @@ let modo = 'inventario';
 let seleccion = null;
 let mapa, municipios, puntos, mascaras, contexto, ortofoto;
 let limiteEscala = 1;
+let pagina = 0;
+const filasPorPagina = 20;
 
 function opciones(id, valores, inicial) {
     elemento(id).innerHTML = valores.map(([valor, titulo]) =>
@@ -70,15 +72,178 @@ function barras(id, filas, unidad = '') {
         `<strong>${numero(valor)}${valor == null ? '' : unidad}</strong></div>`).join('')}</div>`;
 }
 
+function cambiarVista(vista) {
+    for (const nombre of ['resumen', 'analisis']) {
+        const activa = nombre === vista;
+        elemento(`vista-${nombre}`).hidden = !activa;
+        elemento(`tab-${nombre}`).classList.toggle('activo', activa);
+        elemento(`tab-${nombre}`).setAttribute('aria-selected', String(activa));
+    }
+    if (vista === 'resumen' && mapa) requestAnimationFrame(() => mapa.invalidateSize());
+}
+
+function filasSeleccionadas() {
+    const anio = Number(elemento('anio').value);
+    return candidatosFiltrados().map(c => ({ ...c, ...observaciones.get(c.id_instalacion)[anio] }));
+}
+
+function percentil(ordenadas, p) {
+    if (!ordenadas.length) return null;
+    const posicion = (ordenadas.length - 1) * p;
+    const abajo = Math.floor(posicion), arriba = Math.ceil(posicion);
+    return ordenadas[abajo] + (ordenadas[arriba] - ordenadas[abajo]) * (posicion - abajo);
+}
+
+function nombreUso(uso) {
+    const nombres = {
+        'Residencial en vivienda no colectiva': 'Residencial no colectivo',
+        'Residencial en vivienda colectiva': 'Residencial colectivo',
+        'Industrial o manufacturero o logístico-almacenaje': 'Industrial / logística',
+        'Instalación agrícola o ganadera': 'Agrícola / ganadero',
+        'Turístico u hostelero u ocio y espectáculos': 'Turístico / hostelero / ocio',
+        'Servicios administrativos o de oficinas': 'Oficinas / administración',
+        'Sanitario y asistencial': 'Sanitario / asistencial',
+        'Sin dato cartográfico': 'Sin dato',
+    };
+    return nombres[uso] || uso;
+}
+
+function nombreFuente(fuente) {
+    if (fuente === 'labelme') return 'Manual';
+    if (fuente === 'seleccion_anterior') return 'Revisión anterior';
+    if (fuente?.startsWith('modelo')) return 'Modelo';
+    return '';
+}
+
+function dibujarUsos(filas) {
+    if (!filas.length) {
+        elemento('usos').innerHTML = '<p class="nota">Sin superficies positivas en esta selección.</p>';
+        return;
+    }
+    const grupos = new Map();
+    for (const fila of filas) {
+        const uso = fila.uso.includes(';') ? 'Varios usos' : nombreUso(fila.uso);
+        grupos.set(uso, (grupos.get(uso) || 0) + 1);
+    }
+    const conocidos = [...grupos].filter(([uso]) => uso !== 'Sin dato').sort((a, b) => b[1] - a[1]);
+    const partes = conocidos.slice(0, 5);
+    const otros = conocidos.slice(5).reduce((suma, fila) => suma + fila[1], 0);
+    if (otros) partes.push(['Otros usos', otros]);
+    if (grupos.has('Sin dato')) partes.push(['Sin dato', grupos.get('Sin dato')]);
+    const colores = ['#117c78', '#3577a5', '#ba7b31', '#805ca3', '#7f984c', '#b46e7b'];
+    let inicio = 0;
+    const segmentos = [], leyenda = [];
+    partes.forEach(([uso, n], i) => {
+        const color = uso === 'Sin dato' ? '#b6c2c0' : colores[i];
+        const porcentaje = 100 * n / filas.length;
+        segmentos.push(`${color} ${inicio}% ${inicio + porcentaje}%`);
+        inicio += porcentaje;
+        leyenda.push(`<li><i style="background:${color}"></i><span>${texto(uso)}</span>` +
+            `<strong>${numero(n)} · ${numero(porcentaje, 1)} %</strong></li>`);
+    });
+    elemento('usos').innerHTML = `<div class="reparto"><div class="anillo" aria-hidden="true" ` +
+        `style="background:conic-gradient(${segmentos.join(',')})"></div><ul>${leyenda.join('')}</ul></div>`;
+}
+
+function actualizarInstalaciones() {
+    const filas = filasSeleccionadas();
+    const positivas = filas.filter(f => f.superficie_horizontal_m2 > 0);
+    const areas = positivas.map(f => f.superficie_horizontal_m2).sort((a, b) => a - b);
+    const conUso = positivas.filter(f => f.uso !== 'Sin dato cartográfico').length;
+    const tarjetas = [
+        [numero(positivas.length), 'agrupaciones con superficie', 'En la campaña seleccionada'],
+        [numero(percentil(areas, .5), 1), 'm² · superficie mediana', 'La mitad tiene una superficie menor o igual'],
+        [numero(percentil(areas, .9), 1), 'm² · percentil 90', 'El 90 % tiene una superficie menor o igual'],
+        [positivas.length ? `${numero(100 * conUso / positivas.length, 1)} %` : 'Sin dato', 'con uso cartográfico', 'Referencia CBT23, no clasificación manual'],
+    ];
+    elemento('resumen-instalaciones').innerHTML = tarjetas.map(([valor, titulo, nota]) =>
+        `<div class="total"><strong>${valor}</strong><span>${titulo}</span><small>${nota}</small></div>`).join('');
+    const limites = [0, 5, 10, 20, 50, 100, 250, 1000, Infinity];
+    const rangos = ['< 5 m²', '5 a < 10', '10 a < 20', '20 a < 50', '50 a < 100', '100 a < 250', '250 a < 1000', '≥ 1000 m²'];
+    barras('tamanos', rangos.map((rango, i) => [rango,
+        areas.filter(a => a >= limites[i] && a < limites[i + 1]).length]));
+    const sinArea = filas.filter(f => f.estado === 'presente' && f.superficie_horizontal_m2 == null).length;
+    elemento('tamanos-nota').textContent = `${numero(positivas.length)} agrupaciones con área positiva. ` +
+        `${numero(sinArea)} presencias sin área delimitada quedan fuera. ${fuenteCampania(filtros().anio)}`;
+    dibujarUsos(positivas);
+    elemento('usos-nota').textContent = 'Reparto por número de agrupaciones con superficie, no por m². ' +
+        'Uso de la edificación según CBT23/LULC23, aplicado a todas las campañas. No identifica chalets, urbanizaciones ni titularidad pública.';
+    const soportes = [
+        ['Un edificio claro', 'un_edificio'],
+        ['Varios edificios claros', 'varios_edificios'],
+        ['Parcial o dudosa', 'atribucion_dudosa'],
+        ['Sin coincidencia', 'sin_coincidencia'],
+    ].map(([nombre, soporte]) => [nombre, positivas.filter(f => f.soporte === soporte).length]);
+    barras('soportes', soportes.filter(([, n]) => n > 0));
+    if (!positivas.length) elemento('soportes').innerHTML = '<p class="nota">Sin superficies positivas en esta selección.</p>';
+    actualizarTabla();
+}
+
+function filasTabla() {
+    const busqueda = elemento('buscar-instalacion').value.trim().toLocaleLowerCase('es');
+    return filasSeleccionadas().filter(f =>
+        `${f.id_instalacion} ${nombres[f.codigo]}`.toLocaleLowerCase('es').includes(busqueda)
+    ).sort((a, b) => (b.superficie_horizontal_m2 ?? -1) - (a.superficie_horizontal_m2 ?? -1));
+}
+
+function actualizarTabla() {
+    const filas = filasTabla();
+    pagina = Math.min(pagina, Math.max(0, Math.ceil(filas.length / filasPorPagina) - 1));
+    const inicio = pagina * filasPorPagina;
+    const visibles = filas.slice(inicio, inicio + filasPorPagina);
+    elemento('tabla-instalaciones').innerHTML = visibles.length ? visibles.map(f =>
+        `<tr><td><button class="identificador" type="button" data-instalacion="${texto(f.id_instalacion)}">${texto(f.id_instalacion)}</button>` +
+        `<small>${texto(nombres[f.codigo])}</small></td><td title="${texto(f.uso)}">${texto(nombreUso(f.uso))}</td>` +
+        `<td>${texto(etiquetas[f.estado])}<small>${texto(nombreFuente(f.fuente_superficie))}</small></td>` +
+        `<td>${numero(f.superficie_horizontal_m2, 1)}</td></tr>`).join('') :
+        '<tr><td colspan="4">Sin resultados para esta selección.</td></tr>';
+    elemento('filas-instalaciones').textContent = filas.length ?
+        `${numero(inicio + 1)}–${numero(inicio + visibles.length)} de ${numero(filas.length)} · campaña ${filtros().anio}` : '0 resultados';
+    elemento('pagina-anterior').disabled = pagina === 0;
+    elemento('pagina-siguiente').disabled = inicio + filasPorPagina >= filas.length;
+}
+
+function descargarCSV(nombre, columnas, filas) {
+    const csv = [columnas, ...filas].map(f => f.map(v => `"${String(v ?? '').replaceAll('"', '""')}"`).join(',')).join('\r\n');
+    const url = URL.createObjectURL(new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8' }));
+    const enlace = document.createElement('a');
+    enlace.href = url;
+    enlace.download = nombre;
+    document.body.appendChild(enlace);
+    enlace.click();
+    enlace.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function descargarResumen(energia = false) {
+    const columnas = energia ? [
+        'modo', 'anio', 'uso', 'revision', 'codigo', 'superficie_m2',
+        'produccion_min_mwh', 'produccion_central_mwh', 'produccion_max_mwh',
+        'potencia_central_kwp', 'superficie_antiguedad_supuesta_m2',
+    ] : Object.keys(datos.resumen[0] || {});
+    descargarCSV(energia ? 'produccion_estimada.csv' : 'resumen_municipal.csv',
+        columnas, datos.resumen.map(f => columnas.map(c => f[c])));
+}
+
+function descargarInstalaciones() {
+    const columnas = ['id_instalacion', 'anio', 'municipio', 'uso_cartografico_2023', 'edificios', 'parcelas',
+        'estado', 'superficie_horizontal_m2', 'fuente_superficie', 'instalacion_desde', 'instalacion_hasta',
+        'estado_periodo', 'instalacion_confirmada', 'revision'];
+    const filas = filasTabla().map(f => [f.id_instalacion, f.anio, nombres[f.codigo], f.uso, f.edificios,
+        f.parcelas, f.estado, f.superficie_horizontal_m2, f.fuente_superficie,
+        f.instalacion_desde, f.instalacion_hasta, f.estado_periodo, f.instalacion_confirmada, f.revision]);
+    descargarCSV(`instalaciones_${filtros().anio}.csv`, columnas, filas);
+}
+
 function actualizarGraficos() {
     const f = filtros();
     const cohorte = candidatosFiltrados('muestra');
     const campo = f.metrica === 'con_mascara' ? 'presentes' : f.metrica;
-    const titulos = { superficie_m2: 'Superficie observada', presentes: 'Candidatos con presencia', produccion_central_mwh: 'Producción estimada · MWh/año' };
+    const titulos = { superficie_m2: 'Superficie de la muestra comparable', presentes: 'Presencia en la muestra comparable', produccion_central_mwh: 'Producción estimada · MWh/año' };
     elemento('evolucion-titulo').textContent = titulos[campo];
     barras('evolucion', datos.comparables.map(anio => [anio, resumen(anio, f.municipio, 'muestra')?.[campo]]), campo === 'superficie_m2' ? ' m²' : '');
     elemento('cohorte').textContent = datos.comparables.length ?
-        `${numero(cohorte.length)} candidatos con área comparable en ${datos.comparables.join(', ')}.` :
+        `${numero(cohorte.length)} agrupaciones con área comparable en ${datos.comparables.join(', ')}.` :
         'Se necesitan al menos dos campañas con superficies revisadas para comparar.';
 
     const elegidos = candidatosFiltrados();
@@ -110,7 +275,7 @@ function actualizarGraficos() {
         diferencias.filter(d => d >= limites[i] && d < limites[i + 1]).length]));
     const aparecen = conPaneles.filter(([a, b]) => a === 0 && b > 0).length;
     const desaparecen = conPaneles.filter(([a, b]) => a > 0 && b === 0).length;
-    elemento('cambios-nota').textContent = `${numero(conPaneles.length)} candidatos con paneles en alguna de las dos fechas. ` +
+    elemento('cambios-nota').textContent = `${numero(conPaneles.length)} agrupaciones con paneles en alguna de las dos fechas. ` +
         `${numero(parejas.length - conPaneles.length)} ausentes en ambas fechas, separados del histograma. ` +
         `Aparecen: ${numero(aparecen)}; desaparecen: ${numero(desaparecen)}. ` +
         'Área horizontal anotada: un cambio pequeño puede proceder del dibujo o de la imagen; no prueba una ampliación.';
@@ -121,18 +286,19 @@ function actualizarTotales() {
     const r = resumen(f.anio, f.municipio);
     const tarjetas = [
         [numero(r?.superficie_m2, 1), 'm² horizontales observados', fuenteCampania(f.anio)],
-        [numero(r?.con_mascara ?? 0), 'candidatos con máscara', 'Agrupaciones provisionales, no instalaciones confirmadas'],
-        [numero(r?.ausentes ?? 0), 'ausencias confirmadas', 'Solo los candidatos y la campaña de la selección'],
+        [numero(r?.con_mascara ?? 0), 'agrupaciones con paneles', 'Con superficie delimitada en esta campaña'],
+        [numero(r?.ausentes ?? 0), 'ausencias confirmadas', 'En la campaña seleccionada'],
         [numero(r?.sin_estado_resuelto ?? 0), 'estados pendientes', 'Incluye detecciones sin confirmar y vínculos pendientes'],
     ];
     elemento('totales').innerHTML = tarjetas.map(([valor, titulo, nota]) =>
         `<div class="total"><strong>${valor}</strong><span>${titulo}</span><small>${nota}</small></div>`).join('');
     elemento('alcance').textContent = modo === 'muestra' ?
-        `Muestra común de ${datos.comparables.join(', ')}: mismos candidatos y superficies revisadas en todas las fechas.` :
-        'Inventario seleccionado, no censo regional. La cobertura revisada cambia entre campañas; sus totales no miden por sí solos el crecimiento.';
+        `Muestra comparable de ${datos.comparables.join(', ')}: mismas agrupaciones con áreas revisadas en todas las fechas.` :
+        `Campaña ${f.anio}. ${fuenteCampania(f.anio)} Inventario seleccionado; la cobertura cambia entre campañas.`;
 }
 
 function actualizarEnergia() {
+    if (!datos.energia) return;
     const f = filtros();
     const r = resumen(f.anio, f.municipio);
     const tarjetas = [
@@ -160,6 +326,7 @@ function actualizarEnergia() {
 
 function mostrarSupuestosEnergia() {
     const h = datos.energia;
+    document.querySelector('.bloque-energia').hidden = !h;
     if (!h) return;
     const nombres = { min: 'Conservador', central: 'Central', max: 'Favorable' };
     const filas = Object.entries(h.escenarios).map(([nombre, e]) => `<tr><td>${nombres[nombre]}</td>` +
@@ -212,7 +379,7 @@ function verFicha() {
         c.estado_periodo === 'sin_ausencia_previa' ? `Presencia en ${c.instalacion_hasta}; inicio desconocido` : etiquetas[c.estado_periodo];
     const idsEdificio = (c.edificios || '').split(';').filter(Boolean);
     const idsParcela = (c.parcelas || '').split(';').filter(Boolean);
-    const tipo = c.instalacion_confirmada ? 'Instalación confirmada' : 'Candidato';
+    const tipo = c.instalacion_confirmada ? 'Instalación confirmada' : 'Agrupación propuesta';
     const referencias = datos.contexto.parcelas_2023.features.filter(f => idsParcela.includes(f.properties.id_parcela))
         .map(f => f.properties.referencia_catastral).filter(Boolean);
     elemento('detalle').innerHTML = `<p class="identificador">${texto(c.id_instalacion)}</p>` +
@@ -283,7 +450,7 @@ function elegirCandidato(id) {
     seleccion = id;
     verFicha();
     const c = candidatosPorId.get(id);
-    mapa.setView([c.lat, c.lon], Math.max(19, mapa.getZoom()));
+    if (mapa) mapa.setView([c.lat, c.lon], Math.max(19, mapa.getZoom()));
     dibujarDetalle();
 }
 
@@ -292,12 +459,14 @@ function actualizar() {
     actualizarTotales();
     actualizarEnergia();
     actualizarGraficos();
+    pagina = 0;
+    actualizarInstalaciones();
     verFicha();
     const f = filtros();
     const maximo = maximoEscala();
     limiteEscala = maximo;
     elemento('leyenda-titulo').textContent = {
-        superficie_m2: 'Superficie horizontal observada · m²', con_mascara: 'Candidatos con máscara',
+        superficie_m2: 'Superficie horizontal observada · m²', con_mascara: 'Agrupaciones con paneles',
         produccion_central_mwh: 'Producción estimada del inventario · MWh/año',
     }[f.metrica];
     elemento('escala').innerHTML = [0, .25, 1].map(t => `<span>${numero(maximo * t)}</span>`).join('');
@@ -308,14 +477,11 @@ function actualizar() {
 }
 
 function crearMapa() {
-    if (!window.L) {
-        elemento('mapa').innerHTML = '<p class="aviso">No se pudo cargar el mapa. Comprueba la conexión. Los datos y gráficos siguen disponibles.</p>';
-        return;
-    }
     mapa = L.map('mapa', { preferCanvas: true, maxZoom: 22 }).setView([43.20, -4.04], 9);
+    const sinFondo = L.layerGroup().addTo(mapa);
     const calles = L.tileLayer('https://tms-ign-base.idee.es/1.0.0/IGNBaseTodo/{z}/{x}/{-y}.jpeg', {
         maxNativeZoom: 19, maxZoom: 22,
-        attribution: '<a href="https://www.ign.es">© Instituto Geográfico Nacional</a>' }).addTo(mapa);
+        attribution: '<a href="https://www.ign.es">© Instituto Geográfico Nacional</a>' });
     ortofoto = L.tileLayer('', { maxNativeZoom: 19, maxZoom: 22,
         attribution: 'Ortofoto de la campaña · Gobierno de Cantabria / IGN-CNIG' });
     municipios = L.geoJSON(datos.municipios, {
@@ -324,7 +490,7 @@ function crearMapa() {
             capa.bindTooltip(() => {
                 const r = resumen(filtros().anio, feature.properties.codigo);
                 return `<strong>${texto(feature.properties.municipio)}</strong><br>` +
-                    `${numero(r?.superficie_m2, 1)} m² observados<br>${numero(r?.con_mascara ?? 0)} candidatos con máscara`;
+                    `${numero(r?.superficie_m2, 1)} m² observados<br>${numero(r?.con_mascara ?? 0)} agrupaciones con paneles`;
             });
             capa.on('click', () => {
                 elemento('municipio').value = feature.properties.codigo;
@@ -335,7 +501,8 @@ function crearMapa() {
     puntos = L.layerGroup().addTo(mapa);
     contexto = L.layerGroup().addTo(mapa);
     mascaras = L.layerGroup().addTo(mapa);
-    L.control.layers({ 'Mapa de calles · IGN': calles, 'Ortofoto de la campaña': ortofoto },
+    L.control.layers({ 'Sin fondo · sin conexión': sinFondo,
+        'Mapa de calles · Internet': calles, 'Ortofoto de la campaña · Internet': ortofoto },
         { 'Máscaras': mascaras, 'Edificio y parcela · 2023': contexto }, { collapsed: false }).addTo(mapa);
     mapa.on('moveend', () => { municipios.setStyle(estiloMunicipio); dibujarDetalle(); });
 }
@@ -378,6 +545,21 @@ elemento('municipio').addEventListener('change', () => {
     }
 });
 elemento('cerrar').addEventListener('click', () => { seleccion = null; verFicha(); dibujarDetalle(); });
+for (const vista of ['resumen', 'analisis']) {
+    elemento(`tab-${vista}`).addEventListener('click', () => cambiarVista(vista));
+}
+elemento('buscar-instalacion').addEventListener('input', () => { pagina = 0; actualizarTabla(); });
+elemento('pagina-anterior').addEventListener('click', () => { pagina--; actualizarTabla(); });
+elemento('pagina-siguiente').addEventListener('click', () => { pagina++; actualizarTabla(); });
+elemento('descargar-instalaciones').addEventListener('click', descargarInstalaciones);
+elemento('descargar-resumen').addEventListener('click', () => descargarResumen());
+elemento('descargar-energia').addEventListener('click', () => descargarResumen(true));
+elemento('tabla-instalaciones').addEventListener('click', evento => {
+    const boton = evento.target.closest('[data-instalacion]');
+    if (!boton) return;
+    cambiarVista('resumen');
+    elegirCandidato(boton.dataset.instalacion);
+});
 crearMapa();
 mostrarSupuestosEnergia();
 actualizar();

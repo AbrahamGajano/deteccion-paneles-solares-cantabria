@@ -1,6 +1,7 @@
 """Visor único del inventario histórico y de su muestra temporal comparable."""
 
 import argparse
+import base64
 import json
 from pathlib import Path
 
@@ -43,17 +44,28 @@ def leer_datos(carpeta: Path, limite: int | None = None):
     """Lee resultados terminados; el límite permite probar sin alterarlos."""
 
     archivo = carpeta / "atribucion.gpkg"
-    candidatos = gpd.read_file(archivo, layer="candidatos_instalacion")
+    candidatos = gpd.read_file(archivo, layer="emplazamientos")
     if limite is not None:
         candidatos = candidatos.head(limite).copy()
     paneles = gpd.read_file(archivo, layer="paneles")
     paneles = paneles[paneles.id_instalacion.isin(candidatos.id_instalacion)].copy()
-    serie = pd.read_csv(carpeta / "serie_historica.csv")
+    serie = pd.read_csv(carpeta / "instalaciones.csv", dtype={"codigo": str})
     serie = serie[serie.id_instalacion.isin(candidatos.id_instalacion)].copy()
-    periodos = pd.read_csv(carpeta / "periodos_instalacion.csv")
-    candidatos = candidatos.merge(
-        periodos, on="id_instalacion", suffixes=("", "_periodo")
+    paneles = paneles.merge(
+        serie[["id_instalacion", "anio", "fuente_superficie"]],
+        on=["id_instalacion", "anio"],
     )
+    paneles = paneles[paneles.fuente_geometria.eq(paneles.fuente_superficie)].copy()
+    columnas = [
+        "id_instalacion",
+        "instalacion_desde",
+        "instalacion_hasta",
+        "estado_periodo",
+        "fuente_primera_presencia",
+        "ausencia_posterior",
+    ]
+    periodos = serie[columnas].drop_duplicates("id_instalacion")
+    candidatos = candidatos.merge(periodos, on="id_instalacion")
 
     municipios = gpd.read_file(MUNICIPIOS_CANTABRIA, layer="municipios").to_crs(
         paneles.crs
@@ -62,12 +74,6 @@ def leer_datos(carpeta: Path, limite: int | None = None):
     municipios.loc[municipios.codigo == "34063953072", "tipo_unidad"] = (
         "territorio_comunal"
     )
-    puntos = candidatos[["id_instalacion", "geometry"]].copy()
-    puntos.geometry = puntos.representative_point()
-    enlace = gpd.sjoin(puntos, municipios[["codigo", "geometry"]], predicate="within")
-    candidatos["codigo"] = candidatos.id_instalacion.map(
-        enlace.set_index("id_instalacion").codigo
-    ).fillna("fuera")
     candidatos["uso"] = candidatos.usos_cartograficos.fillna("").replace(
         "", "Sin dato cartográfico"
     )
@@ -132,7 +138,9 @@ def resumir_mapa(candidatos, paneles, serie, municipios, recortes=None, energia=
     """
 
     atributos = candidatos[["id_instalacion", "codigo", "uso", "revision", "muestra"]]
-    estados = serie.merge(atributos, on="id_instalacion")
+    estados = serie.merge(
+        atributos[["id_instalacion", "uso", "muestra"]], on="id_instalacion"
+    )
     geometrias = paneles[["id_instalacion", "anio", "geometry"]].merge(
         atributos.drop(columns="codigo"), on="id_instalacion"
     )
@@ -225,13 +233,37 @@ def geojson(tabla, tolerancia=0.02):
     return json.loads(dibujo.to_crs(4326).to_json(drop_id=True))
 
 
+def resumir_atribucion(paneles):
+    """Describe la coincidencia de todos los paneles de cada agrupación y campaña."""
+
+    filas = []
+    for (identificador, anio), grupo in paneles.groupby(["id_instalacion", "anio"]):
+        if grupo.id_edificio.notna().all():
+            soporte = (
+                "un_edificio"
+                if grupo.id_edificio.nunique() == 1
+                else "varios_edificios"
+            )
+        elif grupo.atribucion.eq("exterior_edificaciones").all():
+            soporte = "sin_coincidencia"
+        else:
+            soporte = "atribucion_dudosa"
+        filas.append(
+            {"id_instalacion": identificador, "anio": anio, "soporte": soporte}
+        )
+
+    return pd.DataFrame(filas, columns=["id_instalacion", "anio", "soporte"])
+
+
 def preparar_contenido(candidatos, paneles, serie, municipios, contexto, resumen):
     """Empaqueta las fichas y las capas necesarias para explorar el mapa."""
 
-    puntos = candidatos.to_crs(4326).representative_point()
     fichas = candidatos.drop(columns="geometry").copy()
-    fichas["lat"] = puntos.y.to_numpy()
-    fichas["lon"] = puntos.x.to_numpy()
+    fichas["lat"] = fichas.latitud
+    fichas["lon"] = fichas.longitud
+    serie = serie.merge(
+        resumir_atribucion(paneles), on=["id_instalacion", "anio"], how="left"
+    )
     columnas = [
         "id_instalacion",
         "codigo",
@@ -255,6 +287,9 @@ def preparar_contenido(candidatos, paneles, serie, municipios, contexto, resumen
                 "id_instalacion",
                 "anio",
                 "estado",
+                "superficie_horizontal_m2",
+                "fuente_superficie",
+                "soporte",
                 "superficie_horizontal_anotada_m2",
                 "superficie_horizontal_modelo_m2",
                 "conflicto",
@@ -321,10 +356,22 @@ def crear_resumen_png(resumen, destino: Path):
 
 
 def crear_panel(contenido: dict, destino: Path):
-    """Compone el HTML con las mismas plantillas para la prueba y el lote completo."""
+    """Incluye datos, estilos y Leaflet en un HTML que se puede enviar por separado."""
 
+    recursos = PLANTILLAS / "leaflet"
+    estilos_mapa = (recursos / "leaflet.css").read_text(encoding="utf-8")
+    for imagen in recursos.glob("*.png"):
+        datos_imagen = base64.b64encode(imagen.read_bytes()).decode("ascii")
+        estilos_mapa = estilos_mapa.replace(
+            f"images/{imagen.name}", f"data:image/png;base64,{datos_imagen}"
+        )
+    codigo_mapa = (recursos / "leaflet.js").read_text(encoding="utf-8")
+    codigo_mapa = codigo_mapa.replace("//# sourceMappingURL=leaflet.js.map", "")
+    licencia = (recursos / "LICENSE.txt").read_text(encoding="utf-8")
     html = (PLANTILLAS / "panel_indicadores.html").read_text(encoding="utf-8")
     for etiqueta, texto in (
+        ("MAPA_ESTILOS", estilos_mapa),
+        ("MAPA_CODIGO", f"/*\n{licencia}\n*/\n{codigo_mapa}"),
         ("ESTILOS", (PLANTILLAS / "panel_indicadores.css").read_text(encoding="utf-8")),
         (
             "DATOS",
@@ -383,16 +430,11 @@ def main():
         encoding="utf-8",
     )
     crear_resumen_png(resumen, args.salida / "resumen_indicadores.png")
-    archivos = [
-        args.carpeta / n
-        for n in ("atribucion.gpkg", "serie_historica.csv", "periodos_instalacion.csv")
-    ]
+    archivos = [args.carpeta / n for n in ("atribucion.gpkg", "instalaciones.csv")]
     archivos.append(MUNICIPIOS_CANTABRIA)
     archivos.append(args.salida / "pvgis_anual.json")
     procedencia = {
-        "fuentes": {
-            ruta_registrada(p): huella_archivo(p) for p in archivos
-        },
+        "fuentes": {ruta_registrada(p): huella_archivo(p) for p in archivos},
         "limite_prueba": args.limite,
         "candidatos": len(candidatos),
         "muestra_comparable": int(candidatos.muestra.sum()),

@@ -129,6 +129,21 @@ las otras campañas pueden estar completamente vacías.
 El [ejemplo pequeño y la guía](docs/guia.md#etiquetado-histórico) explican los
 encuadres, la reanudación, la recuperación antigua y la incorporación de negativos.
 
+Si la referencia de 2023 procede de U-Net, se usa su salida vectorial en el
+mismo análisis, sin base de datos del visor:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos --manifest data/datasets/seguimiento/labelme/manifest.csv --detecciones runs/indicadores/unet_actual/detecciones.gpkg
+```
+
+Se leen los polígonos de la capa `detecciones` que intersectan las ventanas
+del manifiesto y se conservan completos. Las campañas anteriores proceden de
+LabelMe; los dibujos de 2023 revisados, si los hay, tienen prioridad sobre
+la superficie estimada. Las campañas sin evidencia permanecen desconocidas.
+`--limite 3 --salida runs/prueba_historico/resultados` permite probar el flujo
+sin sustituir el resultado habitual. El GeoPackage se genera siempre con el
+CSV: no requiere conversiones ni pasos manuales adicionales.
+
 ### Lote histórico ya revisado de este proyecto
 
 Las 1.486 imágenes actuales están cerradas. Para regenerar sus resultados,
@@ -143,15 +158,62 @@ Sus respuestas se leen sin modificar la base. Las agrupaciones, superficies
 y periodos se guardan en `runs/indicadores/seguimiento_historico/`.
 Para probar un subconjunto, usar `--limite 20 --salida runs/prueba_historico/resultados`.
 
+La salida tiene tres archivos:
+
+- `instalaciones.csv`: una fila por agrupación y campaña, con municipio,
+  latitud, longitud, edificios, parcelas, estado, superficie y periodo de aparición.
+  Incluye el cambio desde la campaña anterior cuando las áreas son comparables.
+- `atribucion.gpkg`: polígonos de paneles, agrupaciones, encuadres revisados,
+  edificios y parcelas. Las tablas de relaciones y respuestas antiguas se
+  conservan dentro del mismo GeoPackage.
+- `resumen.json`: recuentos y alcance del lote.
+
+Las superficies son horizontales. Se distingue el área anotada de la estimada
+por el modelo; una ausencia comprobada vale cero y un dato desconocido queda
+vacío. Los identificadores agrupan provisionalmente por edificio y solape:
+compartir parcela no confirma una instalación.
+
+La capa `instalaciones` del GeoPackage contiene las mismas filas y campos del
+CSV, con la geometría de los paneles de cada campaña. Se puede filtrar por
+`anio`. En el lote actual, 2014, 2017 y 2020 proceden de los dibujos manuales
+y 2023 procede del modelo. Las ausencias y observaciones sin área disponible
+no tienen geometría. `emplazamientos` reúne la huella de todas las campañas
+para localizar cada agrupación en el visor.
+
+Para crear máscaras se utiliza `instalaciones` o la capa detallada `paneles`,
+filtrada por `anio`, junto a la cobertura revisada de `observaciones`.
+La [guía de máscaras](docs/guia.md#datos-para-máscaras-y-geotiff)
+describe los campos y la diferencia entre ausencia y zona no estudiada.
+Guardar los rásteres en `runs/mascaras_historicas/`, fuera de la carpeta de
+indicadores que se sustituye al regenerar. El flujo actual no crea esos GeoTIFF.
+
 ## 5. Generar el panel
 
 ```powershell
 .\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores
 ```
 
-Abrir `runs/visualizacion/panel_indicadores.html` en el navegador. Los filtros
-seleccionan campaña, municipio, uso cartográfico y estado de la atribución.
+Abrir `runs/visualizacion/panel_indicadores.html` en el navegador. Se puede
+enviar ese único archivo: incluye los datos, gráficos, Leaflet y sus recursos.
+No necesita Python, el repositorio ni los CSV del ordenador que lo generó.
+Los botones de descarga crean los CSV a partir de los datos incluidos.
+Los filtros seleccionan campaña, municipio, uso cartográfico y estado de la atribución.
 El mapa permite ver máscaras, edificios y parcelas sobre la ortofoto de cada año.
+
+El mismo HTML tiene dos pestañas:
+
+- **Mapa y resumen:** superficie, energía y consulta de cada emplazamiento.
+- **Instalaciones y evolución:** distribución de tamaños, mediana y percentil 90,
+  reparto de usos cartográficos, relación con edificios, periodos y cambios
+  de superficie. Incluye una tabla buscable y la descarga de la selección.
+
+Los gráficos por instalación usan agrupaciones con área positiva en la campaña
+elegida; los ceros y valores desconocidos se conservan en la tabla. Los usos
+proceden de las edificaciones CBT23/LULC23, no de una clasificación manual ni
+de un supuesto tipo de parcela. El gráfico cuenta cada agrupación una vez y
+mantiene «Sin dato». Los filtros se comparten entre ambas pestañas. La atribución
+a edificios distingue, por campaña, coincidencia clara, parcial o dudosa y
+ausencia de coincidencia con las huellas. Esta última no confirma que sea suelo.
 
 El panel obtiene los años de las observaciones. La comparación usa una muestra
 común con áreas revisadas en todas las campañas comparables. El inventario
@@ -164,11 +226,15 @@ Cantabria. Las áreas se agregan sin duplicar solapes.
 
 En la misma carpeta se guardan los CSV municipales, producción estimada,
 factores por emplazamiento, hipótesis y procedencia. Las consultas PVGIS se
-conservan en `pvgis_anual.json`. El HTML incluye los datos; Leaflet, el mapa base
-y las ortofotos necesitan conexión. `--carpeta` y `--salida` permiten usar otra
-salida histórica, por ejemplo la prueba pequeña descrita en la guía.
+conservan en `pvgis_anual.json`. El mapa abre sin fondo y funciona sin conexión,
+con municipios y paneles incluidos. Las ortofotos y el mapa de calles se activan
+desde el selector y requieren Internet. Los recursos de Leaflet 1.9.4 y su licencia
+se conservan en `src/paneles_solares/visualizacion/plantillas/leaflet/`.
+Se incluyen en el HTML al generarlo, sin descargas adicionales. `--carpeta`
+y `--salida` permiten usar otra salida histórica, por ejemplo la prueba pequeña
+descrita en la guía.
 
-## Documentación y pruebas
+## Documentación
 
 - [Guía de etiquetado, validación y seguimiento](docs/guia.md).
 - [Memoria técnica](docs/memoria_tecnica.tex).
@@ -182,10 +248,6 @@ Los mapas estáticos incluidos en la memoria se regeneran después del panel:
 
 La memoria se conserva en LaTeX; para obtener el PDF se necesita una instalación
 de LaTeX y compilar desde `docs/` para resolver las rutas de las figuras.
-
-```powershell
-.\.venv\Scripts\python.exe -m unittest discover -s tests -v
-```
 
 Datos del Gobierno de Cantabria, Dirección General del Catastro e IGN/CNIG.
 La licencia CBT23 se conserva en `data/raw/catastro/2023/licencia.txt`.

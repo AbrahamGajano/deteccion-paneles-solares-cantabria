@@ -4,39 +4,45 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Fotovoltaica · Cantabria</title>
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <style>{{MAPA_ESTILOS}}</style>
   <style>{{ESTILOS}}</style>
 </head>
 <body>
   <header>
     <div>
       <h1>Paneles solares en Cantabria</h1>
-      <p>Superficie, emplazamientos y producción estimada por campaña.</p>
+      <p>Superficie y producción estimada a partir de ortofotos.</p>
     </div>
-    <a class="exportar" href="resumen_municipal.csv" download>Descargar datos ↗</a>
+    <button id="descargar-resumen" class="exportar" type="button">Resumen municipal</button>
   </header>
 
   <main>
-    <nav aria-label="Vista del inventario">
-      <button id="inventario" class="activo" type="button">Inventario por campaña</button>
-      <button id="muestra" type="button">Evolución de la muestra común</button>
+    <nav class="pestanas" aria-label="Secciones" role="tablist">
+      <button id="tab-resumen" class="activo" type="button" role="tab" aria-selected="true" aria-controls="vista-resumen">Mapa y resumen</button>
+      <button id="tab-analisis" type="button" role="tab" aria-selected="false" aria-controls="vista-analisis">Instalaciones y evolución</button>
     </nav>
+    <div class="modo-datos" aria-label="Datos utilizados">
+      <span>Datos:</span>
+      <button id="inventario" class="activo" type="button">Inventario por campaña</button>
+      <button id="muestra" type="button">Muestra comparable</button>
+    </div>
     <div class="filtros">
       <label>Campaña<select id="anio"></select></label>
       <label>Municipio / territorio<select id="municipio"></select></label>
       <label>Uso cartográfico · 2023<select id="uso"></select></label>
-      <label>Atribución pendiente<select id="revision"></select></label>
+      <label>Agrupación<select id="revision"></select></label>
       <label>Color del mapa<select id="metrica"><option value="superficie_m2">Superficie horizontal · m²</option>
-        <option value="con_mascara">Candidatos con máscara</option>
+        <option value="con_mascara">Agrupaciones con paneles</option>
         <option value="produccion_central_mwh">Producción estimada · MWh/año</option></select></label>
     </div>
     <p id="alcance" class="aviso" role="status"></p>
+    <div id="vista-resumen" role="tabpanel" aria-labelledby="tab-resumen">
     <section id="totales" class="totales" aria-label="Resumen de la selección"></section>
 
     <section class="tarjeta bloque-energia" aria-label="Producción eléctrica estimada">
       <div class="titulo-ficha"><div>
         <h2>Producción eléctrica estimada</h2></div>
-        <a class="exportar" href="produccion_estimada.csv" download>Descargar energía ↗</a></div>
+        <button id="descargar-energia" class="exportar" type="button">Descargar energía</button></div>
       <p id="energia-alcance" class="nota"></p>
       <div id="energia-totales" class="totales"></div>
       <p id="energia-edades" class="nota"></p>
@@ -49,10 +55,11 @@
     <div class="espacio-mapa">
       <section class="tarjeta cartografia" aria-label="Mapa">
         <div id="mapa"></div>
+        <p class="nota nota-mapa">Municipios y paneles incluidos en el archivo. Puedes activar las ortofotos o el mapa de calles con conexión a Internet.</p>
         <div class="leyenda">
           <strong id="leyenda-titulo"></strong><div class="gradiente"></div>
           <div id="escala" class="escala"></div>
-          <p><i class="sin-datos"></i> Sin superficie / estado suficiente <i class="cero"></i> Cero observado en la muestra</p>
+          <p><i class="sin-datos"></i> Sin superficie disponible <i class="cero"></i> Ausencia observada</p>
           <p>Escala fija entre campañas y filtros; raíz cuadrada para distinguir los valores bajos.</p>
         </div>
       </section>
@@ -62,30 +69,65 @@
         <p class="nota">Acerca el mapa para ver puntos y máscaras. Azul: anotación manual. Ámbar: modelo de 2023. Edificio: contorno violeta; parcela: discontinuo.</p>
       </aside>
     </div>
+    </div>
 
+    <div id="vista-analisis" role="tabpanel" aria-labelledby="tab-analisis" hidden>
+      <p class="nota">Se agrupan los conjuntos atribuidos al mismo edificio y las coincidencias entre campañas. Compartir parcela no los une. Una agrupación puede requerir separar instalaciones independientes o reunir varias cubiertas; los conjuntos sin edificio se conservan. Las superficies son horizontales.</p>
+      <section id="resumen-instalaciones" class="totales" aria-label="Distribución de las instalaciones"></section>
+      <section class="graficos analisis-graficos">
+        <article class="tarjeta">
+          <h2>Superficie por instalación</h2>
+          <div id="tamanos"></div>
+          <p id="tamanos-nota" class="nota"></p>
+        </article>
+        <article class="tarjeta">
+          <h2>Uso cartográfico de la edificación</h2>
+          <div id="usos"></div>
+          <p id="usos-nota" class="nota"></p>
+        </article>
+        <article class="tarjeta">
+          <h2>Atribución a edificios</h2>
+          <div id="soportes"></div>
+          <p class="nota">Se comprueba el conjunto de paneles de esta campaña. Una coincidencia parcial o dudosa necesita revisión. Sin coincidencia cartográfica puede ser terreno o una cubierta ausente de la cartografía.</p>
+        </article>
+      </section>
     <section class="graficos">
-      <article class="tarjeta"><p class="eyebrow">Misma muestra en todas las fechas</p>
+      <article class="tarjeta">
         <h2 id="evolucion-titulo">Superficie observada</h2><div id="evolucion"></div><p id="cohorte" class="nota"></p></article>
-      <article class="tarjeta"><p class="eyebrow">Primera presencia con ausencia previa</p>
+      <article class="tarjeta">
         <h2>Intervalo de aparición</h2><div id="periodos"></div><p id="periodos-nota" class="nota"></p></article>
-      <article class="tarjeta"><p class="eyebrow">Paneles en alguna de las dos fechas</p>
+      <article class="tarjeta">
         <div class="titulo-ficha"><h2>Cambio de superficie</h2><select id="intervalo" aria-label="Intervalo del cambio">
           </select></div>
         <div id="cambios"></div><p id="cambios-nota" class="nota"></p></article>
     </section>
+      <section class="tarjeta listado">
+        <div class="titulo-ficha">
+          <h2>Datos por instalación y campaña</h2>
+          <button id="descargar-instalaciones" type="button">Descargar selección</button>
+        </div>
+        <label>Buscar por identificador o municipio<input id="buscar-instalacion" type="search" placeholder="Identificador o municipio"></label>
+        <div class="tabla-datos">
+          <table><thead><tr><th>Identificador / municipio</th><th>Uso cartográfico</th><th>Estado / fuente</th><th>Superficie · m²</th></tr></thead><tbody id="tabla-instalaciones"></tbody></table>
+        </div>
+        <div class="paginacion"><span id="filas-instalaciones"></span><div>
+          <button id="pagina-anterior" type="button">Anterior</button>
+          <button id="pagina-siguiente" type="button">Siguiente</button>
+        </div></div>
+      </section>
+    </div>
 
     <details class="metodologia tarjeta">
-      <summary>Qué representan estos datos</summary>
-      <p>Las agrupaciones son candidatos a instalación: no se ha confirmado que sean unidades físicas o de explotación. CBT23 y el parcelario de 2023 contextualizan todas las campañas; no reconstruyen los edificios antiguos. «Uso cartográfico» no acredita uso registral, tipo de vivienda ni titularidad pública.</p>
-      <p>Las superficies son proyecciones horizontales de las máscaras, sin corrección de pendiente. En los totales se disuelven los solapes; el área municipal se recorta al límite y los recuentos se adscriben por punto interior del candidato. Una misma máscara puede cruzar un límite municipal.</p>
-      <p>Las campañas comparables se obtienen de las superficies revisadas. La muestra común conserva los candidatos con datos válidos en todas esas fechas, incluidos los ceros por ausencia comprobada. El histograma separa los ausentes en ambas fechas. Las áreas estimadas por el modelo se conservan en el inventario y no se mezclan con diferencias medidas. La selección inicial estaba sesgada hacia cubiertas.</p>
-      <p>Los intervalos son (última ausencia, primera presencia]; no son años exactos de instalación ni fechan ampliaciones. Las respuestas antiguas «presente» no validan todos los conjuntos del recorte. Una falta de datos permanece desconocida.</p>
-      <p>Ortofotos de cada campaña: Gobierno de Cantabria / IGN-CNIG. Contexto: CBT23/LULC23 y parcelario oficial de 2023. Límites y mapa de calles: IGN. Las teselas y el mapa base requieren conexión; los datos y gráficos están incluidos en este HTML.</p>
+      <summary>Datos y método</summary>
+      <p>Inventario seleccionado para seguimiento, inicialmente centrado en cubiertas. Se conserva la procedencia de cada superficie: dibujo manual o estimación del modelo. Un dato desconocido queda vacío. CBT23 y las parcelas son referencias de 2023, también para las campañas antiguas.</p>
+      <p>Los totales de superficie disuelven los solapes y se recortan a los límites municipales. Los recuentos se asignan por un punto interior de cada agrupación. Las distribuciones muestran el área de cada agrupación, no su reparto entre municipios.</p>
+      <p>La muestra comparable mantiene las mismas agrupaciones con áreas revisadas en todas las campañas disponibles para esa comparación. Los intervalos van desde la última ausencia hasta la primera presencia; no indican un año exacto ni fechan ampliaciones. Las diferencias de área excluyen estimaciones del modelo y observaciones no comparables.</p>
+      <p>Este archivo incluye datos, mapa de municipios, paneles, gráficos y descargas. Se puede abrir sin el repositorio y sin conexión. Las ortofotos y el mapa de calles son fondos opcionales que requieren Internet. Fuentes: Gobierno de Cantabria, CBT23/LULC23, Catastro e IGN/CNIG.</p>
     </details>
   </main>
   <footer>Datos: Gobierno de Cantabria · IGN/CNIG · Dirección General del Catastro</footer>
   <script id="datos" type="application/json">{{DATOS}}</script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script>{{MAPA_CODIGO}}</script>
   <script>{{CODIGO}}</script>
 </body>
 </html>

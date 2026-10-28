@@ -346,12 +346,29 @@ ninguna base de datos anterior:
 ```
 
 Se georreferencian los polígonos con el encuadre y tamaño reales de cada imagen.
+La misma exportación acepta la referencia de 2023 producida por U-Net:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.modelos.indicadores_historicos --manifest data/datasets/seguimiento/labelme/manifest.csv --detecciones runs/indicadores/unet_actual/detecciones.gpkg
+```
+
+`--detecciones` lee la capa `detecciones` de la inferencia de 2023 y utiliza
+sus identificadores, campaña, geometrías y marcas de borde. Solo incluye
+polígonos que intersectan los encuadres del manifiesto; no los recorta a esos
+encuadres ni a Catastro. La procedencia queda como `modelo_2023`, sin dar
+por confirmada su presencia. Las anotaciones revisadas tienen prioridad en
+el estado y el área de cada agrupación. No se cargan predicciones de los
+años antiguos. `--base` y `--detecciones` son alternativas: la primera
+recupera el trabajo del visor retirado; la segunda permite recrear el flujo
+con una inferencia nueva. Ninguna es necesaria si todas las campañas se
+han delimitado en LabelMe.
+
 `--limite 20` permite reducir la prueba a veinte ventanas. Para repetir casos
 concretos se puede añadir `--ventana identificador` varias veces. Un JSON
 guardado puede estar incompleto hasta cerrar la revisión.
 Las imágenes sin anotación, dudosas o con geometría inválida
 no se convierten en ausencias ni en superficie cero. Los cruces de contorno
-se reparan en las geometrías derivadas y se cuentan en `observaciones.csv`,
+se reparan en las geometrías derivadas y se cuentan en la capa `observaciones`,
 sin cambiar los dibujos originales. Las geometrías sin superficie válida
 quedan pendientes. Se señala también si un polígono toca el borde de la imagen.
 
@@ -370,21 +387,39 @@ Las referencias y los usos cartográficos son de 2023, también en otras campañ
 
 La salida completa está en `runs/indicadores/seguimiento_historico/`:
 
-- `atribucion.gpkg`: paneles, candidatos a instalación y contexto de edificios y parcelas de 2023.
-- `observaciones.csv`: estado de cada imagen, superficie visible y selección antigua.
-- `paneles_edificios.csv` y `paneles_parcelas.csv`: todos los candidatos y sus solapes.
-- `miembros_instalaciones.csv`: pertenencia propuesta de cada polígono y su origen.
-- `enlaces_espaciales.csv`: solapes que proponen relaciones o generan conflictos.
-- `superficies_por_instalacion.csv`: superficie horizontal observada por candidato y año.
-- `serie_historica.csv`: estados por campaña, áreas manuales y estimadas separadas y evidencia de las ausencias.
-- `periodos_instalacion.csv`: intervalo de inicio y sus limitaciones por candidato.
-- `cambios_superficie.csv`: diferencias entre campañas consecutivas cuando las áreas son comparables.
-- `revision_anterior.csv`: respuestas originales recuperadas con `--base`.
+- `instalaciones.csv`: una fila por agrupación y campaña, con localización,
+  estado, áreas, soportes, periodo de aparición y cambios comparables.
+- `atribucion.gpkg`: geometrías y tablas de detalle, descritas abajo.
 - `resumen.json`: alcance y recuentos, sin presentarlos como censo.
+
+El CSV es UTF-8, separado por comas y con punto decimal. `id_instalacion`
+y `anio` identifican una fila; no se crea un CSV distinto para cada campaña.
+Las columnas principales son:
+
+| Columnas | Significado |
+| --- | --- |
+| `id_instalacion`, `anio` | Agrupación provisional y campaña observada. |
+| `municipio`, `codigo`, `latitud`, `longitud` | Municipio del punto interior de la huella conjunta; coordenadas WGS84 en grados. No delimitan los paneles. |
+| `edificios`, `parcelas`, `referencias_catastrales` | Soportes atribuidos claramente; varios identificadores se separan con `;`. Son referencias de 2023. |
+| `estado`, `fuente_estado` | Presente, ausente, desconocido o pendiente, y evidencia utilizada. |
+| `superficie_horizontal_m2`, `fuente_superficie` | Área revisada si existe; en su defecto, estimación del modelo disponible. Ausencia acreditada: cero; desconocido o dibujo parcial sin área confirmada: vacío. |
+| `superficie_horizontal_anotada_m2`, `superficie_horizontal_modelo_m2` | Valores originales separados para poder seleccionar solo medidas revisadas o estimaciones. |
+| `instalacion_desde`, `instalacion_hasta`, `estado_periodo` | Última ausencia y primera presencia; límite inferior exclusivo y superior inclusivo. No fechan las ampliaciones. |
+| `anio_anterior`, `cambio_comparable`, `cambio_horizontal_m2` | Diferencia respecto a la campaña anterior de la serie; queda vacía si alguna de las áreas no es comparable. |
+| `instalacion_confirmada`, `revision`, `conflicto` | Estado de la agrupación y posibles contradicciones. |
+| `superficie_comparable`, `anotaciones_completas`, `recorte_en_borde`, `cobertura_completa_confirmada` | Límites de la medición. Dibujos terminados no garantizan que se haya cubierto toda la instalación. |
+| `n_conjuntos`, `solape_entre_anotaciones_m2` | Número de polígonos de esa campaña y área solapada antes de disolver. Cero polígonos no significa ausencia. |
+| `usos_cartograficos` | Uso original de la cartografía, sin inventar tipos de vivienda o titularidad. |
+
+El resto conserva la evidencia de cobertura y respuestas anteriores, la fuente
+de primera presencia y el resumen de campañas con geometría. Al leer el CSV,
+tratar códigos, identificadores y referencias catastrales como texto.
 
 La carpeta completa se sustituye al terminar la exportación. Una interrupción
 no publica una mezcla de archivos nuevos y anteriores. Las capas adicionales
 `referencia_2023` y `selecciones_anteriores` conservan la procedencia recuperada.
+La tabla `revision_anterior` conserva todas las respuestas originales al usar
+`--base`; no se eliminan ni se convierten en etiquetas nuevas de instalación.
 Al sustituir los resultados habituales se retira el panel anterior; el comando
 del panel vuelve a generarlo. Las pruebas necesitan una salida distinta de la
 carpeta del lote completo.
@@ -463,12 +498,132 @@ confirmaron. Las contradicciones sin resolver y ausencias posteriores a una
 presencia se señalan, sin decidir si son retirada, desplazamiento o error.
 
 Este intervalo fecha el inicio del candidato, no toda su superficie posterior.
-`cambios_superficie.csv` compara únicamente dibujos cerrados o ceros acreditados,
+`cambio_horizontal_m2` compara únicamente dibujos cerrados o ceros acreditados,
 con la misma huella revisada y sin paneles cortados por el borde. Las áreas
 del modelo de 2023 y los casos dudosos no producen diferencias medidas.
 Un aumento de área todavía no identifica la época de cada módulo. El escenario
 energético central usa la época del emplazamiento como aproximación explícita;
 no convierte ese aumento en una fecha de instalación de módulos.
+
+### Datos para máscaras y GeoTIFF
+
+Las geometrías están en `runs/indicadores/seguimiento_historico/atribucion.gpkg`,
+en EPSG:25830, con coordenadas y superficies en metros. Se puede abrir
+directamente en QGIS o leer una capa con GeoPandas. Contiene:
+
+| Capa o tabla | Contenido |
+| --- | --- |
+| `paneles` | Un polígono o multipolígono por conjunto dibujado o detectado, no necesariamente por módulo físico. Incluye `id_panel`, `id_instalacion`, `anio`, `fuente_geometria`, `revision_completa`, `borde_imagen`, `ventanas`, atribución y superficie horizontal. |
+| `instalaciones` | Una fila por agrupación y campaña, con los mismos campos del CSV y la unión de los paneles de ese año. La geometría corresponde a `fuente_superficie`. Ausencias y observaciones sin superficie disponible tienen geometría nula. Es la capa principal para consultar áreas y exportar máscaras por año. |
+| `emplazamientos` | Unión de las huellas de cada agrupación a lo largo de las campañas. Sirve para localizarla en el visor, no como máscara de un año concreto. |
+| `observaciones` | Un rectángulo por imagen y campaña: `ventana`, `anio`, `estado`, `revision_completa`, límites y ruta relativa de la anotación. Incluye también imágenes pendientes o no evaluables. |
+| `edificios_2023`, `parcelas_2023` | Contexto cartográfico utilizado en la atribución. |
+| `paneles_edificios`, `paneles_parcelas` | Tablas sin geometría con todas las intersecciones, sus áreas y fracciones. |
+| `enlaces_espaciales` | Tabla de vínculos propuestos entre máscaras y decisión de agrupación. |
+| `referencia_2023`, `selecciones_anteriores`, `revision_anterior` | Máscaras, selecciones y respuestas originales recuperadas con `--base`. La referencia incluye también detecciones descartadas: para la máscara activa se usa `paneles`. |
+
+Para consultar una campaña basta cargar `instalaciones` y filtrar, por ejemplo,
+`"anio" = 2017`. `superficie_horizontal_m2` contiene los m² de los paneles de
+esa agrupación en ese año, sin duplicar sus solapes. Todos los años utilizan
+el mismo `id_instalacion`. El estado y la fuente distinguen las ausencias,
+los dibujos manuales y las estimaciones del modelo.
+
+Para las máscaras históricas manuales a partir del detalle, filtrar `paneles` por `anio`,
+`fuente_geometria=labelme` y `revision_completa=True`. En `observaciones`,
+usar como cobertura conocida únicamente las filas del mismo año con
+`revision_completa=True` y estado `presencia_anotada` o `ausencia_imagen`.
+Las geometrías ya están transformadas desde los píxeles originales.
+
+Una codificación sencilla para un GeoTIFF de tipo `uint8` es:
+
+- `1`: panel en la campaña seleccionada.
+- `0`: parte revisada de la imagen sin paneles.
+- `255`: NoData, zona no revisada o no evaluable.
+
+Los años antiguos solo cubren los recortes estudiados; no hay una máscara
+manual completa de Cantabria. Las ausencias del visor anterior se refieren
+a las geometrías seleccionadas, no a toda la foto: si se incorporan, cruzar
+`revision_anterior` con `selecciones_anteriores` por `id_seleccion` y respetar
+su `alcance`. No extender ese cero al edificio o parcela completos.
+
+En 2023 la capa activa actual procede del modelo (`fuente_geometria=modelo_2023`),
+no de un dibujo manual. Se puede rasterizar como predicción, conservando esa
+distinción. Este GeoPackage no contiene toda la inferencia regional: representa
+el inventario seleccionado para seguimiento. Su exterior no acredita ausencia.
+
+Las imágenes y dibujos originales están en
+`data/datasets/seguimiento/labelme/images/`, en PNG y JSON. Su
+`data/datasets/seguimiento/labelme/manifest.csv` relaciona imagen, anotación,
+campaña, límites, dimensiones, CRS y resolución. Las rutas de imagen y
+anotación se resuelven desde la carpeta del manifiesto. En el lote actual,
+2014 y 2017 tienen unos 0,25 m/píxel; 2020 tiene 0,15 m/píxel.
+Los TIFF regionales originales de 2023 están en `data/pnoa/`, a 0,15 m/píxel.
+
+Guardar los nuevos rásteres fuera de los indicadores regenerables:
+
+```text
+runs/mascaras_historicas/
+    paneles_2014.tif
+    paneles_2017.tif
+    paneles_2020.tif
+    paneles_2023.tif
+```
+
+Para comparar píxeles entre campañas se necesita una rejilla común: mismo
+CRS, origen, extensión y resolución. Remuestrear una imagen antigua no añade
+detalle. Las superficies del CSV se calculan desde los polígonos y no cambian
+al elegir la resolución del GeoTIFF. Este flujo no genera aún esos rásteres.
+
+### Consultar las instalaciones en el panel
+
+`visualizacion.panel_indicadores` genera un único HTML que se puede enviar
+sin archivos auxiliares. Incluye datos, estilos, código del mapa e iconos.
+El lector puede abrirlo sin conexión y sin disponer del repositorio. Los
+botones de resumen municipal, energía y selección generan los CSV desde
+los datos incluidos; no enlazan a archivos locales.
+
+El mapa utiliza por defecto un fondo vacío, con municipios, paneles y
+contexto vectorial incluidos. Los fondos de ortofoto y calles requieren
+Internet y solo se solicitan al activarlos. Los enlaces bibliográficos son
+consultas opcionales, no recursos necesarios para abrir el panel. Leaflet
+1.9.4 está en `src/paneles_solares/visualizacion/plantillas/leaflet/`, con
+su licencia BSD; el generador incluye los estilos e iconos como datos y
+no necesita descargar esa biblioteca.
+
+«Mapa y resumen»
+contiene los indicadores principales y las ortofotos. «Instalaciones y
+evolución» contiene los gráficos y la tabla por agrupación y campaña.
+Ambas pestañas comparten año, municipio, uso, agrupación y selección de
+inventario o muestra comparable.
+
+El histograma de tamaños, la mediana y el percentil 90 usan las superficies
+positivas disponibles. Una presencia antigua sin área delimitada no entra
+en esa distribución. Los ceros y estados desconocidos siguen en la tabla.
+Las áreas son horizontales y se disuelven por agrupación y año. Las
+distribuciones cuentan agrupaciones completas, adscritas al municipio de
+su punto interior; el mapa y los totales de superficie recortan al límite
+municipal y disuelven también solapes entre agrupaciones.
+
+El gráfico de atribución usa los paneles de cada campaña, no la lista de
+edificios reunida a lo largo de todos los años. Una coincidencia clara exige
+que todos los paneles de la agrupación tengan edificio asignado. Los casos
+parciales o dudosos se muestran aparte. «Sin coincidencia» significa que
+ningún polígono coincide con las huellas disponibles: puede ser terreno o
+una cubierta ausente de la cartografía. Las categorías sin casos se omiten.
+
+El reparto de usos cuenta agrupaciones con superficie, no m². Utiliza el
+uso cartográfico de sus edificaciones CBT23/LULC23. Los usos minoritarios
+se reúnen como «Otros usos» solo en el dibujo. La descarga conserva el texto
+original; la tabla lo ofrece al pasar el cursor sobre su etiqueta abreviada.
+Si una agrupación combina varios usos, cuenta
+una vez como «Varios usos». Los desconocidos se muestran como «Sin dato».
+No se interpreta el campo `TIPO` del parcelario como industrial, residencial
+o tipo de vivienda, ni se deduce titularidad pública.
+
+La tabla permite buscar por identificador o municipio, paginar, abrir una
+agrupación en el mapa y descargar todas las filas de la selección, no solo
+la página visible. Ese CSV conserva estado, fuente de superficie, intervalo
+y confirmación de la agrupación.
 
 ### Energía y antigüedad
 
