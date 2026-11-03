@@ -12,6 +12,7 @@ shapely>=2.0,<3
 pyogrio>=0.9,<1
 requests>=2.31,<3
 matplotlib>=3.8,<4
+laspy[lazrs]>=2.5,<3
 
 # Etiquetado manual
 labelme>=7,<8
