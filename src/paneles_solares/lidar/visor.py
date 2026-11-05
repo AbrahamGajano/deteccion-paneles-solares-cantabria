@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from dash import Dash, Input, Output, State, ctx, dcc, html, no_update
-from shapely import wkt
+from shapely import intersects_xy, wkt
 
 from paneles_solares.rutas import ruta_proyecto
 
@@ -22,8 +22,14 @@ OPCIONES = {
         "Correspondencia dudosa", "Sin correspondencia", "No evaluable",
     ],
     "visibilidad": [
-        "Panel distinguible", "Solo cubierta distinguible",
-        "Puntos insuficientes", "Sin puntos", "No interpretable",
+        {"label": "Panel separado de la cubierta en la nube", "value": "Panel distinguible"},
+        {"label": "Superficie continua: panel y cubierta no separables",
+         "value": "Solo cubierta distinguible"},
+        {"label": "No sé qué superficie corresponde al panel",
+         "value": "Asociación espacial dudosa"},
+        {"label": "Puntos insuficientes", "value": "Puntos insuficientes"},
+        {"label": "Sin puntos", "value": "Sin puntos"},
+        {"label": "No interpretable", "value": "No interpretable"},
     ],
     "montaje": [
         "Aparentemente coplanar con cubierta", "Estructura independiente",
@@ -130,34 +136,100 @@ def figura_ortofoto(caso: pd.Series, carpeta: Path) -> go.Figure:
     return figura
 
 
+def limites_altura(z: np.ndarray) -> tuple:
+    """Calcula un encuadre vertical que no dependa de unos pocos extremos.
+
+    Params:
+        z: Cotas de los puntos de la nube, en metros.
+
+    Returns:
+        tuple: Límites de los percentiles 1 y 99 ampliados un 10 %, mínimo 1 m.
+    """
+
+    inferior, superior = np.percentile(z, [1, 99])
+    margen = max(1.0, (superior - inferior) * 0.1)
+
+    return float(inferior - margen), float(superior + margen)
+
+
+def proporciones_escena(ancho: float, fondo: float, altura: float) -> dict:
+    """Expresa las dimensiones reales como proporciones manejables por la cámara.
+
+    Params:
+        ancho: Extensión del eje X, en metros.
+        fondo: Extensión del eje Y, en metros.
+        altura: Extensión del eje Z, en metros.
+
+    Returns:
+        dict: Proporciones X/Y/Z con la dimensión mayor igual a uno.
+    """
+
+    mayor = max(ancho, fondo, altura)
+
+    return {"x": ancho / mayor, "y": fondo / mayor, "z": altura / mayor}
+
+
 def figura_nube(caso: pd.Series, carpeta: Path) -> go.Figure:
-    """Dibuja todos los puntos del caso y permite alternar vista 3D y superior.
+    """Dibuja la nube y destaca la huella del panel con un encuadre por percentiles.
 
     Params:
         caso: Fila del CSV con la ruta LAZ y el origen horizontal del contexto.
         carpeta: Directorio de la muestra.
 
     Returns:
-        go.Figure: Nube interactiva con proporciones reales y color por altura.
+        go.Figure: Nube 3D con encuadre por percentiles y detección resaltada.
     """
 
     nube = laspy.read(carpeta / caso.laz)
     figura = go.Figure()
 
     if len(nube.points):
+        x = np.asarray(nube.x)
+        y = np.asarray(nube.y)
         z = np.asarray(nube.z)
+        geometria = wkt.loads(caso.poligono)
+        dentro = intersects_xy(geometria, x, y)
+        inferior, superior = limites_altura(z)
+        origen_z = inferior
+        fuera = int(((z < inferior) | (z > superior)).sum())
+        texto_habitual = f"Escala habitual · {fuera} de {len(z)} puntos fuera del encuadre"
         figura.add_trace(go.Scatter3d(
-            x=np.asarray(nube.x) - caso.xmin,
-            y=np.asarray(nube.y) - caso.ymin,
-            z=z - z.min(), mode="markers",
-            marker={"size": 2, "color": z, "colorscale": "Viridis",
+            x=x[~dentro] - caso.xmin, y=y[~dentro] - caso.ymin,
+            z=z[~dentro] - origen_z, mode="markers", name="Contexto",
+            marker={"size": 2, "color": z[~dentro], "colorscale": "Viridis",
+                    "cmin": inferior, "cmax": superior,
                     "colorbar": {"title": "Cota (m)", "thickness": 12}},
         ))
+        figura.add_trace(go.Scatter3d(
+            x=x[dentro] - caso.xmin, y=y[dentro] - caso.ymin,
+            z=z[dentro] - origen_z, mode="markers",
+            name=f"Bajo detección 2D ({int(dentro.sum())} puntos)",
+            marker={"size": 4, "color": "#ff3355"},
+            hovertemplate=(
+                "Dentro de la huella XY original<br>"
+                "Este: %{x:.2f} m<br>Norte: %{y:.2f} m<br>"
+                "Altura relativa: %{z:.2f} m<extra></extra>"
+            ),
+        ))
+        poligonos = list(geometria.geoms) if geometria.geom_type == "MultiPolygon" else [geometria]
+
+        for poligono in poligonos:
+            for anillo in [poligono.exterior, *poligono.interiors]:
+                borde_x, borde_y = anillo.xy
+                figura.add_trace(go.Scatter3d(
+                    x=np.asarray(borde_x) - caso.xmin,
+                    y=np.asarray(borde_y) - caso.ymin,
+                    z=np.zeros(len(borde_x)), mode="lines",
+                    line={"color": "#ff3355", "width": 4, "dash": "dash"},
+                    showlegend=False,
+                    hovertemplate="Huella XY en el plano de referencia; no es la altura del panel<extra></extra>",
+                ))
     else:
         figura.add_annotation(text="Este caso no tiene puntos LiDAR", showarrow=False)
 
     figura.update_layout(
-        margin={"l": 0, "r": 0, "t": 45, "b": 0},
+        margin={"l": 0, "r": 0, "t": 25, "b": 35},
+        legend={"orientation": "h", "x": 0, "y": -0.06},
         scene={
             "aspectmode": "data",
             "xaxis": {"title": "Este local (m)", "range": [0, caso.xmax - caso.xmin]},
@@ -165,22 +237,23 @@ def figura_nube(caso: pd.Series, carpeta: Path) -> go.Figure:
             "zaxis_title": "Altura relativa (m)",
             "camera": {"eye": {"x": 1.8, "y": 1.8, "z": 1.8}},
         },
-        updatemenus=[{
-            "type": "buttons", "direction": "right", "x": 0, "y": 1.08,
-            "buttons": [
-                {"label": "3D", "method": "relayout", "args": [{
-                    "scene.camera": {"eye": {"x": 1.8, "y": 1.8, "z": 1.8},
-                                     "up": {"x": 0, "y": 0, "z": 1},
-                                     "projection": {"type": "perspective"}},
-                }]},
-                {"label": "Desde arriba", "method": "relayout", "args": [{
-                    "scene.camera": {"eye": {"x": 0, "y": 0, "z": 2.5},
-                                     "up": {"x": 0, "y": 1, "z": 0},
-                                     "projection": {"type": "orthographic"}},
-                }]},
-            ],
-        }],
     )
+
+    if len(nube.points):
+        proporcion_habitual = proporciones_escena(
+            caso.xmax - caso.xmin, caso.ymax - caso.ymin, superior - inferior
+        )
+        figura.update_layout(
+            scene_zaxis_range=[0, superior - origen_z],
+            scene_zaxis_autorange=False,
+            scene_aspectmode="manual",
+            scene_aspectratio=proporcion_habitual,
+        )
+        figura.add_annotation(
+            text=texto_habitual, x=0, y=1, xref="paper", yref="paper",
+            xanchor="left", yanchor="top", showarrow=False,
+            font={"size": 11},
+        )
 
     return figura
 
@@ -234,8 +307,8 @@ def crear_app(carpeta: Path) -> Dash:
 
         for campo, etiqueta in [
             ("coincidencia", "Coincidencia espacial"),
-            ("visibilidad", "Qué se distingue en LiDAR"),
-            ("montaje", "Montaje aparente"), ("confianza", "Confianza"),
+            ("visibilidad", "¿Se separa el panel de la cubierta en la nube?"),
+            ("montaje", "Montaje aparente (si se puede determinar)"), ("confianza", "Confianza"),
         ]:
             formulario.extend([
                 html.Label(etiqueta, style={"display": "block", "marginTop": "18px"}),
@@ -247,6 +320,11 @@ def crear_app(carpeta: Path) -> Dash:
             ])
 
         formulario.extend([
+            html.P(
+                "Una superficie continua no confirma que sean coplanares. "
+                "Si no puedes determinar el montaje, elige Indeterminado.",
+                style={"fontSize": "12px", "color": "#555"},
+            ),
             html.Label("Observaciones", style={"display": "block", "marginTop": "18px"}),
             dcc.Textarea(id="notas", value=valores[8],
                          style={"width": "100%", "height": "130px"}),
@@ -267,7 +345,13 @@ def crear_app(carpeta: Path) -> Dash:
                 html.Div([html.H3("Ortofoto · detección en rojo"),
                           dcc.Graph(id="ortofoto", figure=valores[2], style={"height": "72vh"})]),
                 html.Div([html.H3("Nube de puntos"),
-                          dcc.Graph(id="nube", figure=valores[3], style={"height": "72vh"})]),
+                          dcc.Graph(id="nube", figure=valores[3], style={"height": "72vh"}),
+                          html.P(
+                              "Rojo: puntos dentro de la huella XY de la detección. "
+                              "La línea discontinua muestra esa huella en la base de referencia. "
+                              "Esto localiza la zona; no confirma que esos puntos sean del panel.",
+                              style={"fontSize": "12px", "color": "#555"},
+                          )]),
                 html.Div([html.H3("Formulario"), *formulario]),
             ], style={"display": "grid", "gridTemplateColumns": "1fr 1fr 330px", "gap": "18px"}),
         ], style={"fontFamily": "Arial, sans-serif", "padding": "16px"})
