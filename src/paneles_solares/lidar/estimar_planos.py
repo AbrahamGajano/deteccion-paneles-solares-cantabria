@@ -1,4 +1,4 @@
-"""Prototipo de ajuste de un plano dominante en un caso revisado como coplanar."""
+"""Estima inclinaciones compatibles con cubierta y registra los casos asumidos."""
 
 import argparse
 import json
@@ -9,7 +9,11 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from shapely import intersects_xy, wkt
+from shapely.geometry import box
 
+from paneles_solares.lidar.ajuste_planos import (
+    CRITERIOS, calcular_inclinacion, decidir_inclinacion, distancias_al_plano,
+)
 from paneles_solares.rutas import ruta_proyecto
 
 CARPETA = ruta_proyecto("data/lidar/prueba_pueblos_20261105/revision")
@@ -17,11 +21,11 @@ SALIDA = ruta_proyecto("runs/lidar/planos")
 
 
 def elegir_caso(casos: pd.DataFrame, panel_id: str | None = None) -> pd.Series:
-    """Elige un panel indicado o el primer coplanar con correspondencia clara.
+    """Elige un panel indicado o el primero de la tabla, sin usar sus etiquetas.
 
     Params:
         casos: Tabla casos.csv del visor.
-        panel_id: Identificador concreto; None para buscar uno revisado.
+        panel_id: Identificador concreto; None para elegir la primera fila.
 
     Returns:
         pd.Series: Fila del caso elegido.
@@ -35,17 +39,10 @@ def elegir_caso(casos: pd.DataFrame, panel_id: str | None = None) -> pd.Series:
 
         return seleccion.iloc[0]
 
-    for _, caso in casos.iterrows():
-        formulario = json.loads(caso.formulario) if caso.formulario else {}
+    if casos.empty:
+        raise ValueError("No hay casos para procesar.")
 
-        if (
-            formulario.get("montaje") == "Aparentemente coplanar con cubierta"
-            and formulario.get("coincidencia") == "Aparentemente alineado"
-            and formulario.get("confianza") == "Alta"
-        ):
-            return caso
-
-    raise ValueError("No hay un coplanar revisado con alineación clara y confianza alta.")
+    return casos.iloc[0]
 
 
 def seleccionar_puntos(caso: pd.Series, carpeta: Path) -> tuple:
@@ -66,125 +63,128 @@ def seleccionar_puntos(caso: pd.Series, carpeta: Path) -> tuple:
     return puntos, dentro
 
 
-def ajustar_plano(puntos: np.ndarray) -> tuple:
-    """Obtiene el plano de menor error perpendicular mediante SVD.
+def evaluar_apoyo(distancias: np.ndarray, umbral: float) -> dict:
+    """Resume el error y el apoyo manteniendo todos los puntos en el denominador.
 
     Params:
-        puntos: Matriz de al menos tres puntos XYZ que no estén alineados.
+        distancias: Distancias con signo al plano, en metros.
+        umbral: Distancia absoluta máxima para considerar un punto compatible.
 
     Returns:
-        tuple: Centro del conjunto y normal unitaria orientada hacia arriba.
+        dict: Recuentos, porcentaje de apoyo y errores de todos los puntos y compatibles.
     """
 
-    if len(puntos) < 3:
-        raise ValueError("Se necesitan al menos tres puntos para ajustar un plano.")
-
-    centro = puntos.mean(axis=0)
-    _, valores, vectores = np.linalg.svd(puntos - centro, full_matrices=False)
-
-    if valores[1] < 1e-8:
-        raise ValueError("Los puntos están alineados; no definen un plano único.")
-
-    normal = vectores[-1]
-
-    if normal[2] < 0:
-        normal = -normal
-
-    return centro, normal
-
-
-def buscar_plano(
-    puntos: np.ndarray, umbral: float = 0.10,
-    iteraciones: int = 500, semilla: int = 42,
-) -> dict:
-    """Busca un plano por consenso RANSAC y lo reajusta con sus puntos compatibles.
-
-    Params:
-        puntos: Matriz XYZ de los puntos dentro de la detección.
-        umbral: Distancia perpendicular máxima al plano, en metros.
-        iteraciones: Número de combinaciones de tres puntos que se probarán.
-        semilla: Valor para repetir la misma selección aleatoria.
-
-    Returns:
-        dict: Centro, normal, distancias y máscara de puntos compatibles.
-    """
-
-    if len(puntos) < 3:
-        raise ValueError("Hay menos de tres puntos dentro de la detección.")
-
-    if umbral <= 0 or iteraciones < 1:
-        raise ValueError("El umbral y las iteraciones deben ser positivos.")
-
-    origen = puntos.mean(axis=0)
-    locales = puntos - origen
-    generador = np.random.default_rng(semilla)
-    mejor_mascara = None
-    mejor_cantidad = 0
-    mejor_error = float("inf")
-
-    for _ in range(iteraciones):
-        indices = generador.choice(len(locales), size=3, replace=False)
-        p1, p2, p3 = locales[indices]
-        vector_1 = p2 - p1
-        vector_2 = p3 - p1
-        normal = np.cross(vector_1, vector_2)
-        longitud = np.linalg.norm(normal)
-        escala = np.linalg.norm(vector_1) * np.linalg.norm(vector_2)
-
-        if escala == 0 or longitud <= 1e-6 * escala:
-            continue
-
-        normal = normal / longitud
-        distancias = np.abs((locales - p1) @ normal)
-        compatibles = distancias <= umbral
-        cantidad = int(compatibles.sum())
-        error = float(distancias[compatibles].mean())
-
-        if cantidad > mejor_cantidad or (
-            cantidad == mejor_cantidad and error < mejor_error
-        ):
-            mejor_mascara = compatibles
-            mejor_cantidad = cantidad
-            mejor_error = error
-
-    if mejor_mascara is None:
-        raise ValueError("No se encontró una combinación que defina un plano.")
-
-    centro, normal = ajustar_plano(locales[mejor_mascara])
-    distancias = np.abs((locales - centro) @ normal)
-    compatibles = distancias <= umbral
-
-    if compatibles.sum() < 3:
-        raise ValueError("El plano reajustado no conserva tres puntos compatibles.")
+    absolutas = np.abs(distancias)
+    compatibles = absolutas <= umbral
+    errores = absolutas[compatibles]
+    cantidad = len(distancias)
 
     return {
-        "centro": centro + origen,
-        "normal": normal,
-        "distancias": distancias,
-        "compatibles": compatibles,
+        "n_puntos": cantidad,
+        "n_compatibles": int(compatibles.sum()),
+        "n_por_debajo": int((distancias < -umbral).sum()),
+        "n_por_encima": int((distancias > umbral).sum()),
+        "porcentaje_compatible": float(compatibles.mean() * 100) if cantidad else None,
+        "suma_distancias_m": float(absolutas.sum()),
+        "error_medio_absoluto_m": float(absolutas.mean()) if cantidad else None,
+        "rmse_todos_m": float(np.sqrt(np.mean(distancias**2))) if cantidad else None,
+        "mediana_absoluta_m": float(np.median(absolutas)) if cantidad else None,
+        "p90_absoluto_m": float(np.percentile(absolutas, 90)) if cantidad else None,
+        "mediana_con_signo_m": float(np.median(distancias)) if cantidad else None,
+        "rmse_compatibles_m": float(np.sqrt(np.mean(errores**2))) if len(errores) else None,
     }
 
 
-def calcular_inclinacion(normal: np.ndarray) -> float:
-    """Calcula el ángulo del plano respecto a la horizontal.
+def evaluar_entorno(
+    contexto: np.ndarray, poligono, dentro: np.ndarray,
+    ajuste: dict, ancho: float = 2.0, umbral: float = 0.10,
+) -> dict:
+    """Comprueba la prolongación del plano en una franja exterior a la detección.
 
     Params:
-        normal: Vector perpendicular al plano y orientado hacia arriba.
+        contexto: Matriz XYZ del recorte completo.
+        poligono: Geometría original de la detección, en coordenadas métricas.
+        dentro: Máscara de los puntos interiores usados para buscar el plano.
+        ajuste: Plano obtenido exclusivamente con puntos interiores.
+        ancho: Anchura de la franja exterior, en metros.
+        umbral: Distancia perpendicular máxima para el apoyo exterior.
 
     Returns:
-        float: Inclinación en grados; cero corresponde a un plano horizontal.
+        dict: Máscara de la franja, distancias de todo el contexto y apoyo por cuadrante.
     """
 
-    return float(np.degrees(np.arctan2(np.hypot(normal[0], normal[1]), abs(normal[2]))))
+    if ancho <= 0 or umbral <= 0:
+        raise ValueError("El ancho de la franja y el umbral deben ser positivos.")
+
+    exterior = intersects_xy(poligono.buffer(ancho), contexto[:, 0], contexto[:, 1]) & ~dentro
+    distancias = distancias_al_plano(contexto, ajuste["centro"], ajuste["normal"])
+    puntos = contexto[exterior]
+    centro = poligono.centroid
+    cuadrantes = np.where(
+        puntos[:, 0] >= centro.x,
+        np.where(puntos[:, 1] >= centro.y, "NE", "SE"),
+        np.where(puntos[:, 1] >= centro.y, "NO", "SO"),
+    )
+    apoyo = {
+        nombre: evaluar_apoyo(distancias[exterior][cuadrantes == nombre], umbral)
+        for nombre in ["NE", "NO", "SE", "SO"]
+    }
+
+    return {
+        "exterior": exterior,
+        "distancias": distancias,
+        "resumen": evaluar_apoyo(distancias[exterior], umbral),
+        "cuadrantes": apoyo,
+    }
 
 
-def dibujar_ajuste(contexto: np.ndarray, dentro: np.ndarray, ajuste: dict) -> go.Figure:
-    """Dibuja contexto, puntos compatibles, descartados y superficie ajustada.
+def agregar_plano(figura: go.Figure, puntos: np.ndarray, centro: np.ndarray,
+                  normal: np.ndarray, color: str, nombre: str) -> None:
+    """Añade un rectángulo que representa la extensión matemática de un plano.
+
+    Params:
+        figura: Figura que recibirá la superficie.
+        puntos: Puntos de apoyo en coordenadas locales.
+        centro: Centro del plano en las mismas coordenadas.
+        normal: Normal unitaria.
+        color: Color de la superficie.
+        nombre: Etiqueta de la leyenda.
+
+    Returns:
+        None.
+    """
+
+    referencia = np.array([1., 0., 0.]) if abs(normal[2]) > 0.8 else np.array([0., 0., 1.])
+    eje_u = np.cross(normal, referencia)
+    eje_u = eje_u / np.linalg.norm(eje_u)
+    eje_v = np.cross(normal, eje_u)
+    u = (puntos - centro) @ eje_u
+    v = (puntos - centro) @ eje_v
+    esquinas = np.array([
+        centro + a * eje_u + b * eje_v
+        for a, b in [(u.min(), v.min()), (u.max(), v.min()),
+                     (u.max(), v.max()), (u.min(), v.max())]
+    ])
+    figura.add_trace(go.Mesh3d(
+        x=esquinas[:, 0], y=esquinas[:, 1], z=esquinas[:, 2],
+        i=[0, 0], j=[1, 2], k=[2, 3], opacity=0.35,
+        color=color, name=nombre, showlegend=True,
+    ))
+
+
+def dibujar_ajuste(
+    contexto: np.ndarray, dentro: np.ndarray, ajuste: dict,
+    entorno: dict, umbral_exterior: float, cubierta: dict | None = None,
+) -> go.Figure:
+    """Dibuja el plano, su ajuste interior y el apoyo exterior, sin ocultar descartes.
 
     Params:
         contexto: Puntos XYZ del recorte completo.
         dentro: Máscara que identifica la detección dentro del contexto.
         ajuste: Resultado de buscar_plano aplicado a contexto[dentro].
+        entorno: Resultado de evaluar_entorno, con la franja y sus distancias.
+        umbral_exterior: Distancia máxima para colorear un punto como apoyo exterior.
+        cubierta: Fragmento exterior independiente, si se ha encontrado uno.
 
     Returns:
         go.Figure: Vista 3D con coordenadas locales y proporciones reales.
@@ -194,37 +194,47 @@ def dibujar_ajuste(contexto: np.ndarray, dentro: np.ndarray, ajuste: dict) -> go
     locales = contexto - origen
     puntos = locales[dentro]
     compatibles = ajuste["compatibles"]
+    exterior = entorno["exterior"]
+    distancias = entorno["distancias"]
+    apoyo = exterior & (np.abs(distancias) <= umbral_exterior)
     centro = ajuste["centro"] - origen
     normal = ajuste["normal"]
-    referencia = np.array([1., 0., 0.]) if abs(normal[2]) > 0.8 else np.array([0., 0., 1.])
-    eje_u = np.cross(normal, referencia)
-    eje_u = eje_u / np.linalg.norm(eje_u)
-    eje_v = np.cross(normal, eje_u)
-    seleccionados = puntos[compatibles] - centro
-    u = seleccionados @ eje_u
-    v = seleccionados @ eje_v
-    esquinas = np.array([
-        centro + a * eje_u + b * eje_v
-        for a, b in [(u.min(), v.min()), (u.max(), v.min()),
-                     (u.max(), v.max()), (u.min(), v.max())]
-    ])
     figura = go.Figure()
+    interior_compatible = np.zeros(len(contexto), dtype=bool)
+    interior_compatible[dentro] = compatibles
 
-    for datos, nombre, color, tamano in [
-        (locales[~dentro], "Contexto", "#b0b0b0", 2),
-        (puntos[compatibles], "Compatibles con el plano", "#159447", 4),
-        (puntos[~compatibles], "Fuera del plano", "#e53935", 4),
+    for mascara, nombre, color, tamano in [
+        (~(dentro | exterior), "Contexto", "#b0b0b0", 2),
+        (interior_compatible, "Interior compatible", "#159447", 4),
+        (dentro & ~interior_compatible, "Interior fuera del plano", "#e53935", 4),
+        (apoyo, "Exterior compatible", "#168be0", 3),
+        (exterior & (distancias > umbral_exterior),
+         "Exterior por encima", "#f28c28", 3),
+        (exterior & (distancias < -umbral_exterior),
+         "Exterior por debajo", "#9855b5", 3),
     ]:
+        datos = locales[mascara]
         figura.add_trace(go.Scatter3d(
             x=datos[:, 0], y=datos[:, 1], z=datos[:, 2], mode="markers",
             name=nombre, marker={"size": tamano, "color": color},
+            customdata=distancias[mascara],
+            hovertemplate=(
+                "Este: %{x:.2f} m<br>Norte: %{y:.2f} m<br>"
+                "Altura relativa: %{z:.2f} m<br>"
+                "Distancia con signo: %{customdata:.3f} m<extra>%{fullData.name}</extra>"
+            ),
         ))
 
-    figura.add_trace(go.Mesh3d(
-        x=esquinas[:, 0], y=esquinas[:, 1], z=esquinas[:, 2],
-        i=[0, 0], j=[1, 2], k=[2, 3], opacity=0.4,
-        color="#ffad33", name="Plano ajustado", showlegend=True,
-    ))
+    agregar_plano(figura, puntos[compatibles], centro, normal, "#ffad33", "Plano interior")
+    if cubierta is not None:
+        datos = cubierta["puntos"] - origen
+        plano = cubierta["ajuste"]
+        figura.add_trace(go.Scatter3d(
+            x=datos[:, 0], y=datos[:, 1], z=datos[:, 2], mode="markers",
+            name="Fragmento exterior elegido", marker={"size": 4, "color": "#1645ab", "symbol": "diamond"},
+        ))
+        agregar_plano(figura, datos, plano["centro"] - origen, plano["normal"],
+                       "#168be0", "Plano exterior independiente")
     inferior, superior = np.percentile(locales[:, 2], [1, 99])
     margen = max(1., (superior - inferior) * 0.1)
     dimensiones = np.array([
@@ -248,52 +258,230 @@ def dibujar_ajuste(contexto: np.ndarray, dentro: np.ndarray, ajuste: dict) -> go
     return figura
 
 
-def main() -> None:
-    """Ejecuta un único caso y guarda métricas y una figura HTML independiente."""
+def procesar_caso(
+    caso: pd.Series, carpeta: Path, salida: Path,
+    umbral: float = 0.10, umbral_exterior: float = 0.10,
+    anillo: float = 2.0, iteraciones: int = 500,
+    semilla: int = 42, guardar_html: bool = True, criterios: dict | None = None,
+) -> dict:
+    """Guarda el ajuste candidato, la decisión y su procedencia sin usar etiquetas.
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--carpeta", type=Path, default=CARPETA)
-    parser.add_argument("--panel", help="ID del panel; por defecto elige un coplanar revisado.")
-    parser.add_argument("--umbral", type=float, default=0.10)
-    parser.add_argument("--iteraciones", type=int, default=500)
-    parser.add_argument("--semilla", type=int, default=42)
-    parser.add_argument("--salida", type=Path, default=SALIDA)
-    args = parser.parse_args()
-    carpeta = ruta_proyecto(args.carpeta)
-    casos = pd.read_csv(carpeta / "casos.csv", keep_default_na=False)
-    caso = elegir_caso(casos, args.panel)
+    Params:
+        caso: Fila del CSV, incluidas sus anotaciones manuales si existen.
+        carpeta: Directorio de la muestra con los LAZ.
+        salida: Directorio raíz de resultados.
+        umbral: Distancia perpendicular admitida en el ajuste interior, en metros.
+        umbral_exterior: Distancia admitida para el apoyo exterior, en metros.
+        anillo: Anchura de la franja exterior, en metros.
+        iteraciones: Número de pruebas de RANSAC.
+        semilla: Valor reproducible del generador aleatorio.
+        guardar_html: Si se debe crear la figura 3D independiente.
+        criterios: Cambios sobre los valores iniciales de CRITERIOS.
+
+    Returns:
+        dict: Medidas y parámetros; las etiquetas manuales solo se guardan como referencia.
+    """
+
+    criterios = CRITERIOS | (criterios or {})
     contexto, dentro = seleccionar_puntos(caso, carpeta)
-    ajuste = buscar_plano(contexto[dentro], args.umbral, args.iteraciones, args.semilla)
-    compatibles = ajuste["compatibles"]
-    residuos = ajuste["distancias"][compatibles]
+    poligono = wkt.loads(caso.poligono)
+    formulario = json.loads(caso.formulario) if caso.formulario else {}
+    ventana = None
+    if all(campo in caso.index for campo in ["xmin", "ymin", "xmax", "ymax"]):
+        ventana = box(caso.xmin, caso.ymin, caso.xmax, caso.ymax)
+
+    resultado = decidir_inclinacion(contexto, poligono, dentro, umbral, umbral_exterior,
+                                    anillo, iteraciones, semilla, criterios, ventana)
+    ajuste = resultado["ajuste"]
+    decision = resultado["decision"]
+    intentos = decision["intentos_exteriores"]
+    ancho_evaluado = intentos[-1]["anillo_m"] if intentos else anillo
+    franja_completa = bool(ventana.covers(poligono.buffer(ancho_evaluado))) if ventana is not None else None
+    entorno = None
+    interior = evaluar_apoyo(np.array([]), umbral)
+    exterior = evaluar_apoyo(np.array([]), umbral_exterior)
+
+    if ajuste is not None:
+        entorno = evaluar_entorno(contexto, poligono, dentro, ajuste, ancho_evaluado, umbral_exterior)
+        interior = evaluar_apoyo(entorno["distancias"][dentro], umbral)
+        exterior = entorno["resumen"]
+    else:
+        franja = intersects_xy(poligono.buffer(ancho_evaluado), contexto[:, 0], contexto[:, 1]) & ~dentro
+        for medidas, cantidad in [(interior, int(dentro.sum())), (exterior, int(franja.sum()))]:
+            medidas.update(n_puntos=cantidad, n_compatibles=None,
+                           n_por_debajo=None, n_por_encima=None, suma_distancias_m=None)
+
     resumen = {
         "id_panel": caso.id_panel,
         "laz": str(carpeta / caso.laz),
-        "umbral_m": args.umbral, "iteraciones": args.iteraciones, "semilla": args.semilla,
-        "n_puntos": int(dentro.sum()), "n_compatibles": int(compatibles.sum()),
-        "porcentaje_compatible": float(compatibles.mean() * 100),
-        "rmse_perpendicular_m": float(np.sqrt(np.mean(residuos**2))),
-        "inclinacion_grados": calcular_inclinacion(ajuste["normal"]),
-        "centro": ajuste["centro"].tolist(), "normal": ajuste["normal"].tolist(),
-        "estado": "prototipo_pendiente_de_validacion",
+        "umbral_m": umbral, "umbral_exterior_m": umbral_exterior, "anillo_m": anillo,
+        "iteraciones": iteraciones, "semilla": semilla,
+        "criterios": criterios, "anillo_evaluado_m": ancho_evaluado,
+        "franja_completa_en_ventana": franja_completa,
+        "n_puntos": interior["n_puntos"], "n_compatibles": interior["n_compatibles"],
+        "porcentaje_compatible": interior["porcentaje_compatible"],
+        "rmse_perpendicular_m": interior["rmse_compatibles_m"],
+        "n_exterior": exterior["n_puntos"],
+        "n_exterior_compatibles": exterior["n_compatibles"],
+        "porcentaje_exterior_compatible": exterior["porcentaje_compatible"],
+        "n_cuadrantes_con_apoyo": sum(
+            medidas["n_compatibles"] > 0 for medidas in entorno["cuadrantes"].values()
+        ) if entorno else None,
+        "inclinacion_candidata": calcular_inclinacion(ajuste["normal"]) if ajuste else None,
+        "centro": ajuste["centro"].tolist() if ajuste else None,
+        "normal": ajuste["normal"].tolist() if ajuste else None,
+        "interior": interior, "exterior": exterior,
+        "apoyo_por_cuadrante": entorno["cuadrantes"] if entorno else {},
+        "revision_manual": formulario,
+        "estado": "prototipo_pendiente_de_validacion", **decision,
     }
-    salida = ruta_proyecto(args.salida) / caso.id_panel
+    salida = salida / caso.id_panel
     salida.mkdir(parents=True, exist_ok=True)
     (salida / "resumen.json").write_text(
-        json.dumps(resumen, indent=2, ensure_ascii=False), encoding="utf-8"
+        json.dumps(resumen, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8"
     )
-    pd.DataFrame([{
-        "x": punto[0], "y": punto[1], "z": punto[2],
-        "compatible": bool(compatible), "distancia_m": float(distancia),
-    } for punto, compatible, distancia in zip(
-        contexto[dentro], compatibles, ajuste["distancias"]
-    )]).to_csv(salida / "puntos.csv", index=False)
-    dibujar_ajuste(contexto, dentro, ajuste).write_html(salida / "ajuste.html")
+    tabla = pd.DataFrame(contexto, columns=["x", "y", "z"])
+    tabla["zona"] = "contexto"
+    tabla.loc[dentro, "zona"] = "interior"
+    tabla["distancia_con_signo_m"] = None
+    tabla["distancia_m"] = None
+    tabla["compatible"] = None
+    if entorno is not None:
+        tabla.loc[entorno["exterior"], "zona"] = "franja_exterior"
+        tabla["distancia_con_signo_m"] = entorno["distancias"]
+        tabla["distancia_m"] = np.abs(entorno["distancias"])
+        tabla["compatible"] = tabla.distancia_m <= np.where(dentro, umbral, umbral_exterior)
+    tabla.to_csv(salida / "puntos.csv", index=False)
+
+    cubierta = resultado["cubierta"]
+    puntos_cubierta = cubierta["puntos"] if cubierta else np.empty((0, 3))
+    pd.DataFrame(puntos_cubierta, columns=["x", "y", "z"]).to_csv(salida / "cubierta.csv", index=False)
+
+    if guardar_html:
+        if ajuste is not None:
+            figura = dibujar_ajuste(contexto, dentro, ajuste, entorno, umbral_exterior, cubierta)
+        else:
+            locales = contexto - contexto.min(axis=0) if len(contexto) else contexto
+            figura = go.Figure(go.Scatter3d(
+                x=locales[:, 0], y=locales[:, 1], z=locales[:, 2], mode="markers",
+                marker={"size": 2}, name="Sin plano interior",
+            ))
+            figura.update_layout(scene={"aspectmode": "data"})
+        figura.update_layout(title=(f"{decision['inclinacion_utilizada']:.2f}° · "
+                                    f"{decision['origen']} · {decision['motivo']}"))
+        figura.write_html(salida / "ajuste.html")
+
     print(f"Panel: {caso.id_panel}")
-    print(f"Inclinación: {resumen['inclinacion_grados']:.2f} grados")
-    print(f"Compatibles: {resumen['n_compatibles']}/{resumen['n_puntos']}")
-    print(f"RMSE perpendicular: {resumen['rmse_perpendicular_m']:.4f} m")
-    print(f"Resultado para revisar: {salida / 'ajuste.html'}")
+    print(f"Inclinación utilizada: {decision['inclinacion_utilizada']:.2f} grados ({decision['origen']})")
+    print(f"Motivo: {decision['motivo']}")
+    if ajuste is not None:
+        print(f"Compatibles: {resumen['n_compatibles']}/{resumen['n_puntos']}")
+        print(f"Apoyo exterior: {resumen['n_exterior_compatibles']}/{resumen['n_exterior']}")
+
+    return resumen
+
+
+def main() -> None:
+    """Procesa uno o varios casos y guarda una tabla común para comparar resultados."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--carpeta", type=Path, default=CARPETA)
+    seleccion = parser.add_mutually_exclusive_group()
+    seleccion.add_argument("--panel", help="ID concreto; por defecto procesa la primera fila.")
+    seleccion.add_argument("--todos", action="store_true", help="Procesa todos los casos elegidos.")
+    parser.add_argument("--revisados", action="store_true", help="Selecciona solo formularios no vacíos.")
+    parser.add_argument("--umbral", type=float, default=0.10, help="Distancia interior en metros.")
+    parser.add_argument("--umbral-exterior", type=float, help="Por defecto utiliza el umbral interior.")
+    parser.add_argument("--anillo", type=float, default=2.0, help="Anchura exterior en metros.")
+    parser.add_argument("--iteraciones", type=int, default=500)
+    parser.add_argument("--semilla", type=int, default=42)
+    parser.add_argument("--porcentaje-minimo", type=float, default=CRITERIOS["porcentaje_minimo"])
+    parser.add_argument("--min-puntos", type=int, default=CRITERIOS["min_puntos"])
+    parser.add_argument("--dispersion-minima", type=float, default=CRITERIOS["dispersion_minima"])
+    parser.add_argument("--inclinacion-maxima", type=float, default=CRITERIOS["inclinacion_maxima"])
+    parser.add_argument("--angulo-maximo", type=float, default=CRITERIOS["angulo_maximo"])
+    parser.add_argument("--separacion-maxima", type=float, default=CRITERIOS["separacion_maxima"])
+    parser.add_argument("--estabilidad-maxima", type=float, default=CRITERIOS["estabilidad_maxima"])
+    parser.add_argument("--anillo-maximo", type=float, default=CRITERIOS["anillo_maximo"])
+    parser.add_argument("--distancia-vecinos", type=float, default=CRITERIOS["distancia_vecinos"])
+    parser.add_argument("--inclinacion-predeterminada", type=float, default=CRITERIOS["inclinacion_predeterminada"])
+    parser.add_argument("--sin-html", action="store_true", help="Guarda medidas y puntos sin la figura 3D.")
+    parser.add_argument("--salida", type=Path, default=SALIDA)
+    args = parser.parse_args()
+    umbral_exterior = args.umbral if args.umbral_exterior is None else args.umbral_exterior
+
+    if min(args.umbral, umbral_exterior, args.anillo) <= 0 or args.iteraciones < 1:
+        parser.error("Los umbrales, el anillo y las iteraciones deben ser positivos.")
+    criterios = {nombre: getattr(args, nombre) for nombre in CRITERIOS}
+    if not all(np.isfinite(valor) for valor in [args.umbral, umbral_exterior, args.anillo, *criterios.values()]):
+        parser.error("Los parámetros deben ser números finitos.")
+    if not 0 < args.porcentaje_minimo <= 100 or args.min_puntos < 3:
+        parser.error("El porcentaje debe estar entre 0 y 100, y min-puntos debe ser al menos 3.")
+    if min(args.dispersion_minima, args.separacion_maxima, args.distancia_vecinos) <= 0:
+        parser.error("Los límites espaciales deben ser positivos.")
+    if not all(0 < valor < 90 for valor in [args.inclinacion_maxima, args.angulo_maximo, args.estabilidad_maxima]):
+        parser.error("Los límites angulares deben estar entre 0 y 90 grados.")
+    if not 0 <= args.inclinacion_predeterminada < 90 or args.anillo_maximo < args.anillo:
+        parser.error("Revisa la inclinación predeterminada (0 a menos de 90) y anillo-maximo >= anillo.")
+
+    carpeta = ruta_proyecto(args.carpeta)
+    salida = ruta_proyecto(args.salida)
+    casos = pd.read_csv(carpeta / "casos.csv", keep_default_na=False)
+
+    if args.revisados:
+        casos = casos[casos.formulario.ne("")]
+
+    if not args.todos:
+        try:
+            casos = pd.DataFrame([elegir_caso(casos, args.panel)])
+        except ValueError as error:
+            parser.error(str(error))
+
+    if casos.empty:
+        parser.error("No hay casos para procesar.")
+
+    salida.mkdir(parents=True, exist_ok=True)
+    resultados = []
+    errores = []
+
+    for _, caso in casos.iterrows():
+        try:
+            resumen = procesar_caso(
+                caso, carpeta, salida, args.umbral, umbral_exterior,
+                args.anillo, args.iteraciones, args.semilla, not args.sin_html, criterios,
+            )
+        except (ValueError, OSError, laspy.errors.LaspyException) as error:
+            errores.append({"id_panel": caso.id_panel, "error": str(error)})
+            print(f"Sin ajuste: {caso.id_panel}: {error}")
+            continue
+
+        anidados = {"centro", "normal", "calidad_interior", "estabilidad_interior", "cubierta"}
+        fila = {clave: valor for clave, valor in resumen.items()
+                if clave not in anidados and not isinstance(valor, (dict, list))}
+
+        for zona in ["interior", "exterior"]:
+            fila.update({f"{zona}_{clave}": valor for clave, valor in resumen[zona].items()})
+
+        fila.update({f"criterio_{clave}": valor for clave, valor in criterios.items()})
+        for nombre in ["calidad_interior", "estabilidad_interior"]:
+            fila.update({f"{nombre}_{clave}": valor for clave, valor in (resumen[nombre] or {}).items()})
+        if resumen["cubierta"]:
+            fila.update({clave: resumen["cubierta"][clave]
+                         for clave in ["angulo_entre_planos_grados", "separacion_p90_m"]})
+
+        fila.update({
+            f"manual_{campo}": resumen["revision_manual"].get(campo, "")
+            for campo in ["montaje", "coincidencia", "confianza"]
+        })
+        resultados.append(fila)
+
+    pd.DataFrame(resultados).to_csv(salida / "resumen.csv", index=False)
+    pd.DataFrame(errores, columns=["id_panel", "error"]).to_csv(salida / "errores.csv", index=False)
+    estimados = sum(fila["origen"] == "estimada" for fila in resultados)
+    print(f"Casos procesados: {len(resultados)}/{len(casos)}; estimados: {estimados}. Resultados: {salida}")
+
+    if errores:
+        raise SystemExit("Algunos casos no tienen ajuste. Consulta errores.csv.")
 
 
 if __name__ == "__main__":
