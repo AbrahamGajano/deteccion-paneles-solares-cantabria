@@ -1,5 +1,6 @@
 """Visor Dash para comprobar resultados de planos."""
 
+import argparse
 import base64
 import json
 from pathlib import Path
@@ -8,13 +9,14 @@ import laspy
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Dash, Input, Output, State, html
+from dash import Dash, Input, Output, State, ctx, dcc, html
 from shapely import wkt, intersects_xy
 
+from paneles_solares.lidar.estimar_planos import agregar_plano
 from paneles_solares.rutas import ruta_proyecto
 
 CARPETA = ruta_proyecto("data/lidar/prueba_pueblos_20261105/revision")
-RESULTADOS = ruta_proyecto("runs/lidar/validacion_cubierta")
+RESULTADOS = ruta_proyecto("runs/lidar/validacion_100")
 
 
 def leer_casos(carpeta: Path) -> pd.DataFrame:
@@ -108,18 +110,23 @@ def figura_ortofoto(caso: pd.Series, carpeta: Path) -> go.Figure:
     return fig
 
 
-def figura_nube(caso: pd.Series, carpeta: Path, resultado: dict | None) -> go.Figure:
-    """Dibuja la nube 3D, los puntos interiores y la proyección XY de la detección.
+def figura_nube(
+    caso: pd.Series, carpeta: Path, resultado: dict | None,
+    resultados: Path = RESULTADOS,
+) -> go.Figure:
+    """Dibuja la nube 3D, la detección y los planos guardados del ajuste.
 
     Params:
         caso: Fila con laz, poligono y límites geográficos del recorte.
         carpeta: Directorio de la muestra; la ruta LAZ es relativa a él.
-        resultado: Datos del ajuste asociado, sin representación de sus planos.
+        resultado: Datos del ajuste asociado, o None si no está calculado.
+        resultados: Directorio que contiene los archivos cubierta.csv por caso.
 
     Returns:
         go.Figure: Nube en coordenadas locales con los puntos interiores en rojo.
             El contorno se proyecta en la base de la vista, sin representar la
-            altura del panel. El encuadre vertical utiliza los percentiles 1 y 99.
+            altura del panel. Los planos interior y exterior aparecen en naranja
+            y azul. El encuadre vertical utiliza los percentiles 1 y 99.
     """
 
     fig = go.Figure()
@@ -143,6 +150,8 @@ def figura_nube(caso: pd.Series, carpeta: Path, resultado: dict | None) -> go.Fi
     margen = max(1., (superior - inferior) * 0.1)
     origen_z = inferior - margen
     altura = superior + margen - origen_z
+    origen = np.array([caso.xmin, caso.ymin, origen_z])
+    puntos = np.column_stack([x, y, z])
 
     fig.add_trace(
         go.Scatter3d(
@@ -152,7 +161,8 @@ def figura_nube(caso: pd.Series, carpeta: Path, resultado: dict | None) -> go.Fi
             mode="markers",
             name="Contexto",
             marker={"size": 2, "color": z[~dentro], "colorscale": "Viridis",
-                    "cmin": inferior, "cmax": max(superior, inferior + 0.1)},
+                    "cmin": inferior, "cmax": max(superior, inferior + 0.1),
+                    "showscale": False},
         )
     )
     fig.add_trace(
@@ -181,6 +191,32 @@ def figura_nube(caso: pd.Series, carpeta: Path, resultado: dict | None) -> go.Fi
                 hoverinfo="skip",
             ))
 
+    if resultado and resultado.get("normal") is not None:
+        centro = np.asarray(resultado["centro"])
+        normal = np.asarray(resultado["normal"])
+        distancias = np.abs((puntos - centro) @ normal)
+        compatibles = dentro & (distancias <= resultado["umbral_m"])
+
+        if compatibles.sum() >= 3:
+            agregar_plano(fig, puntos[compatibles] - origen, centro - origen,
+                           normal, "#ffad33", "Plano interior candidato")
+
+    cubierta = resultado.get("cubierta") if resultado else None
+    ruta_cubierta = resultados / caso.id_panel / "cubierta.csv"
+
+    if cubierta and ruta_cubierta.exists():
+        puntos_cubierta = pd.read_csv(ruta_cubierta)[["x", "y", "z"]].to_numpy()
+
+        if len(puntos_cubierta) >= 3:
+            locales = puntos_cubierta - origen
+            fig.add_trace(go.Scatter3d(
+                x=locales[:, 0], y=locales[:, 1], z=locales[:, 2],
+                mode="markers", name="Fragmento exterior asociado",
+                marker={"size": 3, "color": "#1645ab", "symbol": "diamond"},
+            ))
+            agregar_plano(fig, locales, np.asarray(cubierta["centro"]) - origen,
+                           np.asarray(cubierta["normal"]), "#168be0", "Plano exterior")
+
     dimensiones = np.array([caso.xmax - caso.xmin, caso.ymax - caso.ymin, altura])
     proporciones = dimensiones / dimensiones.max()
     fig.update_layout(
@@ -191,10 +227,26 @@ def figura_nube(caso: pd.Series, carpeta: Path, resultado: dict | None) -> go.Fi
             "aspectmode": "manual",
             "aspectratio": dict(zip(["x", "y", "z"], proporciones)),
         },
+        uirevision=caso.id_panel,
+        legend={"orientation": "h", "y": 1.12},
         margin={"l": 0, "r": 0, "t": 15, "b": 0},
     )
 
     return fig
+
+def formatear_numero(valor: float | None, unidad: str = "") -> str:
+    """Expresa una medida con dos decimales o indica que es desconocida.
+
+    Params:
+        valor: Medida numérica, o None si no está disponible.
+        unidad: Sufijo con la unidad de la medida.
+
+    Returns:
+        str: Valor formateado, conservando el cero como medida válida.
+    """
+
+    return "Sin dato" if valor is None else f"{valor:.2f}{unidad}"
+
 
 def mostrar_datos(caso: pd.Series, resultado: dict | None) -> list:
     """Prepara los textos de la tercera columna usando componentes html.
@@ -209,7 +261,35 @@ def mostrar_datos(caso: pd.Series, resultado: dict | None) -> list:
             desconocidos se representan mediante texto.
     """
 
-    pass
+    datos = [html.P(caso.id_panel, style={"overflowWrap": "anywhere"})]
+
+    if resultado is None:
+        return datos + [html.P("Este caso todavía no tiene resultados calculados.")]
+
+    medidas = [
+        ("Inclinación candidata", formatear_numero(resultado.get("inclinacion_candidata"), "°")),
+        ("Inclinación estimada", formatear_numero(resultado.get("inclinacion_estimada"), "°")),
+        ("Inclinación utilizada", formatear_numero(resultado.get("inclinacion_utilizada"), "°")),
+        ("Origen", resultado["origen"]),
+        ("Motivo", resultado["motivo"].replace("_", " ")),
+        ("Inliers interiores", formatear_numero(resultado.get("porcentaje_compatible"), " %")),
+        ("RMSE interior", formatear_numero(resultado.get("rmse_perpendicular_m"), " m")),
+    ]
+    datos.extend(html.P([html.Strong(f"{nombre}: "), valor]) for nombre, valor in medidas)
+
+    cubierta = resultado.get("cubierta")
+    if cubierta:
+        datos.extend([
+            html.H4("Comparación con el exterior"),
+            html.P([html.Strong("Ángulo entre planos: "),
+                    formatear_numero(cubierta["angulo_entre_planos_grados"], "°")]),
+            html.P([html.Strong("Separación p90: "),
+                    formatear_numero(cubierta["separacion_p90_m"], " m")]),
+        ])
+    else:
+        datos.append(html.P("Sin plano exterior asociado."))
+
+    return datos
 
 
 def crear_layout() -> html.Div:
@@ -224,7 +304,33 @@ def crear_layout() -> html.Div:
             y dcc.Store(id="indice", data=0) con la posición actual.
     """
 
-    pass
+    return html.Div([
+        html.H2("Revisión de resultados LiDAR"),
+        dcc.Store(id="indice", data=0),
+        html.Div([
+            html.Button("Atrás", id="atras", n_clicks=0),
+            html.Button("Siguiente", id="siguiente", n_clicks=0),
+        ], style={"display": "flex", "gap": "10px", "marginBottom": "15px"}),
+        html.Div([
+            html.Div([
+                html.H3("Ortofoto"),
+                dcc.Graph(id="ortofoto", style={"height": "72vh"}),
+            ], style={"minWidth": 0}),
+            html.Div([
+                html.H3("Nube y planos"),
+                dcc.Graph(id="nube", style={"height": "72vh"}),
+            ], style={"minWidth": 0}),
+            html.Div([
+                html.H3("Resultado"),
+                html.Div(id="datos"),
+                html.Hr(),
+                html.P("Rojo: puntos dentro del polígono detectado. "
+                       "El contorno discontinuo muestra su proyección XY."),
+                html.P("Los planos dibujados son candidatos geométricos. "
+                       "Una inclinación predeterminada es un valor supuesto."),
+            ]),
+        ], style={"display": "grid", "gridTemplateColumns": "1fr 1fr 280px", "gap": "18px"}),
+    ], style={"fontFamily": "Arial, sans-serif", "margin": "20px"})
 
 
 def registrar_callbacks(
@@ -267,7 +373,23 @@ def registrar_callbacks(
                 La primera llamada muestra el caso 0.
         """
 
-        pass
+        if ctx.triggered_id == "atras":
+            indice -= 1
+        elif ctx.triggered_id == "siguiente":
+            indice += 1
+
+        indice = max(0, min(indice, len(casos) - 1))
+        caso = casos.iloc[indice]
+        resultado = leer_resultado(caso.id_panel, resultados)
+        datos = [html.P(f"Caso {indice + 1} de {len(casos)}"),
+                 *mostrar_datos(caso, resultado)]
+
+        return (
+            indice,
+            figura_ortofoto(caso, carpeta),
+            figura_nube(caso, carpeta, resultado, resultados),
+            datos,
+        )
 
 
 def crear_app(carpeta: Path = CARPETA, resultados: Path = RESULTADOS) -> Dash:
@@ -281,20 +403,37 @@ def crear_app(carpeta: Path = CARPETA, resultados: Path = RESULTADOS) -> Dash:
         Dash: Aplicación con los casos cargados, el layout y los callbacks registrados.
     """
 
-    pass
+    casos = leer_casos(carpeta)
+
+    if casos.empty:
+        raise ValueError("No hay casos en casos.csv.")
+
+    app = Dash(__name__)
+    app.title = "Resultados LiDAR"
+    app.layout = crear_layout()
+    registrar_callbacks(app, casos, carpeta, resultados)
+
+    return app
 
 
 def main() -> None:
-    """Arranca el visor local con las rutas predeterminadas.
+    """Arranca el visor con las rutas y el puerto recibidos por terminal.
 
     Params:
         Ninguno.
 
     Returns:
-        None: La aplicación se sirve en http://127.0.0.1:8052.
+        None: Servidor local en el puerto indicado, 8052 por defecto.
     """
 
-    pass
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--carpeta", type=Path, default=CARPETA)
+    parser.add_argument("--resultados", type=Path, default=RESULTADOS)
+    parser.add_argument("--puerto", type=int, default=8052)
+    args = parser.parse_args()
+
+    app = crear_app(ruta_proyecto(args.carpeta), ruta_proyecto(args.resultados))
+    app.run(host="127.0.0.1", port=args.puerto, debug=False, threaded=False)
 
 
 if __name__ == "__main__":
