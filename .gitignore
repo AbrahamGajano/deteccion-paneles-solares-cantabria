@@ -18,16 +18,18 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 *.tmp
+*.part
 *.egg-info/
 build/
 dist/
 *.cache
 
 # Archivos auxiliares de LaTeX (el PDF final sí se conserva)
-docs/*.aux
-docs/*.log
-docs/*.out
-docs/*.xdv
-docs/*.synctex.gz
-docs/*.fdb_latexmk
-docs/*.fls
+docs/**/*.aux
+docs/**/*.log
+docs/**/*.out
+docs/**/*.xdv
+docs/**/*.synctex.gz
+docs/**/*.fdb_latexmk
+docs/**/*.fls
+docs/**/*.toc

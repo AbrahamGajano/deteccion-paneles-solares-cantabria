@@ -2,7 +2,6 @@
 
 import json
 import os
-import time
 from pathlib import Path
 
 import geopandas as gpd
@@ -509,32 +508,11 @@ def guardar_consulta(registro: dict) -> None:
 
 
 def solicitar_pvgis(sesion: requests.Session, servicio: str, parametros: dict) -> dict:
-    """Consulta PVGIS secuencialmente y reintenta solo fallos temporales.
+    """Devuelve el JSON de PVGIS; los errores HTTP o de conexión se propagan."""
 
-    Args:
-        sesion: Sesión HTTP reutilizada para consultar PVGIS.
-        servicio: Endpoint de PVGIS: PVcalc o seriescalc.
-        parametros: Valores que se pasan a la consulta.
-
-    Returns:
-        dict: Respuesta JSON del servicio solicitado.
-
-    """
-
-    for intento in range(4):
-        try:
-            respuesta = sesion.get(
-                f"{URL_PVGIS}/{servicio}", params=parametros, timeout=120
-            )
-            if respuesta.status_code in (429, 529) and intento < 3:
-                time.sleep(2**intento)
-                continue
-            respuesta.raise_for_status()
-            return respuesta.json()
-        except (requests.ConnectionError, requests.Timeout):
-            if intento == 3:
-                raise
-            time.sleep(2**intento)
+    respuesta = sesion.get(f"{URL_PVGIS}/{servicio}", params=parametros, timeout=120)
+    respuesta.raise_for_status()
+    return respuesta.json()
 
 
 def consultar_referencia(

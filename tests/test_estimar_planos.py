@@ -1,13 +1,17 @@
 """Comprueba ajustes y apoyo con geometrías conocidas y puntos ajenos al plano."""
 
+import io
 import json
+import unittest
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import unittest
+from unittest.mock import patch
 
 import laspy
 import numpy as np
 import pandas as pd
+from pyproj import CRS
 from shapely import intersects_xy
 from shapely.geometry import box
 
@@ -23,11 +27,108 @@ from paneles_solares.lidar.estimar_planos import (
     elegir_caso,
     evaluar_apoyo,
     evaluar_entorno,
+    main,
     procesar_caso,
 )
+from paneles_solares.lidar.preparar_revision import leer_nubes, unir_nubes
 
 
 class PruebasPlanos(unittest.TestCase):
+    def test_union_con_escalas_distintas_conserva_atributos_y_duplicados_reales(self):
+        with TemporaryDirectory(prefix="prueba_union_lidar_") as temporal:
+            carpeta = Path(temporal)
+            crs = CRS.from_epsg(25830)
+            rutas = []
+            for numero, (x, intensidad) in enumerate([
+                ([420000., 420001.], [10, 20]),
+                ([420001., 420001., 420002.], [20, 21, 30]),
+            ]):
+                cabecera = laspy.LasHeader(point_format=8, version="1.4")
+                cabecera.add_crs(crs)
+                cabecera.scales = np.full(3, 0.01 if numero == 0 else 0.001)
+                cabecera.offsets = np.array([420000. - numero, 4800000. - numero, 0.])
+                nube = laspy.LasData(cabecera)
+                nube.x = x
+                nube.y = np.full(len(x), 4800000.)
+                nube.z = np.full(len(x), 10.)
+                nube.intensity = intensidad
+                ruta = carpeta / f"parte_{numero}.laz"
+                nube.write(ruta)
+                rutas.append(ruta)
+
+            unida = leer_nubes(rutas, crs)
+            self.assertEqual(len(unida.points), 4)
+            np.testing.assert_allclose(unida.x, [420000., 420001., 420001., 420002.])
+            np.testing.assert_array_equal(unida.intensity, [10, 20, 21, 30])
+            self.assertEqual(unir_nubes(rutas, carpeta / "unida.laz", crs), 4)
+            np.testing.assert_array_equal(unida.points.array, laspy.read(carpeta / "unida.laz").points.array)
+
+    def test_inventario_y_muestra_producen_el_mismo_ajuste(self):
+        with TemporaryDirectory(prefix="prueba_inventario_lidar_") as temporal:
+            carpeta = Path(temporal)
+            crs = CRS.from_epsg(25830)
+            puntos = self.escena()
+            rutas = []
+            for numero, seleccion in enumerate([puntos[:100], puntos[90:]]):
+                cabecera = laspy.LasHeader(point_format=8, version="1.4")
+                cabecera.add_crs(crs)
+                nube = laspy.LasData(cabecera)
+                nube.x, nube.y, nube.z = seleccion.T
+                ruta = carpeta / f"parte_{numero}.laz"
+                nube.write(ruta)
+                rutas.append(ruta)
+            unir_nubes(rutas, carpeta / "unida.laz", crs)
+            caso = pd.Series({"id_panel": "caso", "laz": "unida.laz",
+                              "poligono": box(0, 0, 3, 3).wkt, "formulario": ""})
+            with redirect_stdout(io.StringIO()):
+                muestra = procesar_caso(caso, carpeta, carpeta / "muestra", guardar_html=False)
+                regional = caso.drop("laz")
+                regional["rutas_laz"] = rutas
+                regional["crs_lidar"] = crs
+                inventario = procesar_caso(regional, carpeta, carpeta / "inventario",
+                                           guardar_html=False, guardar_puntos=False)
+            for campo in ["normal", "interior", "exterior", "origen", "motivo", "inclinacion_estimada"]:
+                self.assertEqual(muestra[campo], inventario[campo])
+            self.assertFalse((carpeta / "inventario/caso/puntos.csv").exists())
+            self.assertFalse((carpeta / "inventario/caso/ajuste.html").exists())
+            self.assertTrue((carpeta / "inventario/caso/cubierta.csv").exists())
+            self.assertIsNone(inventario["laz"])
+            self.assertEqual(inventario["rutas_laz"], [str(ruta) for ruta in rutas])
+
+    def test_reanudacion_recupera_resultados_y_repite_json_vacio_o_incompleto(self):
+        with TemporaryDirectory(prefix="prueba_reanudacion_lidar_") as temporal:
+            carpeta = Path(temporal)
+            puntos = self.escena()
+            nube = laspy.LasData(laspy.LasHeader(point_format=3, version="1.2"))
+            nube.x, nube.y, nube.z = puntos.T
+            ruta = carpeta / "caso.laz"
+            nube.write(ruta)
+            pd.DataFrame([{"id_panel": "caso", "laz": "caso.laz",
+                           "poligono": box(0, 0, 3, 3).wkt, "formulario": ""}]).to_csv(
+                carpeta / "casos.csv", index=False
+            )
+            argumentos = ["estimar_planos", "--carpeta", str(carpeta), "--todos",
+                          "--solo-resumen", "--reanudar", "--salida", str(carpeta / "salida")]
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                with patch("sys.argv", argumentos):
+                    main()
+                with patch("sys.argv", argumentos), patch(
+                    "paneles_solares.lidar.estimar_planos.procesar_caso", wraps=procesar_caso
+                ) as procesar:
+                    main()
+                    procesar.assert_not_called()
+                resumen = carpeta / "salida/caso/resumen.json"
+                for contenido in ["", "{", "{}"]:
+                    resumen.write_text(contenido, encoding="utf-8")
+                    with patch("sys.argv", argumentos), patch(
+                        "paneles_solares.lidar.estimar_planos.procesar_caso", wraps=procesar_caso
+                    ) as procesar:
+                        main()
+                        self.assertEqual(procesar.call_count, 1)
+            avance = json.loads((carpeta / "salida/progreso.json").read_text(encoding="utf-8"))
+            self.assertTrue(avance["terminado"])
+            self.assertEqual(avance["procesados"], 1)
+
     def escena(self, inclinacion=25., inclinacion_exterior=25., separacion=0.):
         interior = np.array([(x, y) for x in np.linspace(0.2, 2.8, 9)
                              for y in np.linspace(0.2, 2.8, 9)])
@@ -102,6 +203,43 @@ class PruebasPlanos(unittest.TestCase):
         self.assertEqual(resultado["decision"]["origen"], "estimada")
         self.assertAlmostEqual(resultado["decision"]["inclinacion_estimada"], 25., places=5)
 
+    def test_encuentra_cubierta_despues_de_dos_planos_ajenos(self):
+        contexto = self.escena()
+        rng = np.random.default_rng(8)
+        planos = [contexto]
+        for cantidad, altura in [(250, 0.), (180, 5.)]:
+            xy = rng.uniform([-1.5, -1.5], [4.5, -0.2], (cantidad, 2))
+            planos.append(np.column_stack([xy, np.full(cantidad, altura)]))
+        contexto = np.vstack(planos)
+        limitado = self.decidir(contexto, criterios={"max_planos": 2})["decision"]
+        ampliado = self.decidir(contexto, criterios={"max_planos": 6})["decision"]
+
+        self.assertEqual(limitado["motivo"], "sin_cubierta_local")
+        self.assertEqual(ampliado["origen"], "estimada")
+        self.assertAlmostEqual(ampliado["inclinacion_estimada"], 25., places=5)
+        self.assertGreaterEqual(ampliado["intentos_exteriores"][0]["n_candidatos"], 3)
+
+    def test_prefiere_fragmento_con_mayor_apoyo_local(self):
+        contexto = self.escena(inclinacion=0., inclinacion_exterior=0.)
+        otro = contexto[81:].copy()
+        otro[:, 0] = np.repeat(np.linspace(-1.7, -0.5, 8), 9)
+        otro[:, 2] = 10.4
+        decision = self.decidir(np.vstack([contexto, otro]))["decision"]
+
+        self.assertEqual(decision["origen"], "estimada")
+        self.assertAlmostEqual(decision["inclinacion_estimada"], 0., places=5)
+        self.assertEqual(decision["intentos_exteriores"][0]["n_cercanos"], 2)
+
+    def test_pendiente_pequena_y_cubierta_sin_observaciones_exteriores(self):
+        contexto = self.escena(inclinacion=2., inclinacion_exterior=2.)
+        con_cubierta = self.decidir(contexto)["decision"]
+        sin_cubierta = self.decidir(contexto[:81])["decision"]
+
+        self.assertEqual(con_cubierta["origen"], "estimada")
+        self.assertAlmostEqual(con_cubierta["inclinacion_estimada"], 2., places=5)
+        self.assertEqual(sin_cubierta["motivo"], "sin_cubierta_local")
+        self.assertIsNone(sin_cubierta["inclinacion_estimada"])
+
     def test_parche_lejano_no_completa_un_apoyo_casi_lineal(self):
         interior = self.escena(inclinacion=0.)[:81]
         xy = np.array([(x, y) for x in [3.2, 3.3, 5.5, 5.8, 6.1, 6.4]
@@ -110,7 +248,7 @@ class PruebasPlanos(unittest.TestCase):
         resultado = self.decidir(np.vstack([interior, exterior]))
 
         self.assertEqual(resultado["decision"]["motivo"], "sin_cubierta_local")
-        self.assertEqual(len(resultado["decision"]["intentos_exteriores"]), 2)
+        self.assertEqual([intento["anillo_m"] for intento in resultado["decision"]["intentos_exteriores"]], [2., 4., 8.])
 
     def test_cubierta_sin_apoyo_y_contexto_truncado(self):
         sin_cubierta = self.decidir(self.escena()[:81])

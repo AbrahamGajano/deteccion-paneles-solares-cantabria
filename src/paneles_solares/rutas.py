@@ -9,14 +9,7 @@ RAIZ = Path(__file__).resolve().parents[2]
 
 
 def ruta_proyecto(ruta: str | Path) -> Path:
-    """Completa una ruta relativa; si ya es absoluta, la devuelve sin cambiarla.
-
-    Args:
-        ruta: Ruta relativa a la raíz del proyecto o ruta absoluta.
-
-    Returns:
-        Path: Ruta absoluta, respetando las entradas que ya son absolutas.
-    """
+    """Completa una ruta relativa a la raíz del proyecto; respeta las absolutas."""
 
     ruta = Path(ruta)
     if ruta.is_absolute():
@@ -25,14 +18,7 @@ def ruta_proyecto(ruta: str | Path) -> Path:
 
 
 def ruta_registrada(ruta: str | Path) -> str:
-    """Guarda rutas del proyecto relativas y conserva absolutas las externas.
-
-    Args:
-        ruta: Archivo cuya ubicación se registra en un manifiesto o metadato.
-
-    Returns:
-        str: Ruta relativa al proyecto cuando el archivo está dentro de él.
-    """
+    """Registra rutas internas relativas al proyecto y externas como absolutas."""
 
     ruta = ruta_proyecto(ruta).resolve()
 
@@ -84,14 +70,7 @@ def retirar_panel() -> None:
 
 
 def huella_archivo(ruta: Path) -> str:
-    """Calcula SHA256 sin cargar el archivo completo en memoria.
-
-    Args:
-        ruta: Archivo cuyo contenido se quiere identificar.
-
-    Returns:
-        str: Huella hexadecimal del contenido.
-    """
+    """Calcula SHA256 por bloques de 1 MiB sin cargar todo el archivo en memoria."""
 
     huella = hashlib.sha256()
     with ruta.open("rb") as archivo:
@@ -114,8 +93,6 @@ def version_indicadores() -> dict[str, dict[str, int | str]]:
     version = {}
     for nombre in ("edificios", "municipios"):
         ruta = INDICADORES_UNET / f"{nombre}.gpkg"
-        if not ruta.is_file():
-            raise FileNotFoundError(ruta)
         estado = ruta.stat()
         version[nombre] = {
             "tamano_bytes": estado.st_size,

@@ -44,14 +44,7 @@ def asignar_uso(
     uso: str,
     motivo: str,
 ) -> None:
-    """Asigna el uso de varias imágenes y conserva su valor anterior.
-
-    Args:
-        manifest: Manifest completo del pool.
-        indices: Filas que se quieren modificar.
-        uso: Nuevo uso de las imágenes.
-        motivo: Explicación breve de la decisión.
-    """
+    """Asigna uso y motivo a las filas indicadas, conservando el uso anterior."""
 
     if len(indices) == 0:
         return
@@ -106,9 +99,6 @@ def cargar_modelos() -> tuple[object, torch.nn.Module, torch.device]:
 
     if not MODELO_YOLO.is_file():
         raise FileNotFoundError(MODELO_YOLO)
-
-    if not MODELO_UNET.is_file():
-        raise FileNotFoundError(MODELO_UNET)
 
     from ultralytics import YOLO
 
@@ -225,9 +215,6 @@ def analizar_negativas(
 
     for numero, (indice, fila) in enumerate(negativas.iterrows(), start=1):
         ruta_imagen = POOL / "images" / f"{fila['tile_id']}.png"
-
-        if not ruta_imagen.is_file():
-            raise FileNotFoundError(ruta_imagen)
 
         with Image.open(ruta_imagen) as archivo:
             imagen = np.asarray(archivo.convert("RGB"))

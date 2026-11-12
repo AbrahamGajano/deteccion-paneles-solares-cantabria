@@ -6,8 +6,8 @@ from contextlib import closing
 from copy import deepcopy
 from pathlib import Path
 
-import pandas as pd
 import geopandas as gpd
+import pandas as pd
 from shapely import from_wkb
 
 from paneles_solares.rutas import ruta_proyecto
@@ -199,25 +199,12 @@ class AlmacenSeguimiento:
         self.db.close()
 
     def filas(self, sql: str, parametros: tuple = ()) -> list[dict]:
-        """Lee filas como diccionarios.
-
-        Args:
-            sql: Consulta SQL de lectura.
-            parametros: Valores que se pasan a la consulta.
-
-        Returns:
-            list[dict]: Filas de la consulta como diccionarios.
-        """
+        """Ejecuta una consulta SQL parametrizada y devuelve sus filas como diccionarios."""
 
         return [dict(f) for f in self.db.execute(sql, parametros)]
 
     def poner_meta(self, clave: str, valor):
-        """Guarda un metadato de la referencia geográfica.
-
-        Args:
-            clave: Nombre del metadato.
-            valor: Valor que se conserva en formato JSON.
-        """
+        """Guarda un metadato de la referencia geográfica en formato JSON."""
 
         with self.db:
             self.db.execute(

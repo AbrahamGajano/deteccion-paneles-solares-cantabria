@@ -94,13 +94,18 @@ def indexar_ortofotos(carpeta: Path) -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(registros, columns=["ruta", "geometry"], crs=25830)
 
 
-def extraer_imagen(ventana, ortofotos: gpd.GeoDataFrame, destino: Path) -> tuple:
+def extraer_imagen(
+    ventana, ortofotos: gpd.GeoDataFrame, destino: Path,
+    cobertura_completa: bool = True,
+) -> tuple:
     """Extrae RGB del contexto y une hojas de ortofoto si es necesario.
 
     Params:
         ventana: Fila con la geometría del cuadrado de contexto.
         ortofotos: Índice de los TIFF locales.
         destino: Ruta del PNG que se quiere guardar.
+        cobertura_completa: Si es True, exige imagen en todo el contexto.
+            En caso contrario, los huecos se representan en negro.
 
     Returns:
         tuple: Límites reales del PNG en metros: xmin, ymin, xmax, ymax.
@@ -115,7 +120,7 @@ def extraer_imagen(ventana, ortofotos: gpd.GeoDataFrame, destino: Path) -> tuple
         rutas, bounds=ventana.geometry.bounds, indexes=[1, 2, 3], masked=True
     )
 
-    if np.ma.getmaskarray(datos).all(axis=0).any():
+    if cobertura_completa and np.ma.getmaskarray(datos).all(axis=0).any():
         raise ValueError("La ortofoto no cubre todo el contexto.")
 
     rgb = np.moveaxis(datos.filled(0), 0, -1).astype(np.uint8)
@@ -124,23 +129,21 @@ def extraer_imagen(ventana, ortofotos: gpd.GeoDataFrame, destino: Path) -> tuple
     return array_bounds(rgb.shape[0], rgb.shape[1], transformacion)
 
 
-def unir_nubes(rutas: list, destino: Path, crs) -> int:
-    """Reúne las aportaciones del panel sin perder sus atributos.
+def leer_nubes(rutas: list, crs) -> laspy.LasData:
+    """Reúne en memoria las aportaciones del panel sin perder sus atributos.
 
     Params:
         rutas: LAZ del mismo panel procedentes de una o varias hojas.
-        destino: Ruta del LAZ conjunto.
         crs: Referencia espacial usada si el caso no tiene ningún punto.
 
     Returns:
-        int: Número de puntos guardados, sin duplicados exactos.
+        laspy.LasData: Nube conjunta sin duplicados exactos.
     """
 
     if not rutas:
         cabecera = laspy.LasHeader(point_format=8, version="1.4")
         cabecera.add_crs(crs)
-        laspy.LasData(cabecera).write(destino)
-        return 0
+        return laspy.LasData(cabecera)
 
     nubes = [laspy.read(ruta) for ruta in rutas]
     cabecera = nubes[0].header.copy()
@@ -161,9 +164,16 @@ def unir_nubes(rutas: list, destino: Path, crs) -> int:
     resultado.points = laspy.ScaleAwarePointRecord(
         registros, cabecera.point_format, cabecera.scales, cabecera.offsets
     )
-    resultado.write(destino)
+    return resultado
 
-    return len(registros)
+
+def unir_nubes(rutas: list, destino: Path, crs) -> int:
+    """Guarda los LAZ juntos sin duplicados exactos y devuelve el número de puntos."""
+
+    nube = leer_nubes(rutas, crs)
+    nube.write(destino)
+
+    return len(nube.points)
 
 
 def preparar_muestra(

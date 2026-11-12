@@ -275,12 +275,7 @@ def guardar_modelo(
     modelo: nn.Module,
     ruta: Path,
 ) -> None:
-    """Guarda los pesos entrenados del modelo.
-
-    Args:
-        modelo: Modelo cargado para esta fase.
-        ruta: Ruta del archivo que se utiliza.
-    """
+    """Guarda state_dict en la ruta indicada y crea su carpeta si hace falta."""
 
     ruta.parent.mkdir(parents=True, exist_ok=True)
 
@@ -291,11 +286,7 @@ def guardar_modelo(
 
 
 def fijar_semilla(semilla: int) -> None:
-    """Fija la semilla utilizada por los generadores aleatorios.
-
-    Args:
-        semilla: Semilla del muestreo reproducible.
-    """
+    """Fija las semillas de Python, NumPy y PyTorch, incluidas las GPU disponibles."""
 
     random.seed(semilla)
     np.random.seed(semilla)

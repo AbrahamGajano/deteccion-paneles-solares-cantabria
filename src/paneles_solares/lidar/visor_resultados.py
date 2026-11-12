@@ -1,123 +1,83 @@
 """Visor Dash para comprobar resultados de planos."""
 
 import argparse
-import base64
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import laspy
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
+import rasterio
 from dash import Dash, Input, Output, State, ctx, dcc, html
-from shapely import wkt, intersects_xy
+from shapely import intersects_xy, wkt
 
 from paneles_solares.lidar.estimar_planos import agregar_plano
+from paneles_solares.lidar.preparar_revision import (
+    PREPARACION, RECORTES, ORTOFOTOS, inventariar_casos,
+    indexar_ortofotos, extraer_imagen, leer_nubes,
+)
+from paneles_solares.lidar.visor import figura_ortofoto, leer_casos
 from paneles_solares.rutas import ruta_proyecto
 
 CARPETA = ruta_proyecto("data/lidar/prueba_pueblos_20261105/revision")
-RESULTADOS = ruta_proyecto("runs/lidar/validacion_100")
-
-
-def leer_casos(carpeta: Path) -> pd.DataFrame:
-    """Lee casos.csv conservando el orden y los campos vacíos como texto.
-
-    Params:
-        carpeta: Directorio de la muestra, con casos.csv, imagenes/ y nubes/.
-
-    Returns:
-        pd.DataFrame: Tabla con id_panel, imagen, laz, poligono y límites XY.
-    """
-
-    return pd.read_csv(carpeta / "casos.csv", keep_default_na=False)
+RESULTADOS = ruta_proyecto("runs/lidar/cantabria_20261112_v2")
 
 
 def leer_resultado(id_panel: str, resultados: Path) -> dict | None:
-    """Lee resultados/id_panel/resumen.json del estimador.
-
-    Params:
-        id_panel: Identificador del caso que se muestra.
-        resultados: Directorio de salida de estimar_planos.py.
-
-    Returns:
-        dict | None: JSON leído, o None si el caso todavía no tiene resultado.
-            centro, normal y cubierta también pueden ser None dentro del JSON.
-    """
+    """Lee id_panel/resumen.json; devuelve None si todavía no existe."""
 
     ruta = resultados / id_panel / "resumen.json"
 
     if not ruta.exists():
         return None
 
-    with open(ruta, encoding="utf-8") as archivo:
-        return json.load(archivo)
+    return json.loads(ruta.read_text(encoding="utf-8"))
 
 
-def figura_ortofoto(caso: pd.Series, carpeta: Path) -> go.Figure:
-    """Construye una figura con el PNG y el contorno original del panel.
+def figura_ortofoto_regional(caso: pd.Series, ortofotos) -> tuple:
+    """Extrae la ortofoto del contexto y devuelve su figura y límites reales.
 
     Params:
-        caso: Fila con imagen, poligono en WKT y límites xmin/ymin/xmax/ymax.
-        carpeta: Directorio de la muestra; la ruta de imagen es relativa a él.
+        caso: Detección del inventario con su ventana geográfica.
+        ortofotos: Índice de los TIFF locales.
 
     Returns:
-        go.Figure: Imagen orientada al norte y contorno en coordenadas locales.
+        tuple: Figura y límites xmin, ymin, xmax, ymax. Sin cobertura local,
+            devuelve una figura informativa y los límites originales.
     """
 
-    ruta_img = carpeta / caso.imagen
+    limites = tuple(caso[campo] for campo in ["xmin", "ymin", "xmax", "ymax"])
+    with TemporaryDirectory(prefix="visor_lidar_") as temporal:
+        carpeta = Path(temporal)
+        ruta = carpeta / "ortofoto.png"
+        try:
+            limites = extraer_imagen(caso, ortofotos, ruta, cobertura_completa=False)
+        except (ValueError, OSError, rasterio.errors.RasterioError) as error:
+            figura = go.Figure()
+            figura.add_annotation(text=f"Sin ortofoto local: {error}",
+                                  x=0.5, y=0.5, xref="paper", yref="paper", showarrow=False)
+            return figura, limites
 
-    with open(ruta_img, "rb") as imagen:
-        datos_imagen = base64.b64encode(imagen.read()).decode("ascii")
+        imagen = caso.copy()
+        imagen["imagen"] = "ortofoto.png"
+        for campo, valor in zip(["xmin", "ymin", "xmax", "ymax"], limites):
+            imagen[campo] = valor
 
-    ancho = caso.xmax - caso.xmin
-    alto = caso.ymax - caso.ymin
-    fig = go.Figure()
-
-    fig.add_layout_image(
-        source=f"data:image/png;base64,{datos_imagen}",
-        xref="x", yref="y", x=0, y=alto,
-        sizex=ancho, sizey=alto,
-        xanchor="left", yanchor="top", sizing="stretch", layer="below",
-    )
-
-    geometria = wkt.loads(caso.poligono)
-
-    poligonos = (
-        list(geometria.geoms) if geometria.geom_type == "MultiPolygon" else [geometria]
-    )
-
-    for poligono in poligonos:
-        for anillo in [poligono.exterior, *poligono.interiors]:
-            x, y = anillo.xy
-            fig.add_trace(
-                go.Scatter(
-                    x=np.asarray(x) - caso.xmin,
-                    y=np.asarray(y) - caso.ymin,
-                    mode="lines",
-                    line={"color": "red"},
-                    showlegend=False,
-                    hoverinfo="skip",
-                )
-            )
-
-    fig.update_layout(
-        margin={"l": 45, "r": 10, "t": 15, "b": 40},
-        xaxis={"title": "Este local (m)", "range": [0, ancho]},
-        yaxis={"title": "Norte local (m)", "range": [0, alto],
-               "autorange": False, "scaleanchor": "x"},
-    )
-
-    return fig
+        return figura_ortofoto(imagen, carpeta), limites
 
 
 def figura_nube(
-    caso: pd.Series, carpeta: Path, resultado: dict | None,
+    caso: pd.Series,
+    carpeta: Path,
+    resultado: dict | None,
     resultados: Path = RESULTADOS,
 ) -> go.Figure:
     """Dibuja la nube 3D, la detección y los planos guardados del ajuste.
 
     Params:
-        caso: Fila con laz, poligono y límites geográficos del recorte.
+        caso: Fila con laz o rutas_laz, poligono y límites geográficos del recorte.
         carpeta: Directorio de la muestra; la ruta LAZ es relativa a él.
         resultado: Datos del ajuste asociado, o None si no está calculado.
         resultados: Directorio que contiene los archivos cubierta.csv por caso.
@@ -131,9 +91,10 @@ def figura_nube(
 
     fig = go.Figure()
 
-    ruta_laz = carpeta / caso.laz
-
-    nube = laspy.read(ruta_laz)
+    if "rutas_laz" in caso.index:
+        nube = leer_nubes(caso.rutas_laz, caso.crs_lidar)
+    else:
+        nube = laspy.read(carpeta / caso.laz)
 
     if not len(nube.points):
         return fig
@@ -147,7 +108,7 @@ def figura_nube(
     dentro = intersects_xy(geom, x, y)
 
     inferior, superior = np.percentile(z, [1, 99])
-    margen = max(1., (superior - inferior) * 0.1)
+    margen = max(1.0, (superior - inferior) * 0.1)
     origen_z = inferior - margen
     altura = superior + margen - origen_z
     origen = np.array([caso.xmin, caso.ymin, origen_z])
@@ -160,9 +121,14 @@ def figura_nube(
             z=z[~dentro] - origen_z,
             mode="markers",
             name="Contexto",
-            marker={"size": 2, "color": z[~dentro], "colorscale": "Viridis",
-                    "cmin": inferior, "cmax": max(superior, inferior + 0.1),
-                    "showscale": False},
+            marker={
+                "size": 2,
+                "color": z[~dentro],
+                "colorscale": "Viridis",
+                "cmin": inferior,
+                "cmax": max(superior, inferior + 0.1),
+                "showscale": False,
+            },
         )
     )
     fig.add_trace(
@@ -181,15 +147,17 @@ def figura_nube(
     for poligono in poligonos:
         for anillo in [poligono.exterior, *poligono.interiors]:
             borde_x, borde_y = anillo.xy
-            fig.add_trace(go.Scatter3d(
-                x=np.asarray(borde_x) - caso.xmin,
-                y=np.asarray(borde_y) - caso.ymin,
-                z=np.zeros(len(borde_x)),
-                mode="lines",
-                line={"color": "red", "dash": "dash"},
-                showlegend=False,
-                hoverinfo="skip",
-            ))
+            fig.add_trace(
+                go.Scatter3d(
+                    x=np.asarray(borde_x) - caso.xmin,
+                    y=np.asarray(borde_y) - caso.ymin,
+                    z=np.zeros(len(borde_x)),
+                    mode="lines",
+                    line={"color": "red", "dash": "dash"},
+                    showlegend=False,
+                    hoverinfo="skip",
+                )
+            )
 
     if resultado and resultado.get("normal") is not None:
         centro = np.asarray(resultado["centro"])
@@ -198,8 +166,14 @@ def figura_nube(
         compatibles = dentro & (distancias <= resultado["umbral_m"])
 
         if compatibles.sum() >= 3:
-            agregar_plano(fig, puntos[compatibles] - origen, centro - origen,
-                           normal, "#ffad33", "Plano interior candidato")
+            agregar_plano(
+                fig,
+                puntos[compatibles] - origen,
+                centro - origen,
+                normal,
+                "#ffad33",
+                "Plano interior candidato",
+            )
 
     cubierta = resultado.get("cubierta") if resultado else None
     ruta_cubierta = resultados / caso.id_panel / "cubierta.csv"
@@ -209,13 +183,24 @@ def figura_nube(
 
         if len(puntos_cubierta) >= 3:
             locales = puntos_cubierta - origen
-            fig.add_trace(go.Scatter3d(
-                x=locales[:, 0], y=locales[:, 1], z=locales[:, 2],
-                mode="markers", name="Fragmento exterior asociado",
-                marker={"size": 3, "color": "#1645ab", "symbol": "diamond"},
-            ))
-            agregar_plano(fig, locales, np.asarray(cubierta["centro"]) - origen,
-                           np.asarray(cubierta["normal"]), "#168be0", "Plano exterior")
+            fig.add_trace(
+                go.Scatter3d(
+                    x=locales[:, 0],
+                    y=locales[:, 1],
+                    z=locales[:, 2],
+                    mode="markers",
+                    name="Fragmento exterior asociado",
+                    marker={"size": 3, "color": "#1645ab", "symbol": "diamond"},
+                )
+            )
+            agregar_plano(
+                fig,
+                locales,
+                np.asarray(cubierta["centro"]) - origen,
+                np.asarray(cubierta["normal"]),
+                "#168be0",
+                "Plano exterior",
+            )
 
     dimensiones = np.array([caso.xmax - caso.xmin, caso.ymax - caso.ymin, altura])
     proporciones = dimensiones / dimensiones.max()
@@ -234,16 +219,9 @@ def figura_nube(
 
     return fig
 
+
 def formatear_numero(valor: float | None, unidad: str = "") -> str:
-    """Expresa una medida con dos decimales o indica que es desconocida.
-
-    Params:
-        valor: Medida numérica, o None si no está disponible.
-        unidad: Sufijo con la unidad de la medida.
-
-    Returns:
-        str: Valor formateado, conservando el cero como medida válida.
-    """
+    """Formatea con dos decimales y unidad; solo None se muestra como «Sin dato»."""
 
     return "Sin dato" if valor is None else f"{valor:.2f}{unidad}"
 
@@ -267,25 +245,52 @@ def mostrar_datos(caso: pd.Series, resultado: dict | None) -> list:
         return datos + [html.P("Este caso todavía no tiene resultados calculados.")]
 
     medidas = [
-        ("Inclinación candidata", formatear_numero(resultado.get("inclinacion_candidata"), "°")),
-        ("Inclinación estimada", formatear_numero(resultado.get("inclinacion_estimada"), "°")),
-        ("Inclinación utilizada", formatear_numero(resultado.get("inclinacion_utilizada"), "°")),
+        (
+            "Inclinación candidata",
+            formatear_numero(resultado.get("inclinacion_candidata"), "°"),
+        ),
+        (
+            "Inclinación estimada",
+            formatear_numero(resultado.get("inclinacion_estimada"), "°"),
+        ),
+        (
+            "Inclinación utilizada",
+            formatear_numero(resultado.get("inclinacion_utilizada"), "°"),
+        ),
         ("Origen", resultado["origen"]),
         ("Motivo", resultado["motivo"].replace("_", " ")),
-        ("Inliers interiores", formatear_numero(resultado.get("porcentaje_compatible"), " %")),
-        ("RMSE interior", formatear_numero(resultado.get("rmse_perpendicular_m"), " m")),
+        (
+            "Inliers interiores",
+            formatear_numero(resultado.get("porcentaje_compatible"), " %"),
+        ),
+        (
+            "RMSE interior",
+            formatear_numero(resultado.get("rmse_perpendicular_m"), " m"),
+        ),
     ]
-    datos.extend(html.P([html.Strong(f"{nombre}: "), valor]) for nombre, valor in medidas)
+    datos.extend(
+        html.P([html.Strong(f"{nombre}: "), valor]) for nombre, valor in medidas
+    )
 
     cubierta = resultado.get("cubierta")
     if cubierta:
-        datos.extend([
-            html.H4("Comparación con el exterior"),
-            html.P([html.Strong("Ángulo entre planos: "),
-                    formatear_numero(cubierta["angulo_entre_planos_grados"], "°")]),
-            html.P([html.Strong("Separación p90: "),
-                    formatear_numero(cubierta["separacion_p90_m"], " m")]),
-        ])
+        datos.extend(
+            [
+                html.H4("Comparación con el exterior"),
+                html.P(
+                    [
+                        html.Strong("Ángulo entre planos: "),
+                        formatear_numero(cubierta["angulo_entre_planos_grados"], "°"),
+                    ]
+                ),
+                html.P(
+                    [
+                        html.Strong("Separación p90: "),
+                        formatear_numero(cubierta["separacion_p90_m"], " m"),
+                    ]
+                ),
+            ]
+        )
     else:
         datos.append(html.P("Sin plano exterior asociado."))
 
@@ -295,46 +300,80 @@ def mostrar_datos(caso: pd.Series, resultado: dict | None) -> list:
 def crear_layout() -> html.Div:
     """Define los componentes de la página y su distribución en tres columnas.
 
-    Params:
-        Ninguno.
-
     Returns:
         html.Div: Contenedor con dcc.Graph(id="ortofoto"), dcc.Graph(id="nube")
             y html.Div(id="datos"), botones con id="atras" e id="siguiente"
             y dcc.Store(id="indice", data=0) con la posición actual.
     """
 
-    return html.Div([
-        html.H2("Revisión de resultados LiDAR"),
-        dcc.Store(id="indice", data=0),
-        html.Div([
-            html.Button("Atrás", id="atras", n_clicks=0),
-            html.Button("Siguiente", id="siguiente", n_clicks=0),
-        ], style={"display": "flex", "gap": "10px", "marginBottom": "15px"}),
-        html.Div([
-            html.Div([
-                html.H3("Ortofoto"),
-                dcc.Graph(id="ortofoto", style={"height": "72vh"}),
-            ], style={"minWidth": 0}),
-            html.Div([
-                html.H3("Nube y planos"),
-                dcc.Graph(id="nube", style={"height": "72vh"}),
-            ], style={"minWidth": 0}),
-            html.Div([
-                html.H3("Resultado"),
-                html.Div(id="datos"),
-                html.Hr(),
-                html.P("Rojo: puntos dentro del polígono detectado. "
-                       "El contorno discontinuo muestra su proyección XY."),
-                html.P("Los planos dibujados son candidatos geométricos. "
-                       "Una inclinación predeterminada es un valor supuesto."),
-            ]),
-        ], style={"display": "grid", "gridTemplateColumns": "1fr 1fr 280px", "gap": "18px"}),
-    ], style={"fontFamily": "Arial, sans-serif", "margin": "20px"})
+    return html.Div(
+        [
+            html.H2("Revisión de resultados LiDAR"),
+            dcc.Store(id="indice", data=0),
+            html.Div(
+                [
+                    dcc.Dropdown(
+                        id="filtro",
+                        options=[
+                            {"label": "Todos los resultados", "value": "todos"},
+                            {"label": "Inclinación estimada", "value": "estimada"},
+                            {"label": "Valor predeterminado", "value": "predeterminada"},
+                        ],
+                        value="todos", clearable=False,
+                        style={"width": "250px"},
+                    ),
+                    html.Button("Atrás", id="atras", n_clicks=0),
+                    html.Button("Siguiente", id="siguiente", n_clicks=0),
+                    html.Button("Aleatorio", id="aleatorio", n_clicks=0),
+                ],
+                style={"display": "flex", "gap": "10px", "marginBottom": "15px"},
+            ),
+            html.Div(
+                [
+                    html.Div(
+                        [
+                            html.H3("Ortofoto"),
+                            dcc.Graph(id="ortofoto", style={"height": "72vh"}),
+                        ],
+                        style={"minWidth": 0},
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Nube y planos"),
+                            dcc.Graph(id="nube", style={"height": "72vh"}),
+                        ],
+                        style={"minWidth": 0},
+                    ),
+                    html.Div(
+                        [
+                            html.H3("Resultado"),
+                            html.Div(id="datos"),
+                            html.Hr(),
+                            html.P(
+                                "Rojo: puntos dentro del polígono detectado. "
+                                "El contorno discontinuo muestra su proyección XY."
+                            ),
+                            html.P(
+                                "Los planos dibujados son candidatos geométricos. "
+                                "Una inclinación predeterminada es un valor supuesto."
+                            ),
+                            html.P("Los huecos de cobertura de la ortofoto se muestran en negro."),
+                        ]
+                    ),
+                ],
+                style={
+                    "display": "grid",
+                    "gridTemplateColumns": "1fr 1fr 280px",
+                    "gap": "18px",
+                },
+            ),
+        ],
+        style={"fontFamily": "Arial, sans-serif", "margin": "20px"},
+    )
 
 
 def registrar_callbacks(
-    app: Dash, casos: pd.DataFrame, carpeta: Path, resultados: Path
+    app: Dash, casos: pd.DataFrame, carpeta: Path, resultados: Path, ortofotos=None,
 ) -> None:
     """Conecta los botones con las figuras y los datos de la página.
 
@@ -343,9 +382,7 @@ def registrar_callbacks(
         casos: Tabla de la muestra, accesible desde la función interior.
         carpeta: Directorio de imágenes y nubes.
         resultados: Directorio de los ajustes guardados.
-
-    Returns:
-        None: El decorador registra la función que Dash ejecutará al navegar.
+        ortofotos: Índice de TIFF para el inventario regional; None en una muestra.
     """
 
     @app.callback(
@@ -355,16 +392,21 @@ def registrar_callbacks(
         Output("datos", "children"),
         Input("atras", "n_clicks"),
         Input("siguiente", "n_clicks"),
+        Input("aleatorio", "n_clicks"),
+        Input("filtro", "value"),
         State("indice", "data"),
     )
     def actualizar_vista(
-        atras: int | None, siguiente: int | None, indice: int
+        atras: int | None, siguiente: int | None, aleatorio: int | None,
+        filtro: str, indice: int,
     ) -> tuple:
         """Elige la fila y devuelve las cuatro salidas en el orden del decorador.
 
         Params:
             atras: Clics acumulados del botón Atrás; puede empezar como None.
             siguiente: Clics acumulados del botón Siguiente.
+            aleatorio: Clics acumulados del botón Aleatorio.
+            filtro: Todos los casos, estimaciones o valores predeterminados.
             indice: Posición actual recibida desde dcc.Store mediante State.
 
         Returns:
@@ -373,37 +415,71 @@ def registrar_callbacks(
                 La primera llamada muestra el caso 0.
         """
 
-        if ctx.triggered_id == "atras":
+        seleccion = casos if filtro == "todos" else casos[casos.origen == filtro]
+        if seleccion.empty:
+            return 0, go.Figure(), go.Figure(), [html.P("No hay casos con este filtro.")]
+
+        if ctx.triggered_id == "filtro":
+            indice = 0
+        elif ctx.triggered_id == "atras":
             indice -= 1
         elif ctx.triggered_id == "siguiente":
             indice += 1
+        elif ctx.triggered_id == "aleatorio":
+            indice = int(np.random.default_rng().integers(len(seleccion)))
 
-        indice = max(0, min(indice, len(casos) - 1))
-        caso = casos.iloc[indice]
+        indice = max(0, min(indice, len(seleccion) - 1))
+        caso = seleccion.iloc[indice].copy()
         resultado = leer_resultado(caso.id_panel, resultados)
-        datos = [html.P(f"Caso {indice + 1} de {len(casos)}"),
-                 *mostrar_datos(caso, resultado)]
+        if ortofotos is None:
+            foto = figura_ortofoto(caso, carpeta)
+        else:
+            foto, limites = figura_ortofoto_regional(caso, ortofotos)
+            for campo, valor in zip(["xmin", "ymin", "xmax", "ymax"], limites):
+                caso[campo] = valor
+        datos = [
+            html.P(f"Caso {indice + 1} de {len(seleccion)} · Total disponible: {len(casos)}"),
+            *mostrar_datos(caso, resultado),
+        ]
 
         return (
             indice,
-            figura_ortofoto(caso, carpeta),
+            foto,
             figura_nube(caso, carpeta, resultado, resultados),
             datos,
         )
 
 
-def crear_app(carpeta: Path = CARPETA, resultados: Path = RESULTADOS) -> Dash:
+def crear_app(
+    carpeta: Path = CARPETA, resultados: Path = RESULTADOS,
+    cantabria: bool = True, preparacion: Path = PREPARACION,
+    recortes: Path = RECORTES, ortofotos: Path = ORTOFOTOS,
+) -> Dash:
     """Reúne los datos, el layout y los callbacks en una aplicación.
 
     Params:
         carpeta: Directorio de la muestra.
         resultados: Directorio de los ajustes guardados.
+        cantabria: Si es True, utiliza el inventario regional; si no, casos.csv.
+        preparacion: Directorio del inventario de detecciones y ventanas.
+        recortes: Directorio de las aportaciones LAZ por hoja.
+        ortofotos: Directorio de los TIFF locales.
 
     Returns:
         Dash: Aplicación con los casos cargados, el layout y los callbacks registrados.
     """
 
-    casos = leer_casos(carpeta)
+    indice_ortofotos = None
+    if cantabria:
+        casos = inventariar_casos(preparacion, recortes)
+        casos["crs_lidar"] = [casos.crs] * len(casos)
+        indice_ortofotos = indexar_ortofotos(ortofotos)
+    else:
+        casos = leer_casos(carpeta)
+
+    tabla = pd.read_csv(resultados / "resumen.csv", keep_default_na=False)
+    casos = casos.merge(tabla[["id_panel", "origen"]], on="id_panel", how="left")
+    casos["origen"] = casos.origen.fillna("")
 
     if casos.empty:
         raise ValueError("No hay casos en casos.csv.")
@@ -411,28 +487,29 @@ def crear_app(carpeta: Path = CARPETA, resultados: Path = RESULTADOS) -> Dash:
     app = Dash(__name__)
     app.title = "Resultados LiDAR"
     app.layout = crear_layout()
-    registrar_callbacks(app, casos, carpeta, resultados)
+    registrar_callbacks(app, casos, carpeta, resultados, indice_ortofotos)
 
     return app
 
 
 def main() -> None:
-    """Arranca el visor con las rutas y el puerto recibidos por terminal.
-
-    Params:
-        Ninguno.
-
-    Returns:
-        None: Servidor local en el puerto indicado, 8052 por defecto.
-    """
+    """Arranca el visor local con las rutas elegidas, en el puerto 8052 por defecto."""
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--carpeta", type=Path, default=CARPETA)
     parser.add_argument("--resultados", type=Path, default=RESULTADOS)
+    parser.add_argument("--muestra", action="store_true", help="Utiliza casos.csv en lugar del inventario regional.")
+    parser.add_argument("--preparacion", type=Path, default=PREPARACION)
+    parser.add_argument("--recortes", type=Path, default=RECORTES)
+    parser.add_argument("--ortofotos", type=Path, default=ORTOFOTOS)
     parser.add_argument("--puerto", type=int, default=8052)
     args = parser.parse_args()
 
-    app = crear_app(ruta_proyecto(args.carpeta), ruta_proyecto(args.resultados))
+    app = crear_app(
+        ruta_proyecto(args.carpeta), ruta_proyecto(args.resultados),
+        not args.muestra, ruta_proyecto(args.preparacion),
+        ruta_proyecto(args.recortes), ruta_proyecto(args.ortofotos),
+    )
     app.run(host="127.0.0.1", port=args.puerto, debug=False, threaded=False)
 
 

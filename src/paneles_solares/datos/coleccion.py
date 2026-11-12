@@ -99,15 +99,7 @@ def nueva_fila(registro: dict, origen: str) -> dict:
 
 
 def rutas_muestra(carpeta: Path, tile_id: str) -> tuple[Path, Path]:
-    """Obtiene las rutas de una imagen y su anotación.
-
-    Args:
-        carpeta: Carpeta que contiene images y annotations.
-        tile_id: Identificador de la muestra.
-
-    Returns:
-        tuple[Path, Path]: Ruta del PNG y ruta del JSON.
-    """
+    """Devuelve el PNG de images/ y el JSON de annotations/ para tile_id."""
 
     imagen = carpeta / "images" / f"{tile_id}.png"
     anotacion = carpeta / "annotations" / f"{tile_id}.json"

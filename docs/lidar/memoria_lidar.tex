@@ -1,0 +1,64 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\title{Estimación experimental de inclinaciones con LiDAR}
+\author{}
+\date{}
+\begin{document}
+\maketitle
+
+\section{Objetivo y datos}
+Estimar inclinaciones de detecciones de paneles solares de 2023 compatibles con
+una cubierta coplanar o aproximadamente paralela. Se conservan recortes LiDAR
+con contexto alrededor del polígono original. Las aportaciones de varias hojas
+se reúnen sin duplicados exactos. Las ortofotos se usan para revisión visual.
+
+\section{Método}
+RANSAC busca el plano interior con mayor apoyo y se reajusta por SVD. Para una
+normal unitaria $\mathbf n$ y un centro $\mathbf c$, la distancia perpendicular es
+$d_i=(\mathbf p_i-\mathbf c)\cdot\mathbf n$ y la inclinación es
+$\beta=\arccos(|n_z|)$. Se exige un 75\,\% de apoyo interior con tolerancia
+de 0,10~m, al menos diez inliers y extensión horizontal en dos direcciones.
+La estabilidad se comprueba variando la tolerancia y tomando una submuestra.
+
+En el exterior se extraen hasta seis planos por franja, retirando sucesivamente
+sus inliers. Se detiene la búsqueda si no queda apoyo suficiente. Los fragmentos
+se separan por proximidad y se relacionan con los inliers interiores en 3D.
+Entre superficies distintas, el fragmento elegido debe tener al menos el doble
+de puntos vecinos que las alternativas. Los empates se conservan como ambiguos.
+Sin apoyo próximo, la franja se amplía de 2 a 4 y hasta 8~m.
+
+La aceptación compara estabilidad, ángulo entre normales y separación: se
+admiten hasta 5 grados y 0,30~m en el percentil 90. Los límites son configurables.
+Se guardan por separado inclinación candidata, estimada y utilizada. Cuando
+falta evidencia, la estimada queda desconocida y la utilizada toma un supuesto
+de 30 grados, configurable. Esta hipótesis no equivale a una medida.
+
+\section{Alcance y validación}
+Se estima el faldón local, también en naves de poca pendiente. Varias vertientes
+en una detección, desplazamientos y cubiertas sin superficie exterior visible
+pueden impedir la comprobación. La continuidad geométrica no identifica por sí
+sola los módulos ni confirma su montaje. Compartir año de campaña tampoco
+garantiza simultaneidad entre ortofoto y LiDAR.
+
+La validación necesita edificios distintos, incluyendo naves y cubiertas grandes,
+y una referencia independiente para medir error angular. Se comparará tanto el
+número de detecciones aprovechables como su superficie. Los resultados de este
+prototipo todavía no sustituyen las hipótesis del cálculo energético.
+
+En la muestra de cien casos, la búsqueda exterior anterior aceptaba trece
+inclinaciones y la versión actual acepta veintiuna. Es un cambio de
+aprovechamiento, no una medida de exactitud. Las salidas de las pruebas
+sustituidas y del lote regional incompleto del método anterior son
+prescindibles. Se conservan los recortes originales, los formularios y los
+resultados actuales.
+
+Los comandos y archivos se describen en \texttt{docs/lidar/README.md}.
+Como referencia del método:
+\href{https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html}{documentación de segmentación de planos de Open3D}.
+\end{document}

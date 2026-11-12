@@ -164,15 +164,7 @@ def clasificar_imagen(tiene_panel: bool, tiene_deteccion: bool) -> str:
 
 
 def obtener_detecciones(resultado) -> tuple[int, float | None]:
-    """Resume las detecciones de una predicción de YOLO.
-
-    Args:
-        resultado: Resultado de la predicción de YOLO.
-
-    Returns:
-        tuple[int, float | None]: Número de detecciones y confianza máxima, o None si no
-            hay objetos.
-    """
+    """Devuelve el número de detecciones y su confianza máxima; sin objetos, (0, None)."""
 
     if resultado.boxes is None or len(resultado.boxes) == 0:
         return 0, None

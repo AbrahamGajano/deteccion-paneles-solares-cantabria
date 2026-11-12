@@ -23,16 +23,7 @@ DESCARGAS = "https://geoservicios.cantabria.es/Series2/LIDAR_2023/LASZ"
 
 
 def cargar_paneles(ruta: Path, capa: str, anho: int) -> gpd.GeoDataFrame:
-    """Lee los polígonos originales de la campaña elegida, en coordenadas métricas.
-
-    Params:
-        ruta: GeoPackage que contiene las detecciones.
-        capa: Nombre de la capa de paneles.
-        anho: Campaña que se quiere estudiar.
-
-    Returns:
-        gpd.GeoDataFrame: Identificadores y polígonos originales en EPSG:25830.
-    """
+    """Lee los IDs y polígonos de la capa y campaña indicadas, en EPSG:25830."""
 
     paneles = gpd.read_file(ruta, layer=capa, where=f"anio = {anho}")
 

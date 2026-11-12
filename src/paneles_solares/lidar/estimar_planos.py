@@ -1,7 +1,9 @@
 """Estima inclinaciones compatibles con cubierta y registra los casos asumidos."""
 
 import argparse
+import ctypes
 import json
+import os
 from pathlib import Path
 
 import laspy
@@ -12,8 +14,12 @@ from shapely import intersects_xy, wkt
 from shapely.geometry import box
 
 from paneles_solares.lidar.ajuste_planos import (
-    CRITERIOS, calcular_inclinacion, decidir_inclinacion, distancias_al_plano,
+    CRITERIOS,
+    calcular_inclinacion,
+    decidir_inclinacion,
+    distancias_al_plano,
 )
+from paneles_solares.lidar.preparar_revision import inventariar_casos, leer_nubes
 from paneles_solares.rutas import ruta_proyecto
 
 CARPETA = ruta_proyecto("data/lidar/prueba_pueblos_20261105/revision")
@@ -49,14 +55,17 @@ def seleccionar_puntos(caso: pd.Series, carpeta: Path) -> tuple:
     """Lee el contexto y localiza los puntos dentro de la detección original.
 
     Params:
-        caso: Fila con la ruta LAZ y el polígono del panel en WKT.
-        carpeta: Directorio de la muestra del visor.
+        caso: Fila con laz o rutas_laz, CRS y polígono del panel en WKT.
+        carpeta: Directorio base para la ruta LAZ de una muestra.
 
     Returns:
         tuple: Matriz XYZ de contexto y máscara booleana de puntos del polígono.
     """
 
-    nube = laspy.read(carpeta / caso.laz)
+    if "rutas_laz" in caso.index:
+        nube = leer_nubes(caso.rutas_laz, caso.crs_lidar)
+    else:
+        nube = laspy.read(carpeta / caso.laz)
     puntos = np.column_stack([nube.x, nube.y, nube.z])
     dentro = intersects_xy(wkt.loads(caso.poligono), puntos[:, 0], puntos[:, 1])
 
@@ -263,6 +272,7 @@ def procesar_caso(
     umbral: float = 0.10, umbral_exterior: float = 0.10,
     anillo: float = 2.0, iteraciones: int = 500,
     semilla: int = 42, guardar_html: bool = True, criterios: dict | None = None,
+    guardar_puntos: bool = True,
 ) -> dict:
     """Guarda el ajuste candidato, la decisión y su procedencia sin usar etiquetas.
 
@@ -277,6 +287,7 @@ def procesar_caso(
         semilla: Valor reproducible del generador aleatorio.
         guardar_html: Si se debe crear la figura 3D independiente.
         criterios: Cambios sobre los valores iniciales de CRITERIOS.
+        guardar_puntos: Si se debe exportar el contexto completo como puntos.csv.
 
     Returns:
         dict: Medidas y parámetros; las etiquetas manuales solo se guardan como referencia.
@@ -313,7 +324,8 @@ def procesar_caso(
 
     resumen = {
         "id_panel": caso.id_panel,
-        "laz": str(carpeta / caso.laz),
+        "laz": str(carpeta / caso.laz) if "laz" in caso.index else None,
+        "rutas_laz": [str(ruta) for ruta in caso.rutas_laz] if "rutas_laz" in caso.index else [],
         "umbral_m": umbral, "umbral_exterior_m": umbral_exterior, "anillo_m": anillo,
         "iteraciones": iteraciones, "semilla": semilla,
         "criterios": criterios, "anillo_evaluado_m": ancho_evaluado,
@@ -337,21 +349,20 @@ def procesar_caso(
     }
     salida = salida / caso.id_panel
     salida.mkdir(parents=True, exist_ok=True)
-    (salida / "resumen.json").write_text(
-        json.dumps(resumen, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8"
-    )
-    tabla = pd.DataFrame(contexto, columns=["x", "y", "z"])
-    tabla["zona"] = "contexto"
-    tabla.loc[dentro, "zona"] = "interior"
-    tabla["distancia_con_signo_m"] = None
-    tabla["distancia_m"] = None
-    tabla["compatible"] = None
-    if entorno is not None:
-        tabla.loc[entorno["exterior"], "zona"] = "franja_exterior"
-        tabla["distancia_con_signo_m"] = entorno["distancias"]
-        tabla["distancia_m"] = np.abs(entorno["distancias"])
-        tabla["compatible"] = tabla.distancia_m <= np.where(dentro, umbral, umbral_exterior)
-    tabla.to_csv(salida / "puntos.csv", index=False)
+    (salida / "resumen.json").unlink(missing_ok=True)
+    if guardar_puntos:
+        tabla = pd.DataFrame(contexto, columns=["x", "y", "z"])
+        tabla["zona"] = "contexto"
+        tabla.loc[dentro, "zona"] = "interior"
+        tabla["distancia_con_signo_m"] = None
+        tabla["distancia_m"] = None
+        tabla["compatible"] = None
+        if entorno is not None:
+            tabla.loc[entorno["exterior"], "zona"] = "franja_exterior"
+            tabla["distancia_con_signo_m"] = entorno["distancias"]
+            tabla["distancia_m"] = np.abs(entorno["distancias"])
+            tabla["compatible"] = tabla.distancia_m <= np.where(dentro, umbral, umbral_exterior)
+        tabla.to_csv(salida / "puntos.csv", index=False)
 
     cubierta = resultado["cubierta"]
     puntos_cubierta = cubierta["puntos"] if cubierta else np.empty((0, 3))
@@ -371,6 +382,10 @@ def procesar_caso(
                                     f"{decision['origen']} · {decision['motivo']}"))
         figura.write_html(salida / "ajuste.html")
 
+    (salida / "resumen.json").write_text(
+        json.dumps(resumen, indent=2, ensure_ascii=False, allow_nan=False), encoding="utf-8"
+    )
+
     print(f"Panel: {caso.id_panel}")
     print(f"Inclinación utilizada: {decision['inclinacion_utilizada']:.2f} grados ({decision['origen']})")
     print(f"Motivo: {decision['motivo']}")
@@ -381,6 +396,64 @@ def procesar_caso(
     return resumen
 
 
+def resumir_fila(resumen: dict) -> dict:
+    """Convierte las medidas de un caso en columnas de la tabla conjunta.
+
+    Params:
+        resumen: Resultado completo de procesar_caso.
+
+    Returns:
+        dict: Valores escalares, criterios y medidas interiores y exteriores.
+    """
+
+    anidados = {"centro", "normal", "calidad_interior", "estabilidad_interior", "cubierta"}
+    fila = {clave: valor for clave, valor in resumen.items()
+            if clave not in anidados and not isinstance(valor, (dict, list))}
+
+    for zona in ["interior", "exterior"]:
+        fila.update({f"{zona}_{clave}": valor for clave, valor in resumen[zona].items()})
+
+    fila.update({f"criterio_{clave}": valor for clave, valor in resumen["criterios"].items()})
+    for nombre in ["calidad_interior", "estabilidad_interior"]:
+        fila.update({f"{nombre}_{clave}": valor for clave, valor in (resumen[nombre] or {}).items()})
+    if resumen["cubierta"]:
+        fila.update({clave: resumen["cubierta"][clave]
+                     for clave in ["angulo_entre_planos_grados", "separacion_p90_m"]})
+
+    fila.update({f"manual_{campo}": resumen["revision_manual"].get(campo, "")
+                 for campo in ["montaje", "coincidencia", "confianza"]})
+
+    return fila
+
+
+def guardar_avance(resultados: list, errores: list, salida: Path,
+                   total: int, terminado: bool = False) -> None:
+    """Guarda tablas y recuentos de avance durante el procesamiento.
+
+    Params:
+        resultados: Filas de los casos procesados o recuperados.
+        errores: Errores de lectura o procesamiento.
+        salida: Directorio de resultados del lote.
+        total: Casos seleccionados para esta ejecución.
+        terminado: Si ya se ha recorrido toda la selección.
+
+    Returns:
+        None: Escribe resumen.csv, errores.csv y progreso.json.
+    """
+
+    pd.DataFrame(resultados).to_csv(salida / "resumen.csv", index=False)
+    pd.DataFrame(errores, columns=["id_panel", "error"]).to_csv(salida / "errores.csv", index=False)
+    estimados = sum(fila["origen"] == "estimada" for fila in resultados)
+    progreso = {
+        "total": total, "procesados": len(resultados), "estimados": estimados,
+        "predeterminados": len(resultados) - estimados, "errores": len(errores),
+        "terminado": terminado,
+    }
+    (salida / "progreso.json").write_text(
+        json.dumps(progreso, indent=2, allow_nan=False), encoding="utf-8"
+    )
+
+
 def main() -> None:
     """Procesa uno o varios casos y guarda una tabla común para comparar resultados."""
 
@@ -389,6 +462,11 @@ def main() -> None:
     seleccion = parser.add_mutually_exclusive_group()
     seleccion.add_argument("--panel", help="ID concreto; por defecto procesa la primera fila.")
     seleccion.add_argument("--todos", action="store_true", help="Procesa todos los casos elegidos.")
+    seleccion.add_argument("--cantabria", action="store_true", help="Procesa el inventario completo desde los recortes parciales.")
+    parser.add_argument("--preparacion", type=Path, default=ruta_proyecto("data/lidar/preparacion"))
+    parser.add_argument("--recortes", type=Path, default=ruta_proyecto("data/lidar/recortes_parciales"))
+    parser.add_argument("--limite", type=int, default=0, help="Máximo de casos; 0 = toda la selección.")
+    parser.add_argument("--reanudar", action="store_true", help="Reutiliza casos que ya tienen un resumen JSON con contenido.")
     parser.add_argument("--revisados", action="store_true", help="Selecciona solo formularios no vacíos.")
     parser.add_argument("--umbral", type=float, default=0.10, help="Distancia interior en metros.")
     parser.add_argument("--umbral-exterior", type=float, help="Por defecto utiliza el umbral interior.")
@@ -403,9 +481,11 @@ def main() -> None:
     parser.add_argument("--separacion-maxima", type=float, default=CRITERIOS["separacion_maxima"])
     parser.add_argument("--estabilidad-maxima", type=float, default=CRITERIOS["estabilidad_maxima"])
     parser.add_argument("--anillo-maximo", type=float, default=CRITERIOS["anillo_maximo"])
+    parser.add_argument("--max-planos", type=int, default=CRITERIOS["max_planos"], help="Máximo de planos exteriores por franja.")
     parser.add_argument("--distancia-vecinos", type=float, default=CRITERIOS["distancia_vecinos"])
     parser.add_argument("--inclinacion-predeterminada", type=float, default=CRITERIOS["inclinacion_predeterminada"])
     parser.add_argument("--sin-html", action="store_true", help="Guarda medidas y puntos sin la figura 3D.")
+    parser.add_argument("--solo-resumen", action="store_true", help="Omite HTML y el CSV de todos los puntos; conserva las medidas y la cubierta.")
     parser.add_argument("--salida", type=Path, default=SALIDA)
     args = parser.parse_args()
     umbral_exterior = args.umbral if args.umbral_exterior is None else args.umbral_exterior
@@ -423,15 +503,23 @@ def main() -> None:
         parser.error("Los límites angulares deben estar entre 0 y 90 grados.")
     if not 0 <= args.inclinacion_predeterminada < 90 or args.anillo_maximo < args.anillo:
         parser.error("Revisa la inclinación predeterminada (0 a menos de 90) y anillo-maximo >= anillo.")
+    if args.limite < 0 or args.max_planos < 1 or (args.cantabria and args.revisados):
+        parser.error("Revisa el límite, max-planos >= 1 y que --revisados se use con muestras.")
 
     carpeta = ruta_proyecto(args.carpeta)
     salida = ruta_proyecto(args.salida)
-    casos = pd.read_csv(carpeta / "casos.csv", keep_default_na=False)
+    if args.cantabria:
+        casos = inventariar_casos(ruta_proyecto(args.preparacion), ruta_proyecto(args.recortes))
+        casos["crs_lidar"] = [casos.crs] * len(casos)
+        casos["formulario"] = ""
+        print(f"Detecciones disponibles: {len(casos)}.", flush=True)
+    else:
+        casos = pd.read_csv(carpeta / "casos.csv", keep_default_na=False)
 
     if args.revisados:
         casos = casos[casos.formulario.ne("")]
 
-    if not args.todos:
+    if not (args.todos or args.cantabria):
         try:
             casos = pd.DataFrame([elegir_caso(casos, args.panel)])
         except ValueError as error:
@@ -439,44 +527,52 @@ def main() -> None:
 
     if casos.empty:
         parser.error("No hay casos para procesar.")
+    if args.limite:
+        casos = casos.head(args.limite)
 
     salida.mkdir(parents=True, exist_ok=True)
+    guardar_html = not (args.sin_html or args.solo_resumen or args.cantabria)
+    guardar_puntos = not (args.solo_resumen or args.cantabria)
     resultados = []
     errores = []
+    guardar_avance(resultados, errores, salida, len(casos))
+    energia = ctypes.windll.kernel32 if os.name == "nt" else None
+    if energia is not None:
+        energia.SetThreadExecutionState(0x80000001)
 
-    for _, caso in casos.iterrows():
-        try:
-            resumen = procesar_caso(
-                caso, carpeta, salida, args.umbral, umbral_exterior,
-                args.anillo, args.iteraciones, args.semilla, not args.sin_html, criterios,
-            )
-        except (ValueError, OSError, laspy.errors.LaspyException) as error:
-            errores.append({"id_panel": caso.id_panel, "error": str(error)})
-            print(f"Sin ajuste: {caso.id_panel}: {error}")
-            continue
+    try:
+        for numero, (_, caso) in enumerate(casos.iterrows(), start=1):
+            print(f"[{numero}/{len(casos)}] {caso.id_panel}", flush=True)
+            try:
+                resumen = None
+                ruta_resumen = salida / caso.id_panel / "resumen.json"
+                if args.reanudar and ruta_resumen.exists():
+                    try:
+                        resumen = json.loads(ruta_resumen.read_text(encoding="utf-8")) or None
+                    except json.JSONDecodeError:
+                        resumen = None
+                    if resumen is not None:
+                        print("  Resultado recuperado.", flush=True)
 
-        anidados = {"centro", "normal", "calidad_interior", "estabilidad_interior", "cubierta"}
-        fila = {clave: valor for clave, valor in resumen.items()
-                if clave not in anidados and not isinstance(valor, (dict, list))}
+                if resumen is None:
+                    resumen = procesar_caso(
+                        caso, carpeta, salida, args.umbral, umbral_exterior,
+                        args.anillo, args.iteraciones, args.semilla,
+                        guardar_html, criterios, guardar_puntos,
+                    )
+                resultados.append(resumir_fila(resumen))
+            except (ValueError, OSError, laspy.errors.LaspyException) as error:
+                errores.append({"id_panel": caso.id_panel, "error": str(error)})
+                print(f"Sin ajuste: {caso.id_panel}: {error}", flush=True)
 
-        for zona in ["interior", "exterior"]:
-            fila.update({f"{zona}_{clave}": valor for clave, valor in resumen[zona].items()})
+            if numero % 25 == 0:
+                guardar_avance(resultados, errores, salida, len(casos))
 
-        fila.update({f"criterio_{clave}": valor for clave, valor in criterios.items()})
-        for nombre in ["calidad_interior", "estabilidad_interior"]:
-            fila.update({f"{nombre}_{clave}": valor for clave, valor in (resumen[nombre] or {}).items()})
-        if resumen["cubierta"]:
-            fila.update({clave: resumen["cubierta"][clave]
-                         for clave in ["angulo_entre_planos_grados", "separacion_p90_m"]})
+        guardar_avance(resultados, errores, salida, len(casos), terminado=True)
+    finally:
+        if energia is not None:
+            energia.SetThreadExecutionState(0x80000000)
 
-        fila.update({
-            f"manual_{campo}": resumen["revision_manual"].get(campo, "")
-            for campo in ["montaje", "coincidencia", "confianza"]
-        })
-        resultados.append(fila)
-
-    pd.DataFrame(resultados).to_csv(salida / "resumen.csv", index=False)
-    pd.DataFrame(errores, columns=["id_panel", "error"]).to_csv(salida / "errores.csv", index=False)
     estimados = sum(fila["origen"] == "estimada" for fila in resultados)
     print(f"Casos procesados: {len(resultados)}/{len(casos)}; estimados: {estimados}. Resultados: {salida}")
 

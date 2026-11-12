@@ -55,7 +55,7 @@ def crear_cargador_test() -> DataLoader:
         aumentar=False,
     )
 
-    cargador = DataLoader(
+    return DataLoader(
         dataset,
         batch_size=1,
         shuffle=False,
@@ -63,8 +63,6 @@ def crear_cargador_test() -> DataLoader:
         pin_memory=torch.cuda.is_available(),
         persistent_workers=NUM_WORKERS > 0,
     )
-
-    return cargador
 
 
 def predecir(
@@ -106,16 +104,7 @@ def calcular_indicadores(
     predicha: np.ndarray,
     tile_id: str,
 ) -> dict:
-    """Calcula los aciertos y errores de segmentación de una imagen.
-
-    Args:
-        real: Máscara binaria anotada.
-        predicha: Máscara binaria predicha por el modelo.
-        tile_id: Identificador de la tesela.
-
-    Returns:
-        dict: Recuentos y métricas de segmentación por píxel.
-    """
+    """Devuelve recuentos y métricas por píxel de las máscaras binarias de una tesela."""
 
     tp = np.count_nonzero(real & predicha)
     fp = np.count_nonzero(~real & predicha)
@@ -128,7 +117,7 @@ def clasificar_resultado(resultado: dict) -> str:
     """Clasifica una predicción según sus errores de segmentación.
 
     Args:
-        resultado: Resultado de la predicción de YOLO.
+        resultado: Recuentos de aciertos y errores de la predicción.
 
     Returns:
         str: Categoría de revisión según el exceso y el defecto de superficie.

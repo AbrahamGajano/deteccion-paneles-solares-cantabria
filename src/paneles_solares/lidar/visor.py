@@ -40,27 +40,13 @@ OPCIONES = {
 
 
 def leer_casos(carpeta: Path) -> pd.DataFrame:
-    """Lee la muestra manteniendo los formularios vacíos como texto vacío.
-
-    Params:
-        carpeta: Directorio que contiene casos.csv.
-
-    Returns:
-        pd.DataFrame: Casos en el mismo orden en que fueron seleccionados.
-    """
+    """Lee casos.csv en su orden original y conserva los campos vacíos como texto."""
 
     return pd.read_csv(carpeta / "casos.csv", keep_default_na=False)
 
 
 def leer_formulario(texto: str) -> dict:
-    """Recupera las respuestas o prepara campos vacíos para un caso pendiente.
-
-    Params:
-        texto: JSON de la columna formulario; vacío si todavía no hay respuestas.
-
-    Returns:
-        dict: Valores de todos los campos del formulario.
-    """
+    """Recupera el JSON del formulario y completa con texto vacío los campos pendientes."""
 
     formulario = dict.fromkeys(CAMPOS, "")
 
@@ -137,14 +123,7 @@ def figura_ortofoto(caso: pd.Series, carpeta: Path) -> go.Figure:
 
 
 def limites_altura(z: np.ndarray) -> tuple:
-    """Calcula un encuadre vertical que no dependa de unos pocos extremos.
-
-    Params:
-        z: Cotas de los puntos de la nube, en metros.
-
-    Returns:
-        tuple: Límites de los percentiles 1 y 99 ampliados un 10 %, mínimo 1 m.
-    """
+    """Percentiles 1 y 99 de las cotas, con margen del 10 % y mínimo de 1 m."""
 
     inferior, superior = np.percentile(z, [1, 99])
     margen = max(1.0, (superior - inferior) * 0.1)
@@ -153,16 +132,7 @@ def limites_altura(z: np.ndarray) -> tuple:
 
 
 def proporciones_escena(ancho: float, fondo: float, altura: float) -> dict:
-    """Expresa las dimensiones reales como proporciones manejables por la cámara.
-
-    Params:
-        ancho: Extensión del eje X, en metros.
-        fondo: Extensión del eje Y, en metros.
-        altura: Extensión del eje Z, en metros.
-
-    Returns:
-        dict: Proporciones X/Y/Z con la dimensión mayor igual a uno.
-    """
+    """Normaliza las dimensiones X/Y/Z en metros para que la mayor valga uno."""
 
     mayor = max(ancho, fondo, altura)
 

@@ -238,6 +238,7 @@ descrita en la guía.
 
 - [Guía de etiquetado, validación y seguimiento](docs/guia.md).
 - [Memoria técnica](docs/memoria_tecnica.tex).
+- [LiDAR: método, descarga y ejecución](docs/lidar/README.md).
 - [Fuentes catastrales de 2023](docs/revision_catastro_2023.md).
 
 Los mapas estáticos incluidos en la memoria se regeneran después del panel:
@@ -248,6 +249,28 @@ Los mapas estáticos incluidos en la memoria se regeneran después del panel:
 
 La memoria se conserva en LaTeX; para obtener el PDF se necesita una instalación
 de LaTeX y compilar desde `docs/` para resolver las rutas de las figuras.
+
+Las consultas PVGIS fallidas muestran el error del servicio; al repetir el
+comando se reutiliza la caché de consultas terminadas.
+
+Para comprobar el código sin descargar datos ni ejecutar entrenamientos:
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests
+```
+
+Se pueden borrar las cachés de Python, los archivos `.part` de descargas
+interrumpidas y los auxiliares de LaTeX cuando no haya procesos escribiéndolos.
+`data/` contiene originales y revisiones manuales; los avances de `runs/`
+permiten reanudar trabajos. El peso `weights/unet_resnet34_anterior.pt` sigue
+siendo necesario para entrenar la U-Net actual.
+
+La limpieza de cachés y salidas sustituidas está preparada con rutas explícitas
+en `docs/limpiar_generados.ps1`. No modifica originales ni resultados actuales:
+
+```powershell
+.\docs\limpiar_generados.ps1
+```
 
 Datos del Gobierno de Cantabria, Dirección General del Catastro e IGN/CNIG.
 La licencia CBT23 se conserva en `data/raw/catastro/2023/licencia.txt`.

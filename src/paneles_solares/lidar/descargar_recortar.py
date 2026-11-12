@@ -28,6 +28,7 @@ TEMPORALES = ruta_proyecto("data/lidar/temporales")
 SALIDA = ruta_proyecto("data/lidar/recortes_parciales")
 PUNTOS_POR_BLOQUE = 500_000
 INFORMES = ruta_proyecto("runs/lidar/descarga")
+LOGGER = logging.getLogger(__name__)
 
 
 class EspacioInsuficiente(RuntimeError):
@@ -136,7 +137,7 @@ def recortar_hoja(
 
     carpeta.mkdir(parents=True, exist_ok=True)
     escritores = {}
-    recuentos = {panel_id: 0 for panel_id in ventanas.id_panel}
+    recuentos = dict.fromkeys(ventanas.id_panel, 0)
 
     with laspy.open(ruta_laz) as lector, ExitStack() as archivos:
         crs = lector.header.parse_crs()
@@ -230,17 +231,17 @@ def procesar_hoja(
             if completos:
                 ruta_zip.unlink(missing_ok=True)
                 ruta_laz.unlink(missing_ok=True)
-                logging.info("  Ya terminada.")
+                LOGGER.info("  Ya terminada.")
                 return
 
     resumen.unlink(missing_ok=True)
 
     try:
-        logging.info("  Descargando ZIP...")
+        LOGGER.info("  Descargando ZIP...")
         descargar_zip(hoja.url, ruta_zip, reserva_gb)
-        logging.info("  Extrayendo LAZ...")
+        LOGGER.info("  Extrayendo LAZ...")
         extraer_laz(ruta_zip, temporales, reserva_gb)
-        logging.info("  Recortando %s ventanas...", len(ventanas))
+        LOGGER.info("  Recortando %s ventanas...", len(ventanas))
         recuentos = recortar_hoja(ruta_laz, ventanas, carpeta, reserva_gb=reserva_gb)
 
         resumen.write_text(
@@ -251,7 +252,7 @@ def procesar_hoja(
         ruta_zip.unlink(missing_ok=True)
 
     vacios = sum(cantidad == 0 for cantidad in recuentos.values())
-    logging.info("  Terminada: %s puntos; %s vacíos.", sum(recuentos.values()), vacios)
+    LOGGER.info("  Terminada: %s puntos; %s vacíos.", sum(recuentos.values()), vacios)
 
 
 def procesar_con_reintentos(
@@ -283,7 +284,7 @@ def procesar_con_reintentos(
             ):
                 raise EspacioInsuficiente("El sistema ha indicado que el disco está lleno.") from error
 
-            logging.error("  Intento %s/%s: %s", intento, reintentos, error)
+            LOGGER.error("  Intento %s/%s: %s", intento, reintentos, error)
             permanente = isinstance(error, ValueError)
 
             if isinstance(error, requests.HTTPError):
@@ -359,7 +360,7 @@ def main() -> None:
 
     try:
         for numero, (_, hoja) in enumerate(hojas.iterrows(), start=1):
-            logging.info("[%s/%s] %s", numero, len(hojas), hoja.id_hoja)
+            LOGGER.info("[%s/%s] %s", numero, len(hojas), hoja.id_hoja)
             paneles = relaciones.loc[relaciones.id_hoja == hoja.id_hoja, "id_panel"]
             ventanas = recortes.loc[
                 recortes.id_panel.isin(paneles),
@@ -386,7 +387,7 @@ def main() -> None:
             ).to_csv(archivo_errores, index=False, encoding="utf-8")
 
             if detener:
-                logging.error("Lote detenido por espacio: %s", error)
+                LOGGER.error("Lote detenido por espacio: %s", error)
                 raise SystemExit("Libera espacio y ejecuta el mismo comando para continuar.")
     finally:
         if energia is not None:
@@ -397,7 +398,7 @@ def main() -> None:
     if pendientes:
         raise SystemExit(f"Hojas pendientes: {len(pendientes)}. Consulta {archivo_errores}")
 
-    logging.info("Lote terminado. Todas las hojas seleccionadas están completas.")
+    LOGGER.info("Lote terminado. Todas las hojas seleccionadas están completas.")
 
 
 if __name__ == "__main__":

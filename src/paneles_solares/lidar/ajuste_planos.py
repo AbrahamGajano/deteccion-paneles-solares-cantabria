@@ -4,14 +4,15 @@ import numpy as np
 from shapely import intersects_xy
 
 CRITERIOS = {
-    "porcentaje_minimo": 80.,
+    "porcentaje_minimo": 75.,
     "min_puntos": 10,
     "dispersion_minima": 0.25,
     "inclinacion_maxima": 75.,
     "angulo_maximo": 5.,
     "separacion_maxima": 0.30,
     "estabilidad_maxima": 3.,
-    "anillo_maximo": 4.,
+    "anillo_maximo": 8.,
+    "max_planos": 6,
     "distancia_vecinos": 1.,
     "inclinacion_predeterminada": 30.,
 }
@@ -45,16 +46,7 @@ def ajustar_plano(puntos: np.ndarray) -> tuple:
 
 
 def distancias_al_plano(puntos: np.ndarray, centro: np.ndarray, normal: np.ndarray) -> np.ndarray:
-    """Calcula distancias ortogonales con signo, sin eliminar puntos alejados.
-
-    Params:
-        puntos: Matriz XYZ de los puntos que se quieren evaluar.
-        centro: Punto por el que pasa el plano.
-        normal: Normal unitaria del plano, orientada hacia arriba.
-
-    Returns:
-        np.ndarray: Distancias en metros; positivas hacia la normal y negativas al revés.
-    """
+    """Distancias XYZ en metros con signo hacia la normal unitaria del plano."""
 
     return (puntos - centro) @ normal
 
@@ -134,28 +126,13 @@ def buscar_plano(
 
 
 def calcular_inclinacion(normal: np.ndarray) -> float:
-    """Calcula el ángulo del plano respecto a la horizontal.
-
-    Params:
-        normal: Vector perpendicular al plano y orientado hacia arriba.
-
-    Returns:
-        float: Inclinación en grados; cero corresponde a un plano horizontal.
-    """
+    """Ángulo del plano respecto a la horizontal, en grados."""
 
     return float(np.degrees(np.arctan2(np.hypot(normal[0], normal[1]), abs(normal[2]))))
 
 
 def angulo_entre_planos(normal_a: np.ndarray, normal_b: np.ndarray) -> float:
-    """Compara orientaciones completas, incluidas vertientes de igual pendiente.
-
-    Params:
-        normal_a: Normal unitaria del primer plano.
-        normal_b: Normal unitaria del segundo plano.
-
-    Returns:
-        float: Ángulo entre planos, de 0 a 90 grados.
-    """
+    """Ángulo de 0 a 90 grados entre normales unitarias, incluidas vertientes opuestas."""
 
     coseno = np.clip(abs(normal_a @ normal_b), 0., 1.)
     return float(np.degrees(np.arccos(coseno)))
@@ -316,14 +293,14 @@ def contar_vecinos(puntos: np.ndarray, referencia: np.ndarray, distancia: float)
 
 def buscar_candidatos_exteriores(puntos: np.ndarray, umbral: float, iteraciones: int,
                                  semilla: int, criterios: dict) -> list:
-    """Extrae hasta dos planos y sus parches, sin conocer el plano interior.
+    """Extrae sucesivamente planos y sus parches hasta el límite configurado.
 
     Params:
         puntos: Puntos de una franja exterior.
         umbral: Tolerancia RANSAC exterior en metros.
         iteraciones: Número de pruebas por ajuste.
         semilla: Semilla reproducible.
-        criterios: Cantidad, extensión e inclinación admitidas.
+        criterios: Límite de planos, cantidad, extensión e inclinación admitidas.
 
     Returns:
         list: Candidatos con sus puntos, plano y medidas de calidad.
@@ -331,7 +308,7 @@ def buscar_candidatos_exteriores(puntos: np.ndarray, umbral: float, iteraciones:
 
     pendientes = puntos
     candidatos = []
-    for numero in range(2):
+    for numero in range(criterios["max_planos"]):
         if len(pendientes) < criterios["min_puntos"]:
             break
         try:
@@ -340,6 +317,8 @@ def buscar_candidatos_exteriores(puntos: np.ndarray, umbral: float, iteraciones:
             break
 
         compatibles = pendientes[ajuste["compatibles"]]
+        if len(compatibles) < criterios["min_puntos"]:
+            break
         pendientes = pendientes[~ajuste["compatibles"]]
         for indices in separar_grupos(compatibles, criterios["distancia_vecinos"]):
             fragmento = compatibles[indices]
@@ -378,7 +357,7 @@ def buscar_cubierta(contexto: np.ndarray, poligono, dentro: np.ndarray, ajuste: 
         ventana: Extensión disponible del recorte, o None si se desconoce.
 
     Returns:
-        dict: Candidato único o motivo de descarte, y registro de franjas probadas.
+        dict: Candidato con mayor apoyo próximo, o motivo de descarte, y franjas probadas.
     """
 
     referencia = contexto[dentro][ajuste["compatibles"]]
@@ -402,12 +381,13 @@ def buscar_cubierta(contexto: np.ndarray, poligono, dentro: np.ndarray, ajuste: 
         intentos.append({"anillo_m": ancho, "n_exterior": int(exterior.sum()),
                          "n_candidatos": len(candidatos), "n_cercanos": len(cercanos)})
         if cercanos:
-            elegido = max(cercanos, key=lambda candidato: len(candidato["puntos"]))
+            elegido = max(cercanos, key=lambda candidato: candidato["n_vecinos"])
             for otro in cercanos:
                 angulo = angulo_entre_planos(elegido["ajuste"]["normal"], otro["ajuste"]["normal"])
                 distancias = distancias_al_plano(otro["puntos"], elegido["ajuste"]["centro"],
                                                  elegido["ajuste"]["normal"])
-                if angulo > 1. or np.percentile(np.abs(distancias), 90) > umbral:
+                diferente = angulo > 1. or np.percentile(np.abs(distancias), 90) > umbral
+                if diferente and elegido["n_vecinos"] < 2 * otro["n_vecinos"]:
                     return {"candidato": None, "motivo": "cubierta_ambigua", "intentos": intentos}
             return {"candidato": elegido, "motivo": None, "intentos": intentos}
 

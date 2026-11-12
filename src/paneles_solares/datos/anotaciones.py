@@ -61,14 +61,7 @@ def leer_anotacion(ruta: Path) -> dict:
 
 
 def excluida(datos: dict) -> bool:
-    """Comprueba si una anotación se marcó para excluir.
-
-    Args:
-        datos: Datos obtenidos del JSON de LabelMe.
-
-    Returns:
-        bool: True si la imagen es dudosa o se debe descartar.
-    """
+    """Indica si LabelMe marca la imagen como dudosa o descartada."""
 
     flags = datos.get("flags") or {}
 

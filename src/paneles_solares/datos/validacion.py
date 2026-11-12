@@ -81,28 +81,13 @@ def cargar_campania(nombre: str, archivo: str | Path | None = None) -> dict:
 
 
 def carpeta_campania(nombre: str) -> Path:
-    """Obtiene la carpeta de datos de una campaña de validación.
-
-    Args:
-        nombre: Nombre de la campaña configurada.
-
-    Returns:
-        Path: Carpeta de la campaña dentro de data/datasets.
-    """
+    """Devuelve data/datasets/validacion_<nombre> dentro del proyecto."""
 
     return ruta_proyecto(f"data/datasets/validacion_{nombre}")
 
 
 def rutas_tesela(carpeta: Path, fila) -> tuple[Path, Path]:
-    """Obtiene el PNG y el JSON de una tesela en su grupo de selección.
-
-    Args:
-        carpeta: Carpeta de datos de la campaña.
-        fila: Metadatos de la tesela o ventana.
-
-    Returns:
-        tuple[Path, Path]: Rutas de la imagen PNG y de la anotación JSON.
-    """
+    """Devuelve el PNG y el JSON de la tesela dentro de su grupo de selección."""
 
     nombre = f"{fila['tile_id']}.png"
     imagen = carpeta / "images" / fila["grupo"] / nombre

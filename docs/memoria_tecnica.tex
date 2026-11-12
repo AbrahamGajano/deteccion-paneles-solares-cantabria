@@ -115,7 +115,8 @@ b_A=\frac{A_{\mathrm{predicha}}-A_{\mathrm{anotada}}}{A_{\mathrm{anotada}}}
 \]
 Se expresa sobre el total del test, no como promedio de sesgos por imagen.
 
-% Fuente: runs/evaluacion/unet_anterior/resumen.csv; runs/evaluacion/unet_actual/resumen.csv; runs/evaluacion/cantabria/yolo11s/revision/resumen.csv.
+% Fuente actual: runs/evaluacion/unet_actual/resumen.csv; runs/evaluacion/cantabria/yolo11s/revision/resumen.csv.
+% Evaluación anterior: 988 imágenes, TP=28735, FP=3665, FN=11212.
 \begin{table}[H]
 \centering
 \caption{Comparación local por píxel sobre las mismas 988 teselas.}
@@ -132,6 +133,10 @@ YOLO11s local & 0,7292 & 0,5739 & 0,6299 & \textbf{0,8658} & \(+37{,}45\,\%\)\\
 \end{table}
 
 La U-Net actual mejora a la anterior en Dice, IoU y recall. YOLO encuentra una fracción algo mayor de los píxeles anotados, pero añade muchos más píxeles de fondo y sobreestima la superficie. Por eso la U-Net actual ofrece una base más equilibrada para indicadores de área. Su sesgo de \(-7{,}54\,\%\) significa que, en conjunto, predijo menos superficie de la anotada; no garantiza el mismo error en cada cubierta.
+
+La evaluación anterior queda resumida en esta tabla; sus salidas por imagen son
+prescindibles al quedar sustituidas. Se conservan sus pesos porque sirven de punto
+de partida para el entrenamiento actual.
 
 % Fuente: runs/evaluacion/unet_actual/resultados.csv; clasificación heurística en src/paneles_solares/modelos/evaluar_unet.py.
 La revisión automática de imágenes clasificó 970 como aceptables, 10 como falsos positivos, 7 como falsos negativos y 1 como error mixto. Es una clasificación para inspección visual, distinta de las métricas por píxel.
@@ -199,74 +204,6 @@ El escenario conservador usa la fecha más antigua supuesta; el favorable permit
 \caption{Producción anual del inventario de 2023 bajo el escenario central. No representa la generación total regional.}
 \end{figure}
 
-\section{Estimación experimental de inclinaciones con LiDAR}
-
-Se ha implementado un prototipo para estimar inclinaciones compatibles con una
-cubierta coplanar o aproximadamente paralela, usando recortes LiDAR de 2023.
-La revisión visual inicial sugiere correspondencias aprovechables en parte de
-los casos, pero todavía no cuantifica el error angular. Las estructuras inclinadas
-respecto al tejado quedan fuera del objetivo inicial.
-
-Los puntos interiores se seleccionan con la geometría original; el margen del
-recorte solo aporta contexto. RANSAC busca el plano con mayor consenso
-\cite{open3d}, que se reajusta mediante descomposición en valores singulares.
-Para una normal unitaria $\mathbf{n}$ y un punto del plano $\mathbf{c}$,
-la distancia ortogonal con signo y la inclinación respecto a la horizontal son
-\[
-    d_i=(\mathbf{p}_i-\mathbf{c})\cdot\mathbf{n},
-    \qquad \beta=\arccos(|n_z|).
-\]
-Un punto es compatible si $|d_i|\leq\tau$. Los puntos alejados no participan en
-el reajuste del consenso, pero siguen en el porcentaje sobre el conjunto interior
-completo. Se conservan los errores de los inliers y los de todos los puntos.
-
-La decisión combina las siguientes comprobaciones:
-\begin{enumerate}
-    \item Exigir apoyo interior suficiente, un mínimo de puntos y dispersión
-    horizontal en dos direcciones. Puntos casi alineados pueden dar poco error
-    y una inclinación poco fiable.
-    \item Repetir el ajuste con tolerancias $0{,}8\tau$ y $1{,}2\tau$ y una
-    submuestra reproducible del 80\,\%. Limitar cambios de orientación y posición,
-    sin elegir la repetición más favorable.
-    \item Buscar independientemente hasta dos planos exteriores y separar sus
-    parches mediante conectividad aproximada en una cuadrícula XY. Exigir
-    proximidad tridimensional a los inliers interiores, sin apoyo obligatorio
-    por todos los lados. Si hay superficies próximas distintas, conservar la
-    ambigüedad. Si falta apoyo, ampliar hasta una distancia máxima prefijada.
-    \item Comparar estabilidad exterior, ángulo entre normales y percentil 90
-    de distancias de los inliers interiores al plano exterior. Comparar solo
-    inclinaciones confundiría vertientes opuestas.
-\end{enumerate}
-
-Los valores iniciales configurables son $\tau=0{,}10$~m, apoyo interior del
-80\,\%, diez inliers y desviación espacial mínima de 0,25~m en el eje horizontal
-principal menor. Se prueban franjas de 2 y 4~m, hasta 5° entre planos y 0,30~m
-de separación en el percentil 90. Las repeticiones no deben variar más de 3° ni
-desplazar el plano más de $2\tau$. Se excluyen inclinaciones superiores a 75°.
-Estos límites son criterios de exploración, no valores de precisión validados.
-
-Se conservan la inclinación candidata, la estimada aceptada, la utilizada, su
-procedencia y el motivo de la decisión. Sin evidencia suficiente, la estimada
-queda desconocida y la utilizada toma 30° por defecto, configurable. Es una
-hipótesis, no una medición ni un óptimo demostrado. Los resultados energéticos
-anteriores no se han recalculado con este prototipo.
-
-En la ejecución inicial sobre 41 casos revisados de la muestra dirigida de
-Piélagos y Ribamontán al Mar, siete superaron los criterios y 34 conservaron el
-valor supuesto. Los siete estaban anotados como aparentemente coplanares.
-Esto describe la selección del método y no demuestra exactitud angular ni
-representatividad regional. Los comandos y motivos de descarte se detallan en
-\texttt{docs/lidar\_planos.md}.
-
-El mayor riesgo es ajustar bien una superficie equivocada: suelo u otra vertiente
-pueden reunir más puntos que el panel aunque el desplazamiento sea pequeño.
-Si el LiDAR solo observa el techo, su continuidad no confirma el montaje de los
-módulos; una estructura independiente podría pasar inadvertida. Dos planos
-exteriores tampoco describen todos los tejados complejos. Compartir campaña
-anual no garantiza simultaneidad entre ortofoto y LiDAR. Se propone calibrar con
-una parte de los edificios y evaluar en otros distintos, incluyendo aceptados,
-descartados y una referencia angular independiente.
-
 \section{Limitaciones}
 
 Solo 31 de las 988 teselas de test contienen paneles anotados (3,14\,\%). Aunque las 988 imágenes permiten una primera evaluación amplia de fondos y errores, ofrecen pocos positivos para estimar con precisión el rendimiento sobre paneles. Además, 37 teselas de test son contiguas a alguna tesela de entrenamiento o validación. La inferencia regional multiplica las oportunidades de falsos positivos al analizar muchas cubiertas. Conviene revisar visualmente los municipios extremos antes de interpretar diferencias pequeñas.
@@ -281,6 +218,8 @@ La transferencia directa del modelo francés no funcionó bien en Cantabria. El 
 
 Como validación final se plantea reunir unas 1.000 teselas nuevas, elegidas completamente al azar y con separación espacial respecto a entrenamiento y validación. Después se podrán calcular intervalos de confianza, revisar municipios extremos, incorporar inclinación y orientación derivadas de LiDAR y ajustar el modelo con la siguiente cobertura PNOA disponible. Una comparación con registros oficiales requeriría comprobar previamente que ambos conjuntos describen las mismas fechas y unidades.
 
+El estudio LiDAR se documenta aparte en \texttt{docs/lidar/memoria\_lidar.tex}.
+
 \begingroup\small
 \begin{thebibliography}{9}
 \bibitem{pnoa} Instituto Geográfico Nacional y Centro Nacional de Información Geográfica. \emph{Plan Nacional de Ortofotografía Aérea, PNOA Imagen}. \href{https://pnoa.ign.es/}{pnoa.ign.es}. Ortofotos y límites derivados: © IGN/CNIG; origen reconocido conforme a su \href{https://centrodedescargas.cnig.es/CentroDescargas/politica-datos}{política de datos}, compatible con CC BY 4.0.
@@ -291,7 +230,6 @@ Como validación final se plantea reunir unas 1.000 teselas nuevas, elegidas com
 \bibitem{unet} O. Ronneberger, P. Fischer y T. Brox. \emph{U-Net: Convolutional Networks for Biomedical Image Segmentation}, 2015. \href{https://arxiv.org/abs/1505.04597}{arXiv:1505.04597}.
 \bibitem{resnet} K. He, X. Zhang, S. Ren y J. Sun. \emph{Deep Residual Learning for Image Recognition}. CVPR, 2016. \href{https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html}{Versión abierta}.
 \bibitem{yolo} Ultralytics. \emph{YOLO11: documentación de modelos y segmentación}. \href{https://docs.ultralytics.com/models/yolo11/}{docs.ultralytics.com/models/yolo11}.
-\bibitem{open3d} Open3D. \emph{Point cloud: plane segmentation}. \href{https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html\#plane-segmentation}{Documentación de RANSAC para planos}. Referencia del método; el prototipo utiliza NumPy.
 \end{thebibliography}
 \endgroup
 

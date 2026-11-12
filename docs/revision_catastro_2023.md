@@ -166,7 +166,8 @@ Pruebas realizadas:
 * Pruebas automáticas de conservación de exteriores, hojas solapadas,
   recuperación de una hoja alternativa ante bordes negros, asociaciones con
   varias parcelas, cubiertas parcialmente observadas y energía en municipios
-  con detecciones exteriores y ninguna cubierta positiva. Cuatro pruebas pasan.
+  con detecciones exteriores y ninguna cubierta positiva. Las cuatro
+  comprobaciones del piloto fueron satisfactorias.
 
 Los comandos de prueba y ejecución regional están en el [README](../README.md).
 Antes de procesar toda Cantabria queda revisar visualmente la prueba y reunir

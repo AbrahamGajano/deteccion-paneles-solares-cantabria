@@ -32,6 +32,4 @@ def leer_tesela(registro: Mapping, carpeta_pnoa: Path) -> np.ndarray:
         imagen = ortofoto.read([1, 2, 3], window=ventana)
 
     # Rasterio devuelve canales × alto × ancho; las imágenes usan los canales al final.
-    imagen_rgb = np.moveaxis(imagen, 0, -1)
-
-    return imagen_rgb
+    return np.moveaxis(imagen, 0, -1)

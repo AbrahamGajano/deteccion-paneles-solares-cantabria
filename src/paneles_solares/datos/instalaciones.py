@@ -76,7 +76,7 @@ def agrupar_paneles(paneles: gpd.GeoDataFrame, vinculos: pd.DataFrame | None = N
             asignacion.update({s: s for s in componente})
         else:
             raiz = edificios[0] if edificios else min(componente)
-            asignacion.update({s: raiz for s in componente})
+            asignacion.update(dict.fromkeys(componente, raiz))
 
     datos["id_instalacion"] = [
         "fv_" + hashlib.sha256(asignacion[s].encode()).hexdigest()[:20]

@@ -10,7 +10,6 @@ from paneles_solares.datos.anotaciones import (
     texto_yolo,
 )
 from paneles_solares.datos.coleccion import POOL, SPLITS, cargar_manifest
-
 from paneles_solares.rutas import (
     DATASETS,
 )
@@ -40,17 +39,7 @@ def buscar_cambios(
     carpeta: Path,
     extension: str,
 ) -> tuple[set[str], set[str]]:
-    """Busca los archivos que faltan y los que sobran en una carpeta.
-
-    Args:
-        ids: Identificadores de las imágenes deseadas.
-        carpeta: Carpeta cuyos archivos se comparan con los identificadores deseados.
-        extension: Extensión de los archivos, incluido el punto.
-
-    Returns:
-        tuple[set[str], set[str]]: Identificadores que faltan y que sobran, en ese
-            orden.
-    """
+    """Devuelve los IDs que faltan y sobran para la extensión indicada, incluido el punto."""
 
     deseados = set(ids)
     existentes = {archivo.stem for archivo in carpeta.glob(f"*{extension}")}
@@ -88,9 +77,6 @@ def sincronizar_imagenes(
         for tile_id in faltan:
             origen = POOL / "images" / f"{tile_id}.png"
             destino = carpeta / f"{tile_id}.png"
-
-            if not origen.is_file():
-                raise FileNotFoundError(f"No existe la imagen: {origen}")
 
             destino.hardlink_to(origen)
 

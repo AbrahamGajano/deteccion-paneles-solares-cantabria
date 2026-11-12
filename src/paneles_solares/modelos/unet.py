@@ -17,14 +17,7 @@ DESVIACION_IMAGENET = np.array([0.229, 0.224, 0.225], dtype=np.float32)
 
 
 def normalizar_rgb(imagen: np.ndarray) -> np.ndarray:
-    """Normaliza RGB con los valores ImageNet usados durante el entrenamiento.
-
-    Args:
-        imagen: Imagen RGB que se procesa.
-
-    Returns:
-        np.ndarray: Imagen en float32 con normalización ImageNet.
-    """
+    """Convierte RGB de 0–255 a float32 y aplica la normalización ImageNet."""
 
     imagen = imagen.astype(np.float32, copy=False) / 255.0
     return (imagen - MEDIA_IMAGENET) / DESVIACION_IMAGENET
@@ -60,11 +53,7 @@ class DatasetPaneles(Dataset):
             raise ValueError(f"No hay imágenes en {self.carpeta_imagenes}")
 
     def __len__(self) -> int:
-        """Devuelve el número de imágenes de la división.
-
-        Returns:
-            int: Número de imágenes disponibles.
-        """
+        """Devuelve el número de imágenes de la división."""
 
         return len(self.imagenes)
 
@@ -154,11 +143,7 @@ def aumentar_datos(
 
 
 def crear_modelo(preentrenado: bool = True) -> nn.Module:
-    """Crea la arquitectura ResNet34 utilizada por los pesos actuales.
-
-    Returns:
-        nn.Module: U-Net ResNet34 con pesos ImageNet en el codificador.
-    """
+    """Crea U-Net ResNet34, con pesos ImageNet si preentrenado es True."""
 
     return smp.Unet(
         encoder_name="resnet34",

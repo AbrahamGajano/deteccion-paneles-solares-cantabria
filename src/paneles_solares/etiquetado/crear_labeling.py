@@ -83,12 +83,10 @@ def obtener_cantidades(pendientes: pd.DataFrame) -> dict[str, int]:
 
     # Así podemos detener el proceso y continuar sin repetir la cuota completa.
     guardadas = pendientes["origen"].value_counts()
-    faltan = {
+    return {
         categoria: max(0, cantidad - guardadas.get(categoria, 0))
         for categoria, cantidad in solicitadas.items()
     }
-
-    return faltan
 
 
 def cargar_candidatas(pendientes: pd.DataFrame) -> pd.DataFrame:
@@ -198,9 +196,6 @@ def cargar_modelo_unet(cantidades: dict):
 
     if MINIMO_PIXELES_PREDICHOS < 1:
         raise ValueError("El mínimo de píxeles debe ser positivo")
-
-    if not MODELO_UNET.is_file():
-        raise FileNotFoundError(MODELO_UNET)
 
     import torch
 
@@ -312,9 +307,7 @@ def predecir_unet(modelo, imagen, dispositivo) -> np.ndarray:
         logits = modelo(tensor)
         probabilidades = torch.sigmoid(logits)
 
-    mascara = probabilidades[0, 0].cpu().numpy() >= UMBRAL_UNET
-
-    return mascara
+    return probabilidades[0, 0].cpu().numpy() >= UMBRAL_UNET
 
 
 def son_discrepantes(mascara_yolo: np.ndarray, mascara_unet: np.ndarray) -> bool:

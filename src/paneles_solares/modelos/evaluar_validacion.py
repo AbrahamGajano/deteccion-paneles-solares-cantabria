@@ -95,14 +95,7 @@ def revisar_etiquetas(
 
 
 def entrada_modelo(imagen: Image.Image) -> torch.Tensor:
-    """Prepara una imagen RGB a 512 píxeles con normalización ImageNet.
-
-    Args:
-        imagen: Imagen RGB que se procesa.
-
-    Returns:
-        torch.Tensor: Tensor RGB normalizado de una imagen a 512 × 512.
-    """
+    """Convierte una imagen a RGB 512 × 512 y tensor (1, 3, 512, 512) normalizado con ImageNet."""
 
     imagen = imagen.convert("RGB").resize(
         (TAM_MODELO, TAM_MODELO), Image.Resampling.BILINEAR
