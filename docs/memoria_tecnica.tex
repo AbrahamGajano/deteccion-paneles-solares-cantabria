@@ -169,13 +169,13 @@ Se guardan las máscaras originales, sus relaciones con soportes, miembros de la
 
 \section{Producción estimada del inventario}
 
-La energía se calcula sobre el inventario observado, sin extrapolarlo a toda Cantabria. PVGIS \cite{pvgis} aporta rendimientos medios anuales por municipio para silicio cristalino y montaje ventilado. La superficie inclinada se aproxima como \(A_h/\cos\beta\), donde \(A_h\) es la proyección horizontal y \(\beta\) la inclinación supuesta. Los solapes se disuelven antes de agregar áreas y su reparto energético se pondera por superficie.
+La energía se calcula sobre el inventario observado, sin extrapolarlo a toda Cantabria. PVGIS \cite{pvgis} aporta rendimientos medios anuales por municipio para silicio cristalino y montaje ventilado. La superficie inclinada se aproxima como \(A_h/\cos\beta\), donde \(A_h\) es la proyección horizontal y \(\beta\) la inclinación estimada o supuesta. Los solapes se disuelven antes de agregar áreas y su reparto energético se pondera por superficie.
 
 La eficiencia inicial depende de la época, utilizando la tabla del JRC \cite{eficiencia}: 16,3\,\% en 2014, 17,7\,\% en 2017, 20\,\% en 2020 y 21,8\,\% en 2023, con interpolación anual. Antes de 2014 se suponen 10\,\% en 1989, 12\,\% en 2000 y 15\,\% en 2010. Son referencias de mercado e hipótesis, no especificaciones conocidas de los módulos locales.
 
 \begin{table}[H]
 \centering
-\caption{Escenarios de producción del inventario histórico.}
+\caption{Escenarios de producción del inventario histórico. Las inclinaciones de la tabla se utilizan cuando no hay estimación LiDAR aceptada.}
 \small
 \begin{tabular}{lrrrrr}
 \toprule
@@ -190,7 +190,11 @@ Favorable & 40° & Sur & 5\,\% & 0,2\,\% & $\times 1{,}15$\\
 
 En el escenario central se usa el punto medio del intervalo de aparición como aproximación a la edad de los módulos. Cuando falta un límite inferior compatible se supone un intervalo desde 25 años antes de la primera geometría. La degradación central del 0,5\,\% anual toma como referencia la revisión de NREL \cite{degradacion}. PVGIS se consulta con pérdidas adicionales nulas y después se aplican las pérdidas operativas y el envejecimiento una sola vez.
 
-El escenario conservador usa la fecha más antigua supuesta; el favorable permite módulos nuevos del año de la imagen. No se fechan ampliaciones a partir de diferencias entre máscaras del modelo y dibujos manuales. Para el inventario de 2023, la producción central es de 35,9 GWh/año, frente a 16,6 y 64,6 GWh/año en los otros escenarios. Aproximadamente el 57\,\% del área necesita el supuesto de antigüedad. El rango expresa sensibilidad a las hipótesis, no un intervalo de confianza ni energía medida durante el año del vuelo.
+En 2023 se incorpora la inclinación LiDAR aceptada por detección en los tres escenarios. Sin estimación, y en las campañas anteriores, se conservan las inclinaciones supuestas de la tabla. La superficie utiliza el ángulo exacto y PVGIS el múltiplo de 5° más próximo, con empates hacia arriba. Se calcula primero la producción de cada detección y después se agrega, sin promediar pendientes. La orientación sigue siendo supuesta. El método geométrico se documenta aparte en \texttt{docs/lidar/}.
+
+La producción horaria se calcula aparte mediante \texttt{seriescalc}, compartiendo curvas de referencia de 1 kWp por posición, inclinación, orientación y año meteorológico. Se aplican los mismos factores de superficie, eficiencia, pérdidas y degradación una sola vez. El año del inventario fija equipos y edades; cambiar la meteorología no envejece los equipos. Las potencias se convierten a energía horaria aproximada y se suman por instalación. Las referencias comprimidas permiten reconstruir las curvas sin almacenar millones de filas repetidas. Las fechas y los resúmenes mensuales se calculan en UTC; el gráfico utiliza horario español. Estas series no son lecturas de contador ni tienen que sumar lo mismo que el cálculo anual de clima medio.
+
+El escenario conservador usa la fecha más antigua supuesta; el favorable permite módulos nuevos del año de la imagen. No se fechan ampliaciones a partir de diferencias entre máscaras del modelo y dibujos manuales. Antes de incorporar las pendientes LiDAR, el inventario de 2023 daba 35,9 GWh/año en el escenario central, frente a 16,6 y 64,6 GWh/año en los otros escenarios; estas cifras corresponden al cálculo con inclinaciones supuestas. Aproximadamente el 57\,\% del área necesitaba el supuesto de antigüedad. El rango expresa sensibilidad a las hipótesis, no un intervalo de confianza ni energía medida durante el año del vuelo.
 
 \begin{figure}[H]
 \centering
@@ -216,7 +220,7 @@ La potencia depende de eficiencias y edades supuestas. PVGIS no identifica la or
 
 La transferencia directa del modelo francés no funcionó bien en Cantabria. El conjunto local permitió entrenar y comparar alternativas sobre una referencia común; la U-Net actual redujo el error de superficie y alcanzó Dice 0,8560. La nueva inferencia territorial permitirá incluir las detecciones exteriores y revisar indicadores por unidades cartográficas y municipios, sin contar instalaciones todavía.
 
-Como validación final se plantea reunir unas 1.000 teselas nuevas, elegidas completamente al azar y con separación espacial respecto a entrenamiento y validación. Después se podrán calcular intervalos de confianza, revisar municipios extremos, incorporar inclinación y orientación derivadas de LiDAR y ajustar el modelo con la siguiente cobertura PNOA disponible. Una comparación con registros oficiales requeriría comprobar previamente que ambos conjuntos describen las mismas fechas y unidades.
+Como validación final se plantea reunir unas 1.000 teselas nuevas, elegidas completamente al azar y con separación espacial respecto a entrenamiento y validación. Después se podrán calcular intervalos de confianza, revisar municipios extremos, validar las inclinaciones incorporadas, estudiar orientaciones derivadas de LiDAR y ajustar el modelo con la siguiente cobertura PNOA disponible. Una comparación con registros oficiales requeriría comprobar previamente que ambos conjuntos describen las mismas fechas y unidades.
 
 El estudio LiDAR se documenta aparte en \texttt{docs/lidar/memoria\_lidar.tex}.
 

@@ -10,8 +10,10 @@ import matplotlib
 import pandas as pd
 from shapely import covers, prepare, union_all
 
+from paneles_solares.datos.inclinaciones import incorporar_inclinaciones
 from paneles_solares.rutas import (
     INDICADORES_SEGUIMIENTO,
+    INCLINACIONES_LIDAR,
     MUNICIPIOS_CANTABRIA,
     VISUALIZACION,
     huella_archivo,
@@ -23,6 +25,10 @@ from paneles_solares.visualizacion.estimar_energia import (
     energia_union,
     hipotesis_historicas,
     preparar_energia_historica,
+)
+from paneles_solares.visualizacion.series_temporales import (
+    preparar_series_temporales,
+    registrar_procedencia,
 )
 
 matplotlib.use("Agg")
@@ -117,7 +123,7 @@ def desgloses(tabla: pd.DataFrame):
 def recortar_paneles(paneles, municipios):
     """Separa el área municipal y exterior conservando la geometría de cada máscara."""
 
-    geometrias = paneles[["id_instalacion", "anio", "geometry"]]
+    geometrias = paneles[["id_panel", "id_instalacion", "anio", "geometry"]]
     limites = municipios[["codigo", "geometry"]]
     recortes = gpd.overlay(geometrias, limites, how="intersection", keep_geom_type=True)
     territorio = union_all(limites.geometry)
@@ -394,6 +400,20 @@ def main():
         "--carpeta", type=ruta_proyecto, default=INDICADORES_SEGUIMIENTO
     )
     parser.add_argument("--salida", type=ruta_proyecto, default=SALIDA)
+    parser.add_argument("--series-horarias", action="store_true",
+                        help="Prepara referencias horarias y resúmenes por instalación")
+    parser.add_argument("--exportar-horarias", action="store_true",
+                        help="Prepara las series y guarda un CSV.gz por instalación")
+    parser.add_argument("--anio-inventario", type=int, default=2023,
+                        help="Campaña del inventario para las series horarias")
+    parser.add_argument("--anio-meteo", type=int, default=2023,
+                        help="Año meteorológico para las series horarias")
+    lidar = parser.add_mutually_exclusive_group()
+    lidar.add_argument(
+        "--lidar", type=ruta_proyecto, default=INCLINACIONES_LIDAR,
+        help="Resumen CSV de las inclinaciones LiDAR de 2023",
+    )
+    lidar.add_argument("--sin-lidar", action="store_true", help="Usa las inclinaciones supuestas originales")
     parser.add_argument(
         "--limite", type=int, help="Prueba con los primeros N candidatos"
     )
@@ -405,6 +425,8 @@ def main():
     candidatos, paneles, serie, municipios, contexto = leer_datos(
         args.carpeta, args.limite
     )
+    resultados_lidar = None if args.sin_lidar else args.lidar
+    paneles = incorporar_inclinaciones(paneles, resultados_lidar)
     args.salida.mkdir(parents=True, exist_ok=True)
     print("Preparando radiación y escenarios energéticos…", flush=True)
     recortes = recortar_paneles(paneles, municipios)
@@ -414,6 +436,7 @@ def main():
     contenido = preparar_contenido(
         candidatos, paneles, serie, municipios, contexto, resumen
     )
+    contenido["energia"] = hipotesis_historicas(resultados_lidar)
     crear_panel(contenido, args.salida / "panel_indicadores.html")
     resumen.to_csv(args.salida / "resumen_municipal.csv", index=False)
     columnas = [
@@ -426,13 +449,15 @@ def main():
     ] + TOTALES_ENERGIA
     resumen[columnas].to_csv(args.salida / "produccion_estimada.csv", index=False)
     (args.salida / "hipotesis_energia.json").write_text(
-        json.dumps(hipotesis_historicas(), ensure_ascii=False, indent=2),
+        json.dumps(contenido["energia"], ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     crear_resumen_png(resumen, args.salida / "resumen_indicadores.png")
     archivos = [args.carpeta / n for n in ("atribucion.gpkg", "instalaciones.csv")]
     archivos.append(MUNICIPIOS_CANTABRIA)
     archivos.append(args.salida / "pvgis_anual.json")
+    if resultados_lidar is not None:
+        archivos.append(resultados_lidar)
     procedencia = {
         "fuentes": {ruta_registrada(p): huella_archivo(p) for p in archivos},
         "limite_prueba": args.limite,
@@ -445,6 +470,16 @@ def main():
         json.dumps(procedencia, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     print(args.salida / "panel_indicadores.html")
+    if args.series_horarias or args.exportar_horarias:
+        salida_series = args.salida / "series_temporales" / (
+            f"inventario_{args.anio_inventario}_meteo_{args.anio_meteo}"
+        )
+        preparar_series_temporales(
+            energia, salida_series, args.anio_inventario, args.anio_meteo,
+            exportar_horarias=args.exportar_horarias,
+        )
+        registrar_procedencia(args.salida, salida_series)
+        print(salida_series)
 
 
 if __name__ == "__main__":

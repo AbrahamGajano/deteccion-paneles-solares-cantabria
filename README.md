@@ -224,6 +224,27 @@ La sección de energía muestra tres escenarios, sus supuestos y fuentes.
 La estimación corresponde al inventario observado, sin extrapolar a toda
 Cantabria. Las áreas se agregan sin duplicar solapes.
 
+El mismo comando incorpora las inclinaciones aceptadas de
+`runs/lidar/cantabria_20261112_v2/resumen.csv` a las detecciones de 2023.
+Se calcula primero la energía de cada detección y después se suma: una misma
+agrupación puede contener paneles con pendientes distintas. Las otras campañas
+conservan los supuestos anteriores; no se hereda la geometría de 2023.
+La superficie de módulos usa el ángulo exacto; las consultas PVGIS se agrupan
+en pasos de 5°. La orientación sigue siendo supuesta.
+
+`--lidar ruta/resumen.csv` selecciona otro lote. Para comparar con los supuestos
+anteriores sin sustituir el panel habitual:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores --sin-lidar --salida runs/visualizacion_sin_lidar
+```
+
+`factores_energia.csv` conserva el ángulo, su origen y los factores por detección
+y campaña. `energia_paneles.csv` añade el desglose municipal, las superficies,
+potencias y producciones. El mapa mantiene las superficies horizontales.
+Las hipótesis y la procedencia registran el lote LiDAR utilizado. El cálculo
+regional uniforme del apartado 3 permanece como escenario independiente.
+
 En la misma carpeta se guardan los CSV municipales, producción estimada,
 factores por emplazamiento, hipótesis y procedencia. Las consultas PVGIS se
 conservan en `pvgis_anual.json`. El mapa abre sin fondo y funciona sin conexión,
@@ -233,6 +254,44 @@ se conservan en `src/paneles_solares/visualizacion/plantillas/leaflet/`.
 Se incluyen en el HTML al generarlo, sin descargas adicionales. `--carpeta`
 y `--salida` permiten usar otra salida histórica, por ejemplo la prueba pequeña
 descrita en la guía.
+
+### Producción horaria por instalación
+
+Para generar el panel y, además, las series de todas las instalaciones de 2023:
+
+```powershell
+.\.venv\Scripts\python.exe -u -m paneles_solares.visualizacion.panel_indicadores --exportar-horarias
+```
+
+Se usa la meteorología de 2023. `--anio-inventario` selecciona la campaña de
+los equipos y `--anio-meteo` el año meteorológico; cambiar este último no cambia
+su edad. Las referencias de 1 kWp se comparten y comprimen en
+`runs/visualizacion/pvgis_horario/`. Al repetir el comando se reutilizan las
+consultas terminadas, incluso después de un fallo de conexión.
+
+Los resultados quedan en
+`runs/visualizacion/series_temporales/inventario_2023_meteo_2023/`:
+
+- `relaciones.csv` y `referencias.csv`: detecciones, escenarios y curvas compartidas.
+- `mensual_instalaciones.csv` y `anual_instalaciones.csv`: energía en kWh.
+- `instalaciones/<id>.csv.gz`: potencia en kW y energía horaria aproximada en kWh.
+- `configuracion.json` y `procedencia.json`: años, interpretación y datos de origen.
+
+Con `--series-horarias` se preparan las referencias y resúmenes sin exportar todos
+los CSV horarios. Una vez existe `energia_paneles.csv`, se pueden calcular las
+series de forma independiente o consultar una instalación con gráfico:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.series_temporales --instalacion ID --salida runs/consulta_instalacion
+```
+
+Sustituir `ID` por `id_instalacion`. La consulta guarda `produccion.html` y el CSV
+comprimido. `--escenarios central` limita esa consulta al escenario central.
+Las fechas se calculan en UTC y el gráfico las presenta en horario español.
+La producción horaria es modelada para los equipos del inventario funcionando
+un año completo. Su suma puede diferir del cálculo anual de clima medio.
+La orientación sigue siendo supuesta; no se vuelve a aplicar eficiencia,
+degradación ni pérdidas sobre los factores que ya las incluyen.
 
 ## Documentación
 

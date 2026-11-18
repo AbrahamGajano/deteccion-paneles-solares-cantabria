@@ -43,6 +43,8 @@ INDICADORES_UNET = ruta_proyecto("runs/indicadores/unet_actual")
 EVALUACION_SEGUIMIENTO = ruta_proyecto("runs/evaluacion/seguimiento")
 INDICADORES_SEGUIMIENTO = ruta_proyecto("runs/indicadores/seguimiento_historico")
 VISUALIZACION = ruta_proyecto("runs/visualizacion")
+CACHE_PVGIS_HORARIO = VISUALIZACION / "pvgis_horario"
+INCLINACIONES_LIDAR = ruta_proyecto("runs/lidar/cantabria_20261112_v2/resumen.csv")
 PRODUCCION_CONFIG = INDICADORES_UNET / "produccion_config.json"
 PRODUCCION_MUNICIPAL = INDICADORES_UNET / "produccion_municipal.csv"
 PRODUCCION_MENSUAL = INDICADORES_UNET / "produccion_mensual.csv"
@@ -63,6 +65,7 @@ def retirar_panel() -> None:
         "produccion_estimada.csv",
         "factores_energia.csv",
         "hipotesis_energia.json",
+        "energia_paneles.csv",
     ]
 
     for nombre in archivos:

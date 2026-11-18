@@ -87,6 +87,31 @@ actual acepta 21; esto mide aprovechamiento, no exactitud. Se conservan la
 muestra original, sus formularios y `validacion_100_v2`. El lote regional del
 método anterior quedó incompleto y se sustituyó por la ejecución `v2`.
 
+## Aplicación a energía
+
+El comando habitual del panel incorpora el resumen LiDAR, sin volver a ajustar planos:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores
+```
+
+La relación usa `id_panel` y la campaña 2023. Solo se aplican inclinaciones
+aceptadas; las demás conservan los supuestos de cada escenario. No se trasladan
+pendientes a las imágenes antiguas. Cada detección aporta su propia superficie
+inclinada y producción antes de sumar instalaciones y municipios.
+
+La superficie usa el ángulo exacto; PVGIS usa el múltiplo de 5° más próximo
+(los empates se redondean hacia arriba) y reutiliza las consultas guardadas.
+Se mantienen las orientaciones supuestas: este paso no estima azimut ni genera
+series horarias. Los escenarios son sensibilidades, no intervalos de confianza.
+
+`--lidar ruta/resumen.csv` cambia el lote y `--sin-lidar` permite comparar con
+el cálculo anterior. Usar `--salida` para conservar ambas ejecuciones.
+`factores_energia.csv` y `energia_paneles.csv` registran ángulos exactos,
+ángulos consultados, motivos y procedencia por detección. El JSON de procedencia
+identifica también el CSV LiDAR. Los detalles energéticos están en la
+[guía del proyecto](../guia.md#energía-y-antigüedad).
+
 ## Archivos del código
 
 - `descargar_recortar.py`: descarga una hoja, recorta y limpia los originales.
@@ -94,3 +119,5 @@ método anterior quedó incompleto y se sustituyó por la ejecución `v2`.
 - `ajuste_planos.py`: ajuste, búsqueda exterior y decisión geométrica.
 - `estimar_planos.py`: lectura, procesamiento del lote y resultados.
 - `visor_resultados.py`: ortofoto, nube, planos y medidas.
+- `datos/inclinaciones.py`: relación entre resultados y detecciones originales.
+- `visualizacion/estimar_energia.py`: superficie de módulos, potencia y producción.

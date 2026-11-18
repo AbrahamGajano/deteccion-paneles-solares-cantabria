@@ -330,10 +330,10 @@ function mostrarSupuestosEnergia() {
     if (!h) return;
     const nombres = { min: 'Conservador', central: 'Central', max: 'Favorable' };
     const filas = Object.entries(h.escenarios).map(([nombre, e]) => `<tr><td>${nombres[nombre]}</td>` +
-        `<td>${e.inclinacion_grados}°</td><td>${e.orientacion_grados === 90 ? 'Oeste' : 'Sur'}</td>` +
+        `<td>${e.inclinacion_grados}° sin estimación LiDAR</td><td>${e.orientacion_grados === 90 ? 'Oeste' : 'Sur'}</td>` +
         `<td>${e.perdidas_operativas_pct} %</td><td>${numero(100 * e.degradacion_anual, 1)} %/año</td>` +
         `<td>× ${numero(e.factor_eficiencia, 2)}</td></tr>`).join('');
-    const etiquetas = { radiacion: 'Radiación', superficie: 'Superficie', eficiencia: 'Tecnología y época',
+    const etiquetas = { radiacion: 'Radiación', inclinacion: 'Inclinación', superficie: 'Superficie', eficiencia: 'Tecnología y época',
         antiguedad: 'Edad central', ampliaciones: 'Ampliaciones y renovaciones', perdidas: 'Pérdidas',
         periodo: 'Año representativo', limites: 'Alcance del rango' };
     elemento('energia-supuestos').innerHTML = '<div class="tabla-supuestos"><table><thead><tr>' +

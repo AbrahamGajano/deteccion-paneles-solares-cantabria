@@ -665,7 +665,7 @@ la producción mínima y el valor central. El rango calculado cubre la duda en
 antigüedad, no toda la incertidumbre de orientación, tecnología o sombras.
 
 El panel único conecta esta función con las superficies del inventario. Se usa
-una posición municipal ponderada por área y tres consultas PVGIS con `loss=0`,
+una posición municipal ponderada por área y consultas PVGIS con `loss=0`,
 clima medio SARAH3, silicio cristalino, montaje ventilado y horizonte del terreno.
 Los intervalos siguen siendo provisionales. La salida es producción anual
 representativa de los equipos de cada imagen, no consumo, producción medida
@@ -673,12 +673,25 @@ durante el año del vuelo ni una extrapolación a toda Cantabria.
 
 | Supuesto | Conservador | Central | Favorable |
 | --- | --- | --- | --- |
-| Inclinación | 15° | 30° | 40° |
+| Inclinación sin estimación LiDAR | 15° | 30° | 40° |
 | Orientación | Oeste | Sur | Sur |
 | Pérdidas operativas | 18 % | 10 % | 5 % |
 | Degradación anual | 1 % | 0,5 % | 0,2 % |
 | Eficiencia inicial respecto a su época | × 0,85 | × 1 | × 1,15 |
 | Fecha de los módulos | Inicio supuesto del intervalo | Punto medio del intervalo | Año de la imagen |
+
+En 2023 se sustituye la inclinación de los tres escenarios por la estimación
+LiDAR aceptada de cada detección. La relación utiliza `id_panel` y `anio`;
+no se trasladan ángulos a campañas anteriores ni se utilizan planos candidatos
+rechazados. Sin resultado aceptado se mantienen los supuestos de la tabla.
+La orientación continúa siendo supuesta.
+
+La superficie usa el ángulo exacto. Para limitar las consultas, PVGIS utiliza
+el múltiplo de 5° más próximo, con empates hacia arriba. El cálculo se realiza
+por detección antes de agregar instalaciones, sin promediar pendientes.
+`--lidar ruta/resumen.csv` permite seleccionar otro lote y `--sin-lidar`
+reproduce las hipótesis anteriores. Para comparar se usan carpetas `--salida`
+distintas. El lote habitual se define en `rutas.INCLINACIONES_LIDAR`.
 
 La eficiencia se interpola a partir de la tabla 2 del
 [informe JRC 2025](https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf):
@@ -693,21 +706,80 @@ puede infravalorar ampliaciones o renovaciones recientes; el favorable permite
 que toda el área sea de equipos nuevos. Esto evita rejuvenecer automáticamente
 los módulos por diferencias entre el modelo de 2023 y los dibujos anteriores.
 
-El área de módulos es `área_horizontal / cos(inclinación)`. Por emplazamiento y
-municipio se disuelven máscaras del mismo año. Para agregar emplazamientos con
+El área de módulos es `área_horizontal / cos(inclinación)`. Por detección y
+municipio se disuelven las piezas del mismo año. Para agregar emplazamientos con
 solapes, la mezcla de producciones se escala al área de su unión; el reparto
 de esos solapes se pondera por superficie. El total es la suma de municipios
 y del área sin adscripción. No se duplica producción por repetir un contorno.
 
 La amplitud de los escenarios describe sensibilidad a estas hipótesis, no un
-intervalo de confianza. No cuantifica errores de detección, pendientes reales,
+intervalo de confianza. No cuantifica errores de detección, del LiDAR o de pendientes supuestas,
 sombras locales, fallos ni omisiones. Las máscaras de 2023 siguen siendo
 estimadas. Confirmar instalaciones y fechar cada ampliación permitiría sustituir
 las hipótesis, pero no es una condición para mostrar este cálculo exploratorio.
 
-El comando del panel regenera `produccion_estimada.csv`, `factores_energia.csv`
-y `hipotesis_energia.json` junto al HTML. La caché `pvgis_anual.json` conserva
+El comando del panel regenera `produccion_estimada.csv`, `factores_energia.csv`,
+`energia_paneles.csv` y `hipotesis_energia.json` junto al HTML. Los factores
+se conservan por detección y campaña, con inclinación aceptada, origen, motivo,
+ángulo exacto por escenario y ángulo consultado. El detalle energético añade
+superficies, potencias y producción por detección y municipio. La procedencia
+incluye el CSV LiDAR y las hipótesis utilizadas.
+La caché `pvgis_anual.json` conserva
 respuestas y parámetros, sin mezclar el 14 % del escenario regional uniforme.
+
+### Series temporales de producción
+
+`visualizacion/series_temporales.py` reutiliza `energia_paneles.csv`. Cada pieza
+aporta `area_m2 × factor_del_escenario` como escala de una curva de referencia
+de 1 kWp consultada con `loss=0`. Ese factor ya incluye eficiencia inicial,
+corrección de inclinación, degradación y pérdidas: no se aplican otra vez.
+
+La curva se obtiene con el servicio `seriescalc` de PVGIS, solicitando
+`pvcalculation=1`. Se conserva la misma posición municipal, tecnología, montaje
+y horizonte del cálculo anual. El año del inventario determina las geometrías
+y edades; el año meteorológico determina el recurso solar. No se envejecen los
+equipos al probar otra meteorología.
+
+Las referencias se identifican por todos los parámetros, incluido el año y la
+versión de PVGIS. Se guardan como JSON comprimidos junto a `consultas.json`.
+Cada descarga completa se registra antes de continuar. Un error interrumpe la
+ejecución y al repetirla se reutilizan las referencias terminadas.
+
+La respuesta contiene potencia en W para 1 kWp; se divide por 1.000 y se
+multiplica por la escala de cada pieza para obtener kW. La energía horaria se
+aproxima como esa potencia multiplicada por una hora. Se comprueba que el año
+está completo, sin huecos, duplicados ni potencias no válidas; no se rellenan
+horas desconocidas con cero. Los años bisiestos conservan sus 8.784 muestras.
+
+SARAH utiliza marcas temporales que pueden estar desplazadas unos minutos
+respecto al inicio de la hora. Para sumar municipios se asigna cada muestra a
+su hora UTC, conservando la marca original en la respuesta de la caché. No es
+una producción medida por un contador. Los meses de los resúmenes son UTC;
+el gráfico convierte las fechas a `Europe/Madrid` y conserva el cambio horario.
+
+El comando habitual admite `--series-horarias` para preparar referencias,
+relaciones y resúmenes por instalación. `--exportar-horarias` añade un CSV.gz
+por instalación, procesándolas una a una para limitar la memoria. Se suman
+curvas con sus propias pendientes, sin promediar ángulos. Los resúmenes son
+por instalación: no se deben sumar como total territorial sin aplicar también
+el tratamiento de solapes entre agrupaciones distintas.
+
+Las series quedan separadas del cálculo anual de clima medio, dentro de
+`series_temporales/inventario_AAAA_meteo_AAAA/`. Las tablas de relaciones y
+referencias permiten reconstruir cualquier instalación sin guardar todas las
+horas repetidas. Se registran configuración, hipótesis y procedencia del CSV.
+
+Con el detalle energético ya preparado se puede ejecutar directamente:
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.visualizacion.series_temporales --exportar-horarias
+```
+
+`--instalacion ID --salida runs/consulta_instalacion` genera una consulta
+individual y su gráfico HTML; `--escenarios central` permite limitar escenarios.
+La simulación representa los equipos de una campaña funcionando durante un
+año completo. No reconstruye las altas y averías del año del vuelo. No se
+fuerza su suma a coincidir con las medias climáticas anuales de PVGIS.
 
 ### Entrenamiento posterior
 
