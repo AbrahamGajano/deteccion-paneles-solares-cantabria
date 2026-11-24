@@ -200,7 +200,7 @@ se conserva para poder reproducir la muestra.
 Prueba pequeña con el CSV de ejemplo incluido en el repositorio:
 
 ```powershell
-.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --ventanas docs/ejemplo_ventanas_historicas.csv --anios 2023 2020 2017 2014 --salida runs/prueba_historico
+.\.venv\Scripts\python.exe -m paneles_solares.etiquetado.preparar_seguimiento --ventanas docs/ejemplos/ventanas_historicas.csv --anios 2023 2020 2017 2014 --salida runs/prueba_historico
 ```
 
 Para preparar una selección propia:
@@ -651,11 +651,9 @@ y 0,5 % anual de degradación, configurables. El 10 % es una hipótesis de traba
 no una pérdida medida. El 0,5 % procede de la mediana de la
 [revisión de Jordan y Kurtz, NREL](https://nrel.gov/docs/fy12osti/51664.pdf).
 
-La potencia inicial por m² es un parámetro separado: el
-[informe fotovoltaico de Fraunhofer ISE](https://www.ise.fraunhofer.de/en/publications/studies/photovoltaics-report.html)
-documenta mejoras tecnológicas, pero no identifica la placa de cada tejado de
-Cantabria. Todavía no se fija una tabla de eficiencias locales por año ni se
-atribuyen cambios de tecnología a partir del color de la ortofoto.
+La potencia inicial por m² es un parámetro separado. El panel la aproxima
+mediante eficiencias por época, con referencias de mercado del JRC. La
+[memoria técnica](memoria_tecnica.tex) recoge los valores y cómo se aplican.
 
 Para una instalación entre 2017 y 2020, la edad en 2023 queda entre 3 y 6 años.
 Se calculan extremos y un escenario central situado a mitad del intervalo.
@@ -664,8 +662,9 @@ solo se conoce una edad mínima: el cálculo deja sin determinar la edad máxima
 la producción mínima y el valor central. El rango calculado cubre la duda en
 antigüedad, no toda la incertidumbre de orientación, tecnología o sombras.
 
-El panel único conecta esta función con las superficies del inventario. Se usa
-una posición municipal ponderada por área y consultas PVGIS con `loss=0`,
+El panel aplica la función a las superficies del inventario. Si falta una
+fecha inicial compatible, usa un intervalo supuesto de 25 años hasta la primera
+evidencia. Se usa una posición municipal ponderada por área y consultas PVGIS con `loss=0`,
 clima medio SARAH3, silicio cristalino, montaje ventilado y horizonte del terreno.
 Los intervalos siguen siendo provisionales. La salida es producción anual
 representativa de los equipos de cada imagen, no consumo, producción medida

@@ -17,6 +17,7 @@ from paneles_solares.rutas import (
     PRODUCCION_CONFIG,
     PRODUCCION_MENSUAL,
     PRODUCCION_MUNICIPAL,
+    guardar_json_atomico,
     version_indicadores,
     ruta_registrada,
 )
@@ -370,7 +371,7 @@ def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
                     if clave not in consultas:
                         consultas[clave] = solicitar_pvgis(sesion, "PVcalc", parametros)
                         carpeta.mkdir(parents=True, exist_ok=True)
-                        cache.write_text(json.dumps(consultas, ensure_ascii=False), encoding="utf-8")
+                        guardar_json_atomico(cache, consultas)
                     fila[f"rendimiento_{nombre}"] = consultas[clave]["outputs"]["totals"][
                         "fixed"
                     ]["E_y"]

@@ -1,5 +1,6 @@
 """Prepara cuadrados de contexto y las hojas LiDAR necesarias para cubrirlos."""
 
+import argparse
 from pathlib import Path
 
 import geopandas as gpd
@@ -185,12 +186,17 @@ def guardar_preparacion(
 def main() -> None:
     """Prepara las ventanas de 2023 y su plan de descarga LiDAR."""
 
-    paneles = cargar_paneles(PANELES, CAPA, ANHO)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--paneles", type=ruta_proyecto, default=PANELES)
+    parser.add_argument("--salida", type=ruta_proyecto, default=SALIDA)
+    args = parser.parse_args()
+
+    paneles = cargar_paneles(args.paneles, CAPA, ANHO)
     recortes = crear_recortes(paneles, MARGEN)
     hojas = consultar_hojas()
     relaciones = relacionar_hojas(recortes, hojas)
 
-    guardar_preparacion(paneles, recortes, hojas, relaciones, SALIDA)
+    guardar_preparacion(paneles, recortes, hojas, relaciones, args.salida)
 
 
 if __name__ == "__main__":

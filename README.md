@@ -5,6 +5,16 @@ superficie y periodos de instalación. U-Net y YOLO comparten las anotaciones.
 Las edificaciones y parcelas aportan contexto: no se excluyen terrenos,
 aparcamientos ni zonas sin edificios.
 
+## Consultar la entrega de 2023
+
+Los archivos de entrega se descargan desde [Releases](https://github.com/AbrahamGajano/deteccion-paneles-solares-cantabria/releases).
+Para consultar un borrador, entra con una cuenta que tenga acceso de escritura al repositorio.
+
+- **panel-e-informes-2023.zip** contiene el HTML y los dos informes en PDF. Extrae el archivo y abre `panel_indicadores.html` en el navegador.
+- **resultados-2023.zip** contiene los CSV, el GeoPackage regional y los datos para reproducir el panel anual. Extrae su contenido en la raíz del repositorio y consulta `LEEME-resultados-2023.txt`.
+- **series-horarias-2023.zip** contiene las curvas por agrupación y los resúmenes mensual y anual. Descárgalo para analizar las horas.
+- Coloca **unet_resnet34.pt** en `weights/` si vas a ejecutar la detección.
+
 ## Entorno y datos
 
 Python 3.10 o posterior. Ejecutar desde la raíz del repositorio:
@@ -30,6 +40,45 @@ Las ortofotos se obtienen del Gobierno de Cantabria o del CNIG. El etiquetado
 histórico también puede descargar recortes del WCS sin tener el TIFF completo.
 Para inferir se necesitan los pesos; para volver a entrenar, el dataset y los
 pesos iniciales definidos en `modelos/entrenar_unet.py` o `entrenar_yolo.py`.
+La copia del conjunto de entrenamiento usada en los notebooks está en
+[Paneles Cantabria en Kaggle](https://www.kaggle.com/datasets/abrahamgajano/paneles-cantabria).
+
+## Ejecutar una campaña
+
+Desde la raíz del proyecto, con la geografía y el inventario de 2023 preparados,
+este comando genera el HTML, los CSV de energía y los mapas en una carpeta nueva.
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.campania `
+    --inventario runs/indicadores/seguimiento_historico `
+    --lidar runs/lidar/cantabria_20261112_v2/resumen.csv `
+    --salida runs/campanias/2023
+```
+
+Abre `runs/campanias/2023/panel/panel_indicadores.html`. Añade `--horarias` para
+exportar también las curvas por instalación. Usa `--recalcular-lidar` en lugar
+de `--lidar` si necesitas descargar y procesar los recortes de 2023. Si omites
+ambas opciones, el panel usa ángulos supuestos.
+
+Si se interrumpe, repite el comando con la misma salida. `progreso.json` y los
+archivos `.log` indican qué etapa está en curso o dónde se produjo un error.
+Para rehacer 2023 desde los TIFF y un lote de LabelMe ya cerrado, sustituye
+`--inventario …` por `--ortofotos data/pnoa --manifest data/datasets/seguimiento/labelme/manifest.csv`.
+Sin `--manifest`, el flujo genera el índice y las detecciones.
+
+Para probar las ortofotos de 2026, coloca los TIFF en otra carpeta y elige una
+zona pequeña en EPSG:25830. El detector actual espera TIFF RGB de 0,15 m en ese
+sistema de coordenadas.
+
+```powershell
+.\.venv\Scripts\python.exe -m paneles_solares.campania `
+    --anio 2026 --ortofotos data/pnoa_2026 --salida runs/campanias/prueba_2026 `
+    --bbox 387515.6 4799608.4 387692.4 4799785.2
+```
+
+El inventario histórico, el LiDAR y la publicación están preparados para la
+campaña de 2023. Para adaptar el flujo completo a los datos de 2026 o si falla
+la prueba, puedes escribir a [agd469@alumnos.unican.es](mailto:agd469@alumnos.unican.es).
 
 ## 1. Preparar la geografía de 2023
 
@@ -296,19 +345,20 @@ eficiencia, la degradación y las pérdidas ya están incluidas en los factores.
 
 ## Documentación
 
+- [Índice de documentación](docs/README.md).
+- [Historial del proyecto](docs/historial_proyecto.tex).
 - [Guía de etiquetado, validación y seguimiento](docs/guia.md).
 - [Memoria técnica](docs/memoria_tecnica.tex).
 - [LiDAR: método, descarga y ejecución](docs/lidar/README.md).
 - [Fuentes catastrales de 2023](docs/revision_catastro_2023.md).
 
-Los mapas estáticos incluidos en la memoria se regeneran después del panel:
+Los mapas estáticos se regeneran después del panel:
 
 ```powershell
 .\.venv\Scripts\python.exe docs/generar_mapas.py --anio 2023
 ```
 
-La memoria se conserva en LaTeX; para obtener el PDF se necesita una instalación
-de LaTeX y compilar desde `docs/` para resolver las rutas de las figuras.
+El índice de documentación incluye los comandos para compilar los informes.
 
 Las consultas PVGIS fallidas muestran el error del servicio; al repetir el
 comando se reutiliza la caché de consultas terminadas.
@@ -325,8 +375,8 @@ interrumpidas y los auxiliares de LaTeX cuando no haya procesos escribiéndolos.
 permiten reanudar trabajos. El peso `weights/unet_resnet34_anterior.pt` sigue
 siendo necesario para entrenar la U-Net actual.
 
-La limpieza de cachés y salidas sustituidas está preparada con rutas explícitas
-en `docs/limpiar_generados.ps1`. No modifica originales ni resultados actuales:
+El script `docs/limpiar_generados.ps1` retira cachés de desarrollo y auxiliares
+de LaTeX. Usa `-WhatIf` para ver los destinos antes de limpiar.
 
 ```powershell
 .\docs\limpiar_generados.ps1

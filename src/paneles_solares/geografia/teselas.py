@@ -66,7 +66,9 @@ def obtener_teselas(tif, edificios, territorio=None) -> pd.DataFrame:
     ]]
 
 
-def preparar(salida: Path = INDICE_TESELAS, bbox=None) -> pd.DataFrame:
+def preparar(
+    salida: Path = INDICE_TESELAS, bbox=None, ortofotos: Path = PNOA, anio: int = 2023,
+) -> pd.DataFrame:
     """Guarda el índice y las capas de cobertura nominal de las ortofotos locales."""
     edificios = gpd.read_file(EDIFICIOS_CATASTRO, layer="edificios")
     region = union_all(gpd.read_file(MUNICIPIOS_CANTABRIA, layer="cantabria").geometry)
@@ -74,7 +76,8 @@ def preparar(salida: Path = INDICE_TESELAS, bbox=None) -> pd.DataFrame:
         region = region.intersection(box(*bbox))
 
     registros, hojas = [], []
-    tifs = sorted(PNOA.glob("*.tif"))
+    tifs = sorted(ruta for ruta in ortofotos.iterdir()
+                  if ruta.is_file() and ruta.suffix.lower() in (".tif", ".tiff"))
     for numero, ruta in enumerate(tifs, 1):
         with rasterio.open(ruta) as tif:
             zona = region.intersection(box(*tif.bounds))
@@ -91,6 +94,8 @@ def preparar(salida: Path = INDICE_TESELAS, bbox=None) -> pd.DataFrame:
             })
             print(f"[{numero}/{len(tifs)}] {ruta.name}: {len(tabla)} teselas")
 
+    if not registros or not any(len(tabla) for tabla in registros):
+        raise ValueError(f"No hay teselas en la zona solicitada dentro de {ortofotos}")
     indice = pd.concat(registros, ignore_index=True)
     salida.parent.mkdir(parents=True, exist_ok=True)
     indice.to_csv(salida, index=False)
@@ -106,7 +111,7 @@ def preparar(salida: Path = INDICE_TESELAS, bbox=None) -> pd.DataFrame:
         )
 
     resumen = {
-        "anio": 2023,
+        "anio": anio,
         "bbox": bbox,
         "teselas": len(indice),
         "con_edificaciones": int(indice.num_edificios.gt(0).sum()),
@@ -125,9 +130,14 @@ def preparar(salida: Path = INDICE_TESELAS, bbox=None) -> pd.DataFrame:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bbox", type=float, nargs=4)
+    parser.add_argument("--anio", type=int, default=2023)
+    parser.add_argument("--ortofotos", type=ruta_proyecto, default=PNOA)
+    parser.add_argument("--salida", type=ruta_proyecto)
     args = parser.parse_args()
-    salida = ruta_proyecto("runs/prueba_2023/teselas.csv") if args.bbox else INDICE_TESELAS
-    preparar(salida, args.bbox)
+    salida = args.salida or (
+        ruta_proyecto(f"runs/prueba_{args.anio}/teselas.csv") if args.bbox else INDICE_TESELAS
+    )
+    preparar(salida, args.bbox, args.ortofotos, args.anio)
 
 
 if __name__ == "__main__":

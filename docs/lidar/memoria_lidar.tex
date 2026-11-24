@@ -1,64 +1,34 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
-\usepackage[a4paper,margin=2.2cm]{geometry}
+\usepackage[a4paper,margin=2.3cm]{geometry}
 \usepackage{amsmath}
-\usepackage{hyperref}
+\usepackage[hidelinks]{hyperref}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.5em}
-\title{Estimación experimental de inclinaciones con LiDAR}
+\renewcommand{\refname}{Fuente del método}
+\raggedbottom
+
+\title{Anexo LiDAR\\Inclinación y orientación de las detecciones de 2023}
 \author{}
-\date{}
+\date{Noviembre de 2026}
+
 \begin{document}
 \maketitle
 
-\section{Objetivo y datos}
-Estimar inclinaciones de detecciones de paneles solares de 2023 compatibles con
-una cubierta coplanar o aproximadamente paralela. Se conservan recortes LiDAR
-con contexto alrededor del polígono original. Las aportaciones de varias hojas
-se reúnen sin duplicados exactos. Las ortofotos se usan para revisión visual.
+El objetivo es estimar la geometría local de detecciones compatibles con su cubierta. La inclinación aceptada y el azimut recuperable se usan en el cálculo energético del inventario histórico de 2023. Los demás casos aplican los supuestos de cada escenario.
 
 \section{Método}
-RANSAC busca el plano interior con mayor apoyo y se reajusta por SVD. Para una
-normal unitaria $\mathbf n$ y un centro $\mathbf c$, la distancia perpendicular es
-$d_i=(\mathbf p_i-\mathbf c)\cdot\mathbf n$ y la inclinación es
-$\beta=\arccos(|n_z|)$. Se exige un 75\,\% de apoyo interior con tolerancia
-de 0,10~m, al menos diez inliers y extensión horizontal en dos direcciones.
-La estabilidad se comprueba variando la tolerancia y tomando una submuestra.
 
-En el exterior se extraen hasta seis planos por franja, retirando sucesivamente
-sus inliers. Se detiene la búsqueda si no queda apoyo suficiente. Los fragmentos
-se separan por proximidad y se relacionan con los inliers interiores en 3D.
-Entre superficies distintas, el fragmento elegido debe tener al menos el doble
-de puntos vecinos que las alternativas. Los empates se conservan como ambiguos.
-Sin apoyo próximo, la franja se amplía de 2 a 4 y hasta 8~m.
+\IfFileExists{lidar/metodo.tex}{\input{lidar/metodo.tex}}{\input{metodo.tex}}
 
-La aceptación compara estabilidad, ángulo entre normales y separación: se
-admiten hasta 5 grados y 0,30~m en el percentil 90. Los límites son configurables.
-Se guardan por separado inclinación candidata, estimada y utilizada. Cuando
-falta evidencia, la estimada queda desconocida y la utilizada toma un supuesto
-de 30 grados, configurable. Esta hipótesis no equivale a una medida.
+\section{Alcance del lote}
 
-\section{Alcance y validación}
-Se estima el faldón local, también en naves de poca pendiente. Varias vertientes
-en una detección, desplazamientos y cubiertas sin superficie exterior visible
-pueden impedir la comprobación. La continuidad geométrica no identifica por sí
-sola los módulos ni confirma su montaje. Compartir año de campaña tampoco
-garantiza simultaneidad entre ortofoto y LiDAR.
+En el lote de la campaña 2023 se procesaron 8\,671 detecciones del seguimiento. Se aceptaron 3\,973 inclinaciones y se recuperaron 3\,280 azimuts. En una muestra de 100 casos, el ajuste exterior anterior aceptaba 13 inclinaciones y la revisión, 21. Las cifras indican cuántos casos pasaron el procedimiento de decisión. La exactitud angular necesita compararse con una referencia independiente.
 
-La validación necesita edificios distintos, incluyendo naves y cubiertas grandes,
-y una referencia independiente para medir error angular. Se comparará tanto el
-número de detecciones aprovechables como su superficie. Los resultados de este
-prototipo todavía no sustituyen las hipótesis del cálculo energético.
+El informe de ejecución y las instrucciones de los visores se encuentran en \path{docs/lidar/README.md}. La conversión a superficie inclinada y la propagación de los ángulos a PVGIS se detallan en \path{docs/memoria_tecnica.tex}.
 
-En la muestra de cien casos, la búsqueda exterior anterior aceptaba trece
-inclinaciones y la versión actual acepta veintiuna. Es un cambio de
-aprovechamiento, no una medida de exactitud. Las salidas de las pruebas
-sustituidas y del lote regional incompleto del método anterior son
-prescindibles. Se conservan los recortes originales, los formularios y los
-resultados actuales.
-
-Los comandos y archivos se describen en \texttt{docs/lidar/README.md}.
-Como referencia del método:
-\href{https://www.open3d.org/docs/release/tutorial/geometry/pointcloud.html}{documentación de segmentación de planos de Open3D}.
+\begin{thebibliography}{9}
+\bibitem{ransac} M. A. Fischler y R. C. Bolles. \emph{Random Sample Consensus: A Paradigm for Model Fitting with Applications to Image Analysis and Automated Cartography}, 1981. \href{https://doi.org/10.1145/358669.358692}{DOI 10.1145/358669.358692}.
+\end{thebibliography}
 \end{document}

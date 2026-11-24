@@ -13,6 +13,7 @@ import requests
 from paneles_solares.rutas import (
     CACHE_PVGIS_HORARIO,
     VISUALIZACION,
+    guardar_json_atomico,
     huella_archivo,
     ruta_proyecto,
     ruta_registrada,
@@ -119,7 +120,7 @@ def obtener_serie_horaria(sesion, parametros: dict, carpeta: Path) -> tuple[Path
     with gzip.open(archivo, "wt", encoding="utf-8") as salida:
         json.dump(respuesta, salida, ensure_ascii=False)
     consultas[clave] = archivo.name
-    indice.write_text(json.dumps(consultas, ensure_ascii=False, indent=2), encoding="utf-8")
+    guardar_json_atomico(indice, consultas, indent=2)
 
     return archivo, serie
 

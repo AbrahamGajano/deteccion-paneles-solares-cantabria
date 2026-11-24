@@ -22,6 +22,7 @@ from paneles_solares.rutas import (
     PESOS_DEEPLAB,
     PESOS_UNET,
     PESOS_UNET_AFINADO,
+    reemplazar_carpeta,
 )
 
 DATASET = DATASET_UNET
@@ -195,19 +196,23 @@ def crear_visualizacion(
     return Image.fromarray(imagen)
 
 
-def preparar_salida(salida: Path = SALIDA) -> None:
-    """Elimina la evaluación anterior y crea las carpetas de salida."""
+def preparar_salida(salida: Path = SALIDA) -> Path:
+    """Prepara las carpetas de revisión junto a la última evaluación terminada."""
 
     if salida not in (EVALUACION_UNET, EVALUACION_UNET_AFINADO, EVALUACION_DEEPLAB) or salida.resolve() != salida:
         raise ValueError(f"Carpeta de evaluación no reconocida: {salida}")
 
-    if salida.exists():
-        shutil.rmtree(salida)
+    temporal = salida.with_name(f".{salida.name}_preparando")
+    if temporal.resolve() != temporal:
+        raise ValueError(f"Carpeta temporal no reconocida: {temporal}")
+    if temporal.exists():
+        raise FileExistsError(f"Revisa la evaluación en curso o incompleta: {temporal}")
 
-    salida.mkdir(parents=True)
+    temporal.mkdir(parents=True)
 
     for categoria in CATEGORIAS_REVISION:
-        (salida / categoria).mkdir()
+        (temporal / categoria).mkdir()
+    return temporal
 
 
 def evaluar_dataset(
@@ -284,8 +289,7 @@ def guardar_resultados(resultados: list[dict], salida: Path = SALIDA) -> None:
     """
 
     if not resultados:
-        print("No hay imágenes en el conjunto de test.")
-        return
+        raise ValueError("No hay imágenes en el conjunto de test.")
 
     tabla = pd.DataFrame(resultados)
 
@@ -368,16 +372,15 @@ def main() -> None:
         salida = SALIDA
 
     cargador = crear_cargador_test()
-    preparar_salida(salida)
+    temporal = preparar_salida(salida)
 
-    resultados = evaluar_dataset(
-        modelo,
-        cargador,
-        dispositivo,
-        salida,
-    )
-
-    guardar_resultados(resultados, salida)
+    try:
+        resultados = evaluar_dataset(modelo, cargador, dispositivo, temporal)
+        guardar_resultados(resultados, temporal)
+    except (Exception, KeyboardInterrupt):
+        shutil.rmtree(temporal)
+        raise
+    reemplazar_carpeta(temporal, salida)
     print(f"Resultados guardados en: {salida}")
 
 

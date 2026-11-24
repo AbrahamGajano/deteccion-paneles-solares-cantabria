@@ -1,6 +1,7 @@
 """Genera los mapas de la memoria desde el inventario mostrado en el panel."""
 
 import argparse
+from pathlib import Path
 
 import geopandas as gpd
 import matplotlib
@@ -23,7 +24,7 @@ def guardar_mapa(
     subtitulo: str,
     colores: str,
     gamma: float,
-    archivo: str,
+    archivo: Path,
 ) -> None:
     """Dibuja los municipios con una escala que distingue los valores bajos.
 
@@ -35,7 +36,7 @@ def guardar_mapa(
         subtitulo: Texto breve sobre los datos y supuestos del mapa.
         colores: Nombre de la paleta de Matplotlib.
         gamma: Exponente de la escala de color para distinguir valores bajos.
-        archivo: Nombre del PNG dentro de docs/figuras.
+        archivo: Ruta del PNG de salida.
     """
 
     maximo = municipios[columna].max()
@@ -58,7 +59,7 @@ def guardar_mapa(
     eje.set_title(titulo, fontsize=15, pad=15)
     figura.text(0.06, 0.06, subtitulo, fontsize=9, color="#475569")
     figura.tight_layout()
-    figura.savefig(FIGURAS / archivo, dpi=200, facecolor="white")
+    figura.savefig(archivo, dpi=200, facecolor="white")
     plt.close(figura)
 
 
@@ -67,10 +68,12 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--anio", type=int)
+    parser.add_argument("--carpeta", type=ruta_proyecto, default=VISUALIZACION)
+    parser.add_argument("--salida", type=ruta_proyecto, default=FIGURAS)
     args = parser.parse_args()
 
     resumen = pd.read_csv(
-        VISUALIZACION / "resumen_municipal.csv", dtype={"codigo": str}
+        args.carpeta / "resumen_municipal.csv", dtype={"codigo": str}
     )
     anio = args.anio if args.anio is not None else int(resumen.anio.max())
     tabla = resumen[
@@ -83,7 +86,7 @@ def main() -> None:
     if tabla.empty:
         parser.error(f"No hay resultados de {anio}; genera antes el panel")
 
-    FIGURAS.mkdir(parents=True, exist_ok=True)
+    args.salida.mkdir(parents=True, exist_ok=True)
     municipios = gpd.read_file(MUNICIPIOS_CANTABRIA, layer="municipios")
     municipios["codigo"] = municipios.codigo.astype(str)
     municipios = municipios.merge(tabla, on="codigo", how="left")
@@ -96,7 +99,7 @@ def main() -> None:
         nota,
         "YlGnBu",
         0.65,
-        "mapa_detecciones.png",
+        args.salida / "mapa_detecciones.png",
     )
 
     guardar_mapa(
@@ -107,7 +110,7 @@ def main() -> None:
         nota + " Escenario central PVGIS.",
         "YlOrRd",
         0.60,
-        "mapa_produccion.png",
+        args.salida / "mapa_produccion.png",
     )
 
 

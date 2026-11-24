@@ -1,240 +1,196 @@
 \documentclass[11pt,a4paper]{article}
-
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
-\usepackage[a4paper,margin=2.2cm]{geometry}
-\usepackage{graphicx}
+\usepackage[a4paper,margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb}
 \usepackage{booktabs}
-\usepackage{array}
-\usepackage{xcolor}
-\usepackage{hyperref}
-\usepackage{amsmath}
-\usepackage{caption}
-\usepackage{float}
+\usepackage[hidelinks]{hyperref}
 
-\definecolor{azul}{HTML}{176B85}
-\hypersetup{colorlinks=true,linkcolor=azul,urlcolor=azul,citecolor=azul}
-\captionsetup{font=small,labelfont=bf}
 \setlength{\parindent}{0pt}
 \setlength{\parskip}{0.48em}
-\renewcommand{\arraystretch}{1.12}
-\renewcommand{\refname}{Fuentes y atribución}
+\renewcommand{\contentsname}{Índice}
+\renewcommand{\refname}{Fuentes}
 \renewcommand{\tablename}{Tabla}
-\renewcommand{\figurename}{Figura}
+\urlstyle{same}
+\raggedbottom
+
+\title{Memoria técnica\\Detección y estimación fotovoltaica en Cantabria}
+\author{}
+\date{Noviembre de 2026}
 
 \begin{document}
+\maketitle
 
-\hypersetup{pageanchor=false}
-\begin{titlepage}
-\centering
-\vspace*{3.2cm}
-{\Large Memoria técnica\par}
-\vspace{0.8cm}
-{\Huge\bfseries Detección de superficies fotovoltaicas en Cantabria mediante ortofotografía aérea\par}
-\vspace{1.2cm}
-{\large Detección, revisión histórica y estimación de producción\par}
-\vfill
-\begin{tabular}{rl}
-Autor: & \rule{8cm}{0.4pt}\\[0.7cm]
-Fecha de entrega: & \rule{8cm}{0.4pt}
-\end{tabular}
-\vspace{2cm}
-\end{titlepage}
-\hypersetup{pageanchor=true}
+El procedimiento combina ortofotos para localizar superficies fotovoltaicas, vuelos anteriores para acotar su aparición y LiDAR para estimar su geometría. La superficie, la geometría y una referencia de producción de PVGIS permiten calcular escenarios anuales y curvas horarias. Se conservan las fuentes y los supuestos para poder repetir cada etapa.
 
-\section{Resumen}
+\tableofcontents
 
-Se analizaron ortofotos PNOA 2023 de Cantabria para detectar superficie fotovoltaica. El primer intento consistió en aplicar un modelo YOLO entrenado en Francia; sus resultados motivaron la creación de un conjunto local etiquetado. Tras comparar YOLO con dos versiones de U-Net, se eligió la U-Net con codificador ResNet34: en el test local obtuvo Dice 0,8560, IoU 0,7482 y un sesgo global de superficie del \(-7{,}54\,\%\).
+\section{Entradas, unidades y cobertura}
 
-Las edificaciones y parcelas de 2023 se utilizan para relacionar las detecciones con su entorno, incluidas las que quedan fuera de edificios. La revisión manual de campañas anteriores permite estudiar presencia, superficie e intervalos de aparición. Los resultados históricos describen una selección de emplazamientos; la exportación territorial completa sigue pendiente.
+\subsection{Fuentes de datos}
 
-\section{Planteamiento y evolución}
+La referencia principal son los TIFF RGB del PNOA de 2023 a 0,15 m por píxel, en EPSG:25830. Para el seguimiento se usan ortofotos de 2014, 2017 y 2020 y sus etiquetas manuales. El contexto territorial combina los límites municipales, las edificaciones CBT23/LULC23 del Gobierno de Cantabria y el parcelario oficial de 2023. La cartografía de edificios aporta huellas y usos del suelo. Un uso cartográfico describe esa unidad y puede abarcar varias partes de un mismo edificio. Las fotos y las alturas se tratan como observaciones de la campaña de su fuente, con sus fechas de adquisición. \cite{pnoa,catastro}
 
-El propósito inicial era localizar paneles en Cantabria reutilizando un detector YOLO entrenado con ejemplos franceses. La evaluación en Francia parecía suficiente para ensayar la transferencia, pero los resultados descendieron con fuerza al probarlo sobre imágenes cántabras.
+El flujo produce dos conjuntos que deben identificarse en tablas y mapas.
+\begin{itemize}
+  \item La \textbf{inferencia regional} vectoriza todos los píxeles detectados dentro de la cobertura procesada y exporta los componentes, su área y sus relaciones espaciales.
+  \item El \textbf{inventario de seguimiento} reúne los polígonos de las campañas y las evidencias de revisión de un conjunto de emplazamientos. La agrupación de polígonos da candidatos de instalación. Sobre ese conjunto se calculan la antigüedad y la producción que muestra el panel.
+\end{itemize}
 
-\begin{table}[H]
-\centering
-\caption{Resultados históricos de la primera transferencia de YOLO. No se conservan sus archivos de evaluación; se incluyen como antecedente.}
-\begin{tabular}{lrrrr}
-\toprule
-Prueba & Precisión & Recall & mAP50 & mAP50--95\\
-\midrule
-Validación en Francia & 0,717 & 0,857 & 0,787 & 0,468\\
-Test en Cantabria & 0,339 & 0,321 & 0,257 & 0,149\\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{De píxeles a geometrías}
 
-La caída indica un cambio de dominio. Podían influir la resolución, el aspecto de la ortofoto, los materiales de cubierta, la apariencia de los paneles, las condiciones de captura o la distribución de ejemplos. No hay un análisis que permita atribuirla a una causa concreta. El siguiente paso fue reunir ortofotos y etiquetas locales, entrenar un YOLO para Cantabria y desarrollar una U-Net de segmentación. La tabla anterior usa mAP de la primera fase; no es comparable directamente con Dice e IoU de la evaluación final por píxel.
-
-\section{Datos}
-
-La imagen de entrada procede de PNOA 2023 \cite{pnoa}. Los TIF usados tienen tres bandas RGB, sistema EPSG:25830 y píxeles de 0,15~m, comprobados en los archivos locales. Las edificaciones proceden de CBT23/LULC23 del Gobierno de Cantabria, elaborado con imágenes de agosto de 2023, LiDAR de octubre de 2023 y datos de Catastro. Se incorpora el parcelario oficial de principios de 2023. No es un volcado INSPIRE BU histórico. Se conservan los usos cartográficos oficiales sin inferir titularidad pública. El índice abarca todo el territorio disponible, incluido el territorio comunal de Campoo y Cabuérniga, y no exige intersección con edificios. Cada ventana tiene hasta \(512\times512\) píxeles.
-
-Las imágenes seleccionadas se etiquetaron con polígonos en LabelMe. Para U-Net, cada etiqueta se convierte en una máscara binaria: un píxel marcado indica superficie fotovoltaica anotada y uno sin marcar indica fondo. La clase usada es \texttt{panel\_solar}. El mismo material etiquetado se exporta también al formato de segmentación de YOLO.
-
-\begin{table}[H]
-\centering
-\caption{Conjunto utilizado en la comparación de los modelos guardados.}
-\begin{tabular}{lrrr}
-\toprule
-Partición & Teselas & Positivas & Negativas\\
-\midrule
-Entrenamiento & 3.034 & 749 & 2.285\\
-Validación & 744 & 26 & 718\\
-Test & 988 & 31 & 957\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-Después de esa evaluación se incorporaron 60 negativos históricos a entrenamiento, que ahora contiene 3.094 imágenes. Otras nueve imágenes negativas quedaron fuera por solaparse con localizaciones reservadas. Este añadido no reentrena los pesos ni cambia las métricas de los modelos guardados.
-
-Cada identificador de tesela aparece una sola vez. Los solapes entre ortofotos se resuelven durante la inferencia usando la cobertura válida de cada hoja. El test se reservó como grupo separado; la validación actual se seleccionó entre muestras aleatorias del antiguo marco con edificios. La separación no incluye un margen geográfico: el manifiesto muestra 37 teselas de test contiguas a alguna de entrenamiento o validación.
-
-\section{Metodología}
-
-Se entrenó una U-Net \cite{unet} con codificador ResNet34 \cite{resnet}. El codificador se creó con pesos ImageNet; la versión actual se ajustó a partir de los pesos de una U-Net anterior del proyecto. Las imágenes se leen en RGB, se dividen por 255 y se normalizan con media y desviación estándar ImageNet. La entrada es de \(512\times512\) píxeles y la máscara predicha se binariza con umbral 0,5. En entrenamiento se usan volteos y giros, pérdida BCE más Dice, optimizador AdamW y selección del mejor peso por Dice de validación.
-
-El YOLO11s local \cite{yolo} se evaluó sobre el mismo test en términos de superficie segmentada por píxel. Para Cantabria se eligió la U-Net. Las predicciones completas se georreferencian y se conservan también fuera de edificios. Las relaciones con edificaciones y parcelas se exportan aparte sin recortar las máscaras. Se eliminan solapes entre ortofotos y se registra la cobertura procesada. Las unidades cartográficas no equivalen necesariamente a edificios físicos completos ni a instalaciones.
-
-\section{Evaluación}
-
-Las métricas finales se calcularon sumando \(TP\), \(FP\) y \(FN\) de todos los píxeles del test antes de formar los cocientes:
+La ortofoto se recorre en ventanas de hasta \(512\times512\) píxeles. Las celdas que intersectan el territorio se incluyen aunque carezcan de edificios. De esta manera se puede detectar también en aparcamientos o suelo abierto. La transformación afín del raster \(T\) lleva cada coordenada de píxel al sistema métrico,
 \[
-\mathrm{Dice}=\frac{2TP}{2TP+FP+FN},\qquad
-\mathrm{IoU}=\frac{TP}{TP+FP+FN}.
+T(c,r)=
+\begin{pmatrix}x_0\\y_0\end{pmatrix}
++M\begin{pmatrix}c\\r\end{pmatrix},
+\qquad
+A_{\text{píxel}}=|\det M|.
 \]
-\[
-\mathrm{Precision}=\frac{TP}{TP+FP},\qquad
-\mathrm{Recall}=\frac{TP}{TP+FN}.
-\]
-El sesgo de superficie implementado es
-\[
-b_A=\frac{A_{\mathrm{predicha}}-A_{\mathrm{anotada}}}{A_{\mathrm{anotada}}}
-=\frac{(TP+FP)-(TP+FN)}{TP+FN}.
-\]
-Se expresa sobre el total del test, no como promedio de sesgos por imagen.
+Para los TIFF de 0,15 m, \(A_{\text{píxel}}=0{,}0225\,\mathrm{m}^2\). La máscara se vectoriza con la transformación de cada ventana. Las partes cortadas por límites se miden después sobre sus polígonos. En los solapes entre hojas, la cobertura válida que ya se procesó se excluye de la siguiente. Los píxeles sin dato o los márgenes negros sin cobertura quedan fuera del cómputo.
 
-% Fuente actual: runs/evaluacion/unet_actual/resumen.csv; runs/evaluacion/cantabria/yolo11s/revision/resumen.csv.
-% Evaluación anterior: 988 imágenes, TP=28735, FP=3665, FN=11212.
-\begin{table}[H]
+Para una unidad municipal \(B\) y la unión de cobertura procesada \(C\), la fracción observada es \(A(B\cap C)/A(B)\). El área fotovoltaica y la fracción observada se exportan juntas. Así se puede distinguir un área pequeña de una cobertura incompleta. El índice está en \path{geografia/teselas.py} y la inferencia y las capas vectoriales en \path{modelos/indicadores_unet.py}.
+
+\section{Segmentación fotovoltaica}
+
+\subsection{Anotación y modelo}
+
+En LabelMe se dibuja la clase \texttt{panel\_solar}. Para U-Net se rasterizan los polígonos como una máscara binaria y para YOLO se exportan los contornos. Una imagen revisada sin paneles se guarda con una anotación vacía. Las divisiones de entrenamiento, validación y test tienen funciones distintas. Entrenamiento actualiza los pesos, validación selecciona el punto de parada y test sirve para la comparación final.
+
+El modelo elegido es una U-Net con codificador ResNet34. El codificador obtiene rasgos en escalas cada vez más gruesas. El decodificador recupera resolución y recibe rasgos de capas anteriores por conexiones de salto para conservar detalles del contorno. La tarea requiere delimitar superficie, por lo que la salida es un logit \(z_i\) para cada píxel. El codificador partió de ImageNet en la primera U-Net y el entrenamiento del modelo final cargó los pesos de una U-Net previa del proyecto. \cite{unet,resnet}
+
+Cada canal RGB se prepara como \((x/255-\mu)/\sigma\), con los valores de ImageNet
+\[
+\boldsymbol\mu=(0{,}485,\ 0{,}456,\ 0{,}406),\qquad
+\boldsymbol\sigma=(0{,}229,\ 0{,}224,\ 0{,}225).
+\]
+Durante entrenamiento se aplican giros de \(90^\circ\) y volteos a la imagen y a su máscara a la vez. Esta transformación deja alineada la supervisión y evita exigir una orientación de imagen concreta para reconocer un panel. Se reserva la orientación geográfica original para medir ángulos después de la detección.
+
+\subsection{Pérdida, inferencia y evaluación}
+
+Para \(y_i\in\{0,1\}\) y \(p_i=\operatorname{sigmoid}(z_i)\), la entropía cruzada binaria penaliza el error por píxel y Dice da peso al solape de la clase positiva. En un lote con positivos, la forma de las dos contribuciones es
+\[
+L_{\mathrm{BCE}}=-\frac1N\sum_{i=1}^N
+   \left[y_i\log p_i+(1-y_i)\log(1-p_i)\right],
+\qquad
+L_{\mathrm{Dice}}\simeq 1-\frac{2\sum_i p_i y_i}{\sum_i p_i+\sum_i y_i}.
+\]
+Se suman ambas pérdidas y se optimizan los pesos con AdamW. El código usa entropía cruzada a partir de logits y la implementación de Dice de \texttt{segmentation-models-pytorch}. El cálculo de BCE sigue aportando señal en lotes sin paneles. La tasa inicial local es \(3\times10^{-5}\) y el peso guardado se selecciona por Dice de validación. En inferencia se sigue la misma normalización y se marca un píxel como positivo al alcanzar la probabilidad 0,5. Los puntos de entrada son \path{modelos/entrenar_unet.py}, \path{modelos/unet.py} y \path{modelos/evaluar_unet.py}. \cite{adamw}
+
+Con \(TP\) píxeles acertados, \(FP\) píxeles de fondo marcados y \(FN\) píxeles de panel omitidos, la evaluación suma los recuentos de todas las teselas antes de aplicar
+\[
+\begin{aligned}
+\mathrm{Dice}&=\frac{2TP}{2TP+FP+FN},
+&\mathrm{IoU}&=\frac{TP}{TP+FP+FN},\\
+\text{Precisión}&=\frac{TP}{TP+FP},
+&\mathrm{Exhaustividad}&=\frac{TP}{TP+FN},\\
+b_A&=\frac{A_{\mathrm{predicha}}-A_{\mathrm{anotada}}}{A_{\mathrm{anotada}}}
+=\frac{FP-FN}{TP+FN}.
+\end{aligned}
+\]
+La última igualdad usa píxeles de área uniforme. Un sesgo próximo a cero puede ocultar errores que se compensan. La muestra de test de 2023 incluye 31 teselas positivas de 988 y procede del marco de muestreo inicial. La separación por tesela permite vecindad espacial. Las métricas describen ese conjunto y deben acompañarse de una validación específica antes de trasladarlas a toda una región o a otro vuelo.
+
+La prueba compara las mismas localizaciones en PNOA 2023 a 15 cm y en la ortofoto verdadera de 2024 a 20 cm, con sus respectivas etiquetas. Para conservar el encuadre de aproximadamente 76,8 m, la imagen de 20 cm ocupa unos 384 píxeles antes de entrar al modelo a \(512\times512\). El remuestreo iguala el tamaño de entrada conservando el encuadre. La comparación cambia a la vez campaña y producto. Los intervalos de la diferencia se obtienen remuestreando pares de localizaciones dentro de cada estrato. El cálculo se conserva en \path{modelos/evaluar_validacion.py}.
+
+\section{Atribución y seguimiento entre campañas}
+
+Para un polígono \(P\) y un soporte cartográfico \(B\) se mide \(A(P\cap B)/A(P)\). La relación se considera suficientemente clara cuando el primer soporte alcanza el \(80\,\%\) y el segundo queda por debajo del \(20\,\%\). Las relaciones completas se conservan. Una detección exterior se mantiene en los resultados y se describe con su contexto.
+
+Dentro de un mismo edificio, los polígonos aportan candidatos de la misma agrupación. Entre soportes distintos o detecciones exteriores se estudia el solape. Con dos polígonos \(P,Q\) de área positiva, las condiciones son
+\[
+\begin{aligned}
+\frac{A(P\cap Q)}{\max(A(P),A(Q))}&\geq 0{,}80 && \text{en la misma campaña},\\
+\frac{A(P\cap Q)}{\min(A(P),A(Q))}&\geq 0{,}50 && \text{entre campañas}.
+\end{aligned}
+\]
+La primera regla busca duplicados de tamaño parecido. La segunda permite enlazar un conjunto pequeño con uno que se ha ampliado. Los vínculos que mezclan edificios distintos se conservan como conflictos. Compartir parcela aporta contexto al candidato.
+
+La geometría anotada se obtiene de los dibujos completos y se disuelve por candidato y campaña mediante la unión de los polígonos. Una ausencia se representa por \(0\,\mathrm{m}^2\) cuando hay evidencia que cubre la huella. Donde falta observación se conserva un valor desconocido. Las detecciones automáticas de 2023 tienen su campo de área separado. Para comparar superficies anotadas se exige cobertura suficiente y se excluyen máscaras de borde y casos con contradicciones sin resolver.
+
+Si \(t_a\) es la última ausencia válida anterior y \(t_p\) la primera presencia, se conserva el intervalo \((t_a,t_p]\). Con una primera presencia de origen automático, el periodo queda por confirmar. Sin una ausencia anterior, el extremo inferior queda abierto. La aparición del emplazamiento solo acota su origen. El historial de ampliaciones requiere evidencias adicionales. Estas reglas están en \path{datos/instalaciones.py} y \path{datos/periodos.py}.
+
+\section{Inclinación y orientación con LiDAR}
+
+\input{lidar/metodo.tex}
+
+\section{Conversión a potencia y producción}
+
+\subsection{Superficie inclinada y potencia pico}
+
+La máscara aporta la proyección horizontal \(A_h\). Para un faldón plano de inclinación \(\beta\), el área del módulo se aproxima por
+\[
+A_{\text{módulos}}=\frac{A_h}{\cos\beta}.
+\]
+Se usa el ángulo exacto estimado o el supuesto del escenario. Para evitar que un mismo píxel se cuente dos veces, primero se disuelven las piezas de cada detección dentro de su municipio. Para el grupo \((\text{instalación},\text{campaña},\text{municipio})\), cada área \(A_{h,i}\) se multiplica por
+\[
+q=\frac{A\bigl(\bigcup_i P_i\bigr)}{\sum_i A_{h,i}}.
+\]
+Así las áreas asignadas a las detecciones suman la unión del grupo y conservan su peso relativo. El resumen cartográfico vuelve a disolver posibles solapes entre candidatos. La energía del resumen municipal aplica a la mezcla de áreas y ángulos ese mismo ajuste de superficie.
+
+Si \(y_0\) es el año atribuido a los módulos, \(\eta(y_0)\) la eficiencia inicial de referencia, \(k_s\) el multiplicador de eficiencia del escenario y \(G_{\mathrm{STC}}=1\,\mathrm{kW/m^2}\) la irradiancia de referencia de ensayo, la potencia pico inicial es
+\[
+P_{\mathrm{pico}}=A_{\text{módulos}}\ \eta(y_0)\ k_s\ G_{\mathrm{STC}}.
+\]
+La tabla de eficiencias se interpola por año. Entre sus referencias están el \(16{,}3\,\%\) en 2014, \(17{,}7\,\%\) en 2017, \(20\,\%\) en 2020 y \(21{,}8\,\%\) en 2023. Antes de 2014 se usan como hipótesis \(10\,\%\) en 1989, \(12\,\%\) en 2000 y \(15\,\%\) en 2010. Esta densidad de potencia describe módulos típicos de una época. La potencia real de un sistema requiere su ficha o un registro. \cite{eficiencia}
+
+\subsection{Antigüedad y escenarios}
+
+El escenario central sitúa el origen de los módulos en el punto medio del intervalo. Si falta el extremo inferior o existen contradicciones, se modela un intervalo de 25 años hasta la primera evidencia compatible. La marca de antigüedad supuesta se exporta en el CSV. El escenario conservador sitúa el origen en el extremo más antiguo considerado. El favorable simula módulos del año de la imagen. El código conserva esos supuestos al calcular la edad \(a=y-y_0\), donde \(y\) es el año del inventario.
+
+\begin{table}[htbp]
 \centering
-\caption{Comparación local por píxel sobre las mismas 988 teselas.}
-\small
+\caption{Valores de los escenarios. Los ángulos se aplican cuando falta el valor LiDAR correspondiente.}
 \begin{tabular}{lrrrrr}
 \toprule
-Modelo & Dice & IoU & Precisión & Recall & Sesgo de área\\
+Escenario & Inclinación & Orientación & Pérdidas & Degradación anual & \(k_s\) \\
 \midrule
-U-Net anterior & 0,7944 & 0,6589 & 0,8869 & 0,7193 & \(-18{,}89\,\%\)\\
-U-Net actual & \textbf{0,8560} & \textbf{0,7482} & \textbf{0,8909} & 0,8237 & \(-7{,}54\,\%\)\\
-YOLO11s local & 0,7292 & 0,5739 & 0,6299 & \textbf{0,8658} & \(+37{,}45\,\%\)\\
+Conservador & \(15^\circ\) & Oeste & \(18\,\%\) & \(1\,\%\) & 0,85 \\
+Central & \(30^\circ\) & Sur & \(10\,\%\) & \(0{,}5\,\%\) & 1,00 \\
+Favorable & \(40^\circ\) & Sur & \(5\,\%\) & \(0{,}2\,\%\) & 1,15 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-La U-Net actual mejora a la anterior en Dice, IoU y recall. YOLO encuentra una fracción algo mayor de los píxeles anotados, pero añade muchos más píxeles de fondo y sobreestima la superficie. Por eso la U-Net actual ofrece una base más equilibrada para indicadores de área. Su sesgo de \(-7{,}54\,\%\) significa que, en conjunto, predijo menos superficie de la anotada; no garantiza el mismo error en cada cubierta.
+El envejecimiento acumulado se representa con \((1-d)^a\), siendo \(d\) la degradación anual. La hipótesis central se apoya en la mediana de la revisión de Jordan y Kurtz. Las pérdidas operativas \(\ell\) se modelan con el factor \(1-\ell\). Los tres valores son escenarios de sensibilidad. Un intervalo de confianza exigiría modelar la incertidumbre de las entradas y validarla con observaciones. \cite{degradacion}
 
-La evaluación anterior queda resumida en esta tabla; sus salidas por imagen son
-prescindibles al quedar sustituidas. Se conservan sus pesos porque sirven de punto
-de partida para el entrenamiento actual.
+\subsection{Referencia solar y estimación anual}
 
-% Fuente: runs/evaluacion/unet_actual/resultados.csv; clasificación heurística en src/paneles_solares/modelos/evaluar_unet.py.
-La revisión automática de imágenes clasificó 970 como aceptables, 10 como falsos positivos, 7 como falsos negativos y 1 como error mixto. Es una clasificación para inspección visual, distinta de las métricas por píxel.
+PVGIS se consulta para una instalación de referencia de \(1\,\mathrm{kWp}\), silicio cristalino y montaje ventilado, con SARAH3 y horizonte del terreno. Un punto de consulta representa el municipio mediante el centro ponderado por área de las piezas del inventario. Se usan las combinaciones de ángulos presentes. Para la consulta se redondean los ángulos estimados con pasos de \(2^\circ\) de inclinación y \(5^\circ\) de azimut. La convención de PVGIS se obtiene restando \(180^\circ\) al azimut geográfico y llevando el resultado a \([-180^\circ,180^\circ)\). En esa escala sur es \(0^\circ\), este es \(-90^\circ\) y oeste es \(90^\circ\). \cite{pvgis}
 
-% Fuente: runs/evaluacion/unet_actual/{falso_positivo,falso_negativo}/*.png; copias exactas en docs/figuras/.
-\begin{figure}[H]
-\centering
-\begin{minipage}[t]{0.45\linewidth}
-\centering
-\includegraphics[width=\linewidth]{figuras/ejemplo_falso_positivo.png}\\
-\small Predicción sobrante (rojo).
-\end{minipage}\hfill
-\begin{minipage}[t]{0.45\linewidth}
-\centering
-\includegraphics[width=\linewidth]{figuras/ejemplo_falso_negativo.png}\\
-\small Superficie omitida (azul).
-\end{minipage}
-\caption{Dos errores guardados por la evaluación U-Net. Verde indica coincidencia cuando la hay.}
-\end{figure}
+El rendimiento anual \(Y\) de \texttt{PVcalc}, en \(\mathrm{kWh/kWp}\), se multiplica por la potencia y por los factores de pérdidas y degradación,
+\[
+E_{\mathrm{anual}}=P_{\mathrm{pico}}\ Y\ (1-\ell)\,(1-d)^a.
+\]
+Se configura \texttt{loss=0} en PVGIS para aplicar las pérdidas operativas generales una sola vez. El rendimiento mantiene el efecto de la geometría, la radiación y la temperatura calculados por el servicio. El cálculo anual representa el recurso de un año medio para los equipos observados.
 
-\section{Seguimiento histórico}
+\subsection{Series horarias}
 
-Se revisaron 1.486 imágenes de 2014, 2017 y 2020 en LabelMe: 1.417 contenían paneles y 69 se marcaron como negativas. Los polígonos se georreferencian con el encuadre y la resolución de cada imagen. Las respuestas anteriores del visor se conservan como evidencia de presencia o ausencia, no como superficie por instalación.
+Para entender por qué cambiar la orientación puede modificar la hora de producción, sea \(\mathbf s(t)\) la dirección unitaria del Sol y \(\mathbf n\) la normal del panel. La componente directa recibida sobre el plano es proporcional a \(\max(0,\mathbf n\cdot\mathbf s(t))\). Como el Sol cambia de posición, el efecto del azimut varía durante el día. PVGIS incorpora también radiación difusa y otros efectos que quedan fuera de ese producto escalar. \cite{pvgis}
 
-Los paneles se relacionan por intersección con edificios y parcelas. Una atribución clara necesita al menos el 80\,\% de solape y ningún segundo soporte con un 20\,\% o más. La agrupación por edificio y solape entre campañas produce 4.118 candidatos, todavía sin confirmar como instalaciones físicas. Compartir parcela o aparecer en un mismo recorte no basta para agruparlos.
+\texttt{seriescalc} devuelve la potencia horaria \(P_{\mathrm{ref}}(t)\) de la referencia en W. Se comparte una curva por posición, ángulos y año meteorológico. Para un intervalo de una hora y \(P_{\mathrm{ref,pico}}=1\,\mathrm{kWp}\),
+\[
+E_t\simeq
+\frac{P_{\mathrm{ref}}(t)}{1000}\,
+\frac{P_{\mathrm{pico}}}{P_{\mathrm{ref,pico}}}\,
+(1-\ell)\,(1-d)^a\,\Delta t,\qquad \Delta t=1\,\mathrm{h}.
+\]
+Se suman primero las aportaciones de las piezas de cada instalación, después las horas del mes o año. Las horas se etiquetan en UTC y se comprueba que la referencia cubra el año completo. Se conserva la marca original en caché y la figura individual usa horario local. El año de la ortofoto determina el inventario y sus edades. El año meteorológico determina la curva solar. Las dos estimaciones anuales pueden diferir al comparar una suma horaria de un año concreto con el clima medio. Las funciones están en \path{visualizacion/estimar_energia.py} y \path{visualizacion/series_temporales.py}.
 
-La comparación de áreas usa 2.353 candidatos con superficies revisadas en 2014, 2017 y 2020. Su superficie horizontal conjunta es de 6.407, 6.280 y 6.787 m\textsuperscript{2}, respectivamente. Muchos todavía estaban ausentes en esas fechas. Los ceros por ausencia comprobada se conservan; los casos sin evidencia suficiente permanecen desconocidos. Las superficies estimadas por el modelo en 2023 se muestran aparte y no cierran una comparación de área medida hasta ese año.
+\section{Reproducción y límites de interpretación}
 
-Se guardan las máscaras originales, sus relaciones con soportes, miembros de las agrupaciones, estados por campaña y límites del intervalo de aparición. La primera presencia fecha el emplazamiento de forma aproximada, no cada módulo de una ampliación.
+El README describe cómo ejecutar \path{paneles_solares.campania} desde TIFF locales o desde el inventario preparado. Las etapas guardan registros y se pueden reanudar. Las procedencias de la detección y del panel identifican las fuentes y los parámetros. Las exportaciones contienen las máscaras regionales, las tablas de relaciones, los ángulos estimados y usados, las hipótesis energéticas y los CSV finales. El historial del proyecto enlaza con los registros de las pruebas intermedias.
 
-\section{Producción estimada del inventario}
+Antes de generalizar a otra campaña hay que medir el comportamiento sobre el nuevo producto y comprobar la cobertura común para estudiar cambios. En LiDAR, la fracción de planos aceptados describe disponibilidad del método. Para conocer el error angular se necesitan casos con referencia independiente. Para contrastar las curvas energéticas hacen falta medidas de producción representativas, además de información sobre potencia, sombras y disponibilidad. El inventario conserva detecciones y agrupaciones provisionales con sus límites de observación.
 
-La energía se calcula sobre el inventario observado, sin extrapolarlo a toda Cantabria. PVGIS \cite{pvgis} aporta rendimientos medios anuales por municipio para silicio cristalino y montaje ventilado. La superficie inclinada se aproxima como \(A_h/\cos\beta\), donde \(A_h\) es la proyección horizontal y \(\beta\) la inclinación estimada o supuesta. Los solapes se disuelven antes de agregar áreas y su reparto energético se pondera por superficie.
-
-La eficiencia inicial depende de la época, utilizando la tabla del JRC \cite{eficiencia}: 16,3\,\% en 2014, 17,7\,\% en 2017, 20\,\% en 2020 y 21,8\,\% en 2023, con interpolación anual. Antes de 2014 se suponen 10\,\% en 1989, 12\,\% en 2000 y 15\,\% en 2010. Son referencias de mercado e hipótesis, no especificaciones conocidas de los módulos locales.
-
-\begin{table}[H]
-\centering
-\caption{Escenarios de producción del inventario histórico. Los ángulos de la tabla se utilizan cuando falta su estimación LiDAR.}
-\small
-\begin{tabular}{lrrrrr}
-\toprule
-Escenario & Inclinación & Orientación & Pérdidas & Degradación anual & Eficiencia de época\\
-\midrule
-Conservador & 15° & Oeste & 18\,\% & 1\,\% & $\times 0{,}85$\\
-Central & 30° & Sur & 10\,\% & 0,5\,\% & $\times 1$\\
-Favorable & 40° & Sur & 5\,\% & 0,2\,\% & $\times 1{,}15$\\
-\bottomrule
-\end{tabular}
-\end{table}
-
-En el escenario central se usa el punto medio del intervalo de aparición como aproximación a la edad de los módulos. Cuando falta un límite inferior compatible se supone un intervalo desde 25 años antes de la primera geometría. La degradación central del 0,5\,\% anual toma como referencia la revisión de NREL \cite{degradacion}. PVGIS se consulta con pérdidas adicionales nulas y después se aplican las pérdidas operativas y el envejecimiento una sola vez.
-
-En 2023 se incorporan la inclinación y la orientación de los planos LiDAR aceptados. El azimut se obtiene proyectando la normal sobre la horizontal y corrigiendo el giro del norte UTM respecto al geográfico. Para pendientes menores de 5°, normales ausentes y campañas anteriores se utiliza la orientación de la tabla. La superficie utiliza la inclinación exacta. PVGIS agrupa los ángulos estimados en pasos de 2° de inclinación y 5° de orientación. Se calcula la producción por detección y después se agrega. El procedimiento geométrico se describe en \texttt{docs/lidar/}.
-
-La producción horaria se calcula aparte mediante \texttt{seriescalc}, compartiendo curvas de referencia de 1 kWp por posición, inclinación, orientación y año meteorológico. Se aplican los mismos factores de superficie, eficiencia, pérdidas y degradación una sola vez. El año del inventario fija equipos y edades; cambiar la meteorología no envejece los equipos. Las potencias se convierten a energía horaria aproximada y se suman por instalación. Las referencias comprimidas permiten reconstruir las curvas sin almacenar millones de filas repetidas. Las fechas y los resúmenes mensuales se calculan en UTC; el gráfico utiliza horario español. Estas series no son lecturas de contador ni tienen que sumar lo mismo que el cálculo anual de clima medio.
-
-El escenario conservador usa la fecha más antigua supuesta; el favorable permite módulos nuevos del año de la imagen. No se fechan ampliaciones a partir de diferencias entre máscaras del modelo y dibujos manuales. Antes de incorporar las pendientes LiDAR, el inventario de 2023 daba 35,9 GWh/año en el escenario central, frente a 16,6 y 64,6 GWh/año en los otros escenarios; estas cifras corresponden al cálculo con inclinaciones supuestas. Aproximadamente el 57\,\% del área necesitaba el supuesto de antigüedad. El rango expresa sensibilidad a las hipótesis, no un intervalo de confianza ni energía medida durante el año del vuelo.
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\linewidth]{figuras/mapa_detecciones.png}
-\caption{Superficie horizontal del inventario de 2023, estimada por el modelo. Los municipios sin datos no representan ausencia de instalaciones.}
-\end{figure}
-
-\begin{figure}[H]
-\centering
-\includegraphics[width=\linewidth]{figuras/mapa_produccion.png}
-\caption{Producción anual del inventario de 2023 bajo el escenario central. No representa la generación total regional.}
-\end{figure}
-
-\section{Limitaciones}
-
-Solo 31 de las 988 teselas de test contienen paneles anotados (3,14\,\%). Aunque las 988 imágenes permiten una primera evaluación amplia de fondos y errores, ofrecen pocos positivos para estimar con precisión el rendimiento sobre paneles. Además, 37 teselas de test son contiguas a alguna tesela de entrenamiento o validación. La inferencia regional multiplica las oportunidades de falsos positivos al analizar muchas cubiertas. Conviene revisar visualmente los municipios extremos antes de interpretar diferencias pequeñas.
-
-La corrección del \(-7{,}54\,\%\) refleja el sesgo global de un test seleccionado con edificios y no se aplica a la nueva superficie territorial completa. No convierte cada edificio en una medida exacta y su incertidumbre no está cuantificada. Con 0,15~m por píxel, estructuras pequeñas o bordes complejos pueden ser difíciles de segmentar. El área estimada es planimétrica y no representa la superficie inclinada real de los módulos.
-
-La potencia depende de eficiencias y edades supuestas. PVGIS no identifica la orientación e inclinación de cada cubierta, sombras locales ni equipos averiados. El escenario central puede infravalorar ampliaciones recientes de emplazamientos antiguos. Los intervalos de aparición tampoco son fechas exactas de instalación. El inventario conserva agrupaciones provisionales y detecciones pendientes, no instalaciones verificadas.
-
-\section{Conclusiones y trabajo futuro}
-
-La transferencia directa del modelo francés no funcionó bien en Cantabria. El conjunto local permitió entrenar y comparar alternativas sobre una referencia común; la U-Net actual redujo el error de superficie y alcanzó Dice 0,8560. La nueva inferencia territorial permitirá incluir las detecciones exteriores y revisar indicadores por unidades cartográficas y municipios, sin contar instalaciones todavía.
-
-Como validación final se plantea reunir unas 1.000 teselas nuevas, elegidas completamente al azar y con separación espacial respecto a entrenamiento y validación. Después se podrán calcular intervalos de confianza, revisar municipios extremos, validar las inclinaciones incorporadas, estudiar orientaciones derivadas de LiDAR y ajustar el modelo con la siguiente cobertura PNOA disponible. Una comparación con registros oficiales requeriría comprobar previamente que ambos conjuntos describen las mismas fechas y unidades.
-
-El estudio LiDAR se documenta aparte en \texttt{docs/lidar/memoria\_lidar.tex}.
-
-\begingroup\small
 \begin{thebibliography}{9}
-\bibitem{pnoa} Instituto Geográfico Nacional y Centro Nacional de Información Geográfica. \emph{Plan Nacional de Ortofotografía Aérea, PNOA Imagen}. \href{https://pnoa.ign.es/}{pnoa.ign.es}. Ortofotos y límites derivados: © IGN/CNIG; origen reconocido conforme a su \href{https://centrodedescargas.cnig.es/CentroDescargas/politica-datos}{política de datos}, compatible con CC BY 4.0.
-\bibitem{catastro} Gobierno de Cantabria y Dirección General del Catastro. \emph{Edificaciones CBT23/LULC23 y parcelario Catastro 2023}. \href{https://geoservicios.cantabria.es/Series2/CBT23_LULC23/DOC_AUX/Documentacion_LULC_Cantabria_v2_0.pdf}{Metodología CBT23/LULC23}; \href{https://geoservicios.cantabria.es/inspire/rest/services/Cdt/MapServer/15}{parcelario de 2023}. Las edificaciones son cartografía derivada, no el registro INSPIRE BU histórico.
-\bibitem{pvgis} Joint Research Centre, Comisión Europea. \emph{PVGIS 5.3: API non-interactive service}. \href{https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/using-pvgis-5/api-non-interactive-service_en}{Documentación de la API}.
-\bibitem{eficiencia} Joint Research Centre. \emph{Photovoltaics in the European Union, Status Report 2025}, tabla 2. \href{https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf}{Informe JRC144141}.
-\bibitem{degradacion} D. C. Jordan y S. R. Kurtz. \emph{Photovoltaic Degradation Risk}. NREL, 2012. \href{https://docs.nrel.gov/docs/fy12osti/53712.pdf}{Informe NREL/CP-5200-53712}.
+\bibitem{pnoa} IGN y CNIG. \emph{Plan Nacional de Ortofotografía Aérea, PNOA Imagen}. \href{https://pnoa.ign.es/}{PNOA}. Ortofotos y límites derivados © IGN/CNIG, según la \href{https://centrodedescargas.cnig.es/CentroDescargas/politica-datos}{política de datos del CNIG}.
+\bibitem{catastro} Gobierno de Cantabria y Dirección General del Catastro. \href{https://geoservicios.cantabria.es/Series2/CBT23_LULC23/DOC_AUX/Documentacion_LULC_Cantabria_v2_0.pdf}{Metodología CBT23/LULC23} y \href{https://geoservicios.cantabria.es/inspire/rest/services/Cdt/MapServer/15}{parcelario de 2023}.
 \bibitem{unet} O. Ronneberger, P. Fischer y T. Brox. \emph{U-Net: Convolutional Networks for Biomedical Image Segmentation}, 2015. \href{https://arxiv.org/abs/1505.04597}{arXiv:1505.04597}.
-\bibitem{resnet} K. He, X. Zhang, S. Ren y J. Sun. \emph{Deep Residual Learning for Image Recognition}. CVPR, 2016. \href{https://openaccess.thecvf.com/content_cvpr_2016/html/He_Deep_Residual_Learning_CVPR_2016_paper.html}{Versión abierta}.
-\bibitem{yolo} Ultralytics. \emph{YOLO11: documentación de modelos y segmentación}. \href{https://docs.ultralytics.com/models/yolo11/}{docs.ultralytics.com/models/yolo11}.
+\bibitem{resnet} K. He, X. Zhang, S. Ren y J. Sun. \emph{Deep Residual Learning for Image Recognition}, 2016. \href{https://arxiv.org/abs/1512.03385}{arXiv:1512.03385}.
+\bibitem{adamw} I. Loshchilov y F. Hutter. \emph{Decoupled Weight Decay Regularization}, 2019. \href{https://arxiv.org/abs/1711.05101}{arXiv:1711.05101}.
+\bibitem{ransac} M. A. Fischler y R. C. Bolles. \emph{Random Sample Consensus: A Paradigm for Model Fitting with Applications to Image Analysis and Automated Cartography}, 1981. \href{https://doi.org/10.1145/358669.358692}{DOI 10.1145/358669.358692}.
+\bibitem{pvgis} Joint Research Centre, Comisión Europea. \emph{PVGIS 5.3}. \href{https://joint-research-centre.ec.europa.eu/photovoltaic-geographical-information-system-pvgis/using-pvgis-5/api-non-interactive-service_en}{Documentación de la API}.
+\bibitem{eficiencia} Joint Research Centre. \emph{Photovoltaics in the European Union, Status Report 2025}, tabla 2. \href{https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf}{JRC144141}.
+\bibitem{degradacion} D. C. Jordan y S. R. Kurtz. \emph{Photovoltaic Degradation Rates: An Analytical Review}. NREL, 2012. \href{https://www.osti.gov/biblio/1045052}{NREL/JA-5200-51664}.
 \end{thebibliography}
-\endgroup
-
 \end{document}

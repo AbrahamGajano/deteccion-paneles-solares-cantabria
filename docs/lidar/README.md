@@ -1,8 +1,9 @@
 # LiDAR: inclinación de las detecciones de 2023
 
 El objetivo es estimar la inclinación de paneles compatibles con su cubierta.
-La descarga, los cálculos y el visor se documentan aquí, aparte de la memoria
-de detección y energía. La versión LaTeX está en [memoria_lidar.tex](memoria_lidar.tex).
+Esta guía reúne la descarga, la ejecución y los visores. El método se desarrolla
+en la [memoria técnica](../memoria_tecnica.tex) y en el [anexo LiDAR](memoria_lidar.pdf),
+que comparten [el mismo texto de cálculo](metodo.tex).
 
 ## Método
 

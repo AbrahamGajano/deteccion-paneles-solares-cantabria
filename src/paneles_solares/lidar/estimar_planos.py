@@ -345,7 +345,7 @@ def procesar_caso(
         "interior": interior, "exterior": exterior,
         "apoyo_por_cuadrante": entorno["cuadrantes"] if entorno else {},
         "revision_manual": formulario,
-        "estado": "prototipo_pendiente_de_validacion", **decision,
+        "estado": "sin_validacion_independiente", **decision,
     }
     salida = salida / caso.id_panel
     salida.mkdir(parents=True, exist_ok=True)

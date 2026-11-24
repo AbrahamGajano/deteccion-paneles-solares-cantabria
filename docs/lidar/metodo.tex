@@ -1,0 +1,45 @@
+\subsection{Preparación de los puntos}
+
+Para una detección de ancho \(w\) y alto \(h\) se construye una ventana cuadrada centrada en su caja envolvente, de lado \(\max(w,h)+20\,\mathrm{m}\). El margen mínimo de 10 m permite observar la cubierta y sus alrededores. Al cruzar las ventanas con las huellas del catálogo se obtiene la lista de hojas que hay que descargar. Cada hoja se recorta y se libera después de guardar sus aportaciones. Las ventanas que cruzan hojas se reconstruyen reuniendo los puntos y eliminando duplicados exactos.
+
+La separación entre interior y exterior usa el polígono original de la detección en \(XY\). La coincidencia entre la ortofoto y la nube puede degradarse por desplazamientos aparentes de objetos altos y diferencias de fecha de captura. El ajuste usa la posición observada de la máscara. El recorte cuadrado proporciona contexto para comprobarla.
+
+\subsection{Ajuste interior por consenso}
+
+En cada iteración RANSAC selecciona tres puntos distintos y construye la normal a partir del producto vectorial de dos lados del triángulo. Los tríos casi alineados se descartan. Tras normalizar \(\mathbf n\) a longitud uno, la distancia perpendicular con signo entre un punto \(\mathbf p_i\) y un plano que contiene \(\mathbf c\) es
+\[
+d_i=(\mathbf p_i-\mathbf c)\cdot\mathbf n.
+\]
+
+El consenso lo forman los puntos con \(\lvert d_i\rvert\leq\tau\). Con \(\tau=0{,}10\,\mathrm{m}\), un retorno del suelo a varios metros se excluye igual que uno a 0,20 m. Ambos cuentan al calcular la fracción de apoyo sobre todos los puntos interiores. Se conserva el plano con más puntos compatibles y se desempata por su menor distancia absoluta media. El ajuste utiliza 500 iteraciones y semilla 42 por defecto. El método de consenso procede de RANSAC \cite{ransac}.
+
+Los puntos compatibles del ganador se centran en su media. La normal del plano final es el vector singular derecho asociado al menor valor singular de la matriz centrada. Esta solución minimiza \(\sum_i d_i^2\) en ese conjunto con \(\|\mathbf n\|=1\). Se elige el signo con componente vertical positiva y se vuelve a contar el apoyo respecto al plano reajustado.
+
+Se exigen al menos 10 puntos compatibles, una fracción del \(75\,\%\) y dispersión horizontal mínima de 0,25 m en la dirección principal más estrecha. Esa dispersión es el menor valor singular de \(XY\) centrado dividido por \(\sqrt{N}\). Detecta casos en que una línea de retornos parece ajustar bien, pero deja mal determinada la superficie. La inclinación candidata queda limitada a \(75^\circ\). Se repite el ajuste con \(0{,}8\tau\), \(1{,}2\tau\) y una submuestra reproducible del \(80\,\%\). El criterio de estabilidad admite hasta \(3^\circ\) de variación angular y \(2\tau\) de separación en la posición de referencia.
+
+\subsection{Búsqueda del faldón exterior}
+
+La búsqueda se inicia en una franja exterior de 2 m. RANSAC extrae hasta seis planos y retira los puntos de cada consenso antes del siguiente ajuste. Los puntos de cada plano se separan en fragmentos conectados por proximidad y se reajusta cada fragmento. Así se pueden examinar varias vertientes o superficies de cubierta en la misma ventana.
+
+El candidato se elige por cercanía a los puntos compatibles del interior en tres dimensiones. Se cuentan los puntos exteriores que tienen algún vecino interior a 1 m o menos, con un mínimo de tres apoyos. Si otro fragmento representa una superficie distinta, el mejor debe contar con al menos el doble de apoyo. De lo contrario se conserva la ambigüedad. Si faltan candidatos próximos, la franja se amplía a 4 m y luego a 8 m, dentro de la cobertura disponible.
+
+Para aceptar la estimación, el fragmento exterior también debe superar la prueba de estabilidad. Con normales unitarias \(\mathbf n_i\) y \(\mathbf n_e\), se exige
+\[
+\arccos\!\left(\lvert\mathbf n_i\cdot\mathbf n_e\rvert\right)\leq 5^\circ,
+\qquad
+P_{90}\!\left(\bigl|(\mathbf p_j-\mathbf c_e)\cdot\mathbf n_e\bigr|\right)
+\leq 0{,}30\,\mathrm{m},
+\]
+donde \(\mathbf p_j\) recorre los puntos compatibles del interior. La primera condición compara la dirección de los planos. La segunda comprueba que sus superficies estén próximas. El percentil 90 permite que unos pocos puntos queden más alejados. Cuando la evidencia es insuficiente, se conserva el motivo y la inclinación estimada queda vacía. El resumen de ajuste guarda 30° como valor predeterminado de diagnóstico. El cálculo energético aplica el supuesto propio de cada escenario a esos casos.
+
+\subsection{Inclinación y azimut}
+
+La horizontal se define mediante la vertical local \((0,0,1)\) del sistema de coordenadas de la nube. Con la normal orientada hacia arriba,
+\[
+\beta=\operatorname{atan2}\!\bigl(\sqrt{n_x^2+n_y^2},\,|n_z|\bigr),
+\qquad
+\theta=\left[\operatorname{atan2}(n_x,n_y)+\gamma\right]_{360^\circ},
+\]
+donde los ángulos se expresan en grados, \(\gamma\) es la convergencia de meridianos de EPSG:25830 calculada en el centro de la detección y \([\,\cdot\,]_{360^\circ}\) representa el módulo sobre una vuelta completa. La proyección horizontal de la normal apunta en la dirección de descenso del plano. El azimut geográfico \(\theta\) aumenta en sentido horario desde el norte. En el cálculo energético se toma un azimut estimado solo cuando \(\beta\geq5^\circ\) y la normal es válida, porque el rumbo de una proyección casi nula es inestable.
+
+El método puede aceptar un faldón con evidencia geométrica suficiente. La exactitud angular y la identificación del montaje necesitan una referencia independiente. Esto afecta en especial a detecciones que caen sobre dos vertientes, cubiertas con poco margen visible y paneles en estructuras separadas.

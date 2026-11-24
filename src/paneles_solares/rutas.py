@@ -1,7 +1,9 @@
 """Rutas independientes del directorio desde el que se ejecute Python."""
 
 import hashlib
+import json
 import shutil
+from tempfile import NamedTemporaryFile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -84,6 +86,20 @@ def huella_archivo(ruta: Path) -> str:
         for bloque in iter(lambda: archivo.read(1024 * 1024), b""):
             huella.update(bloque)
     return huella.hexdigest()
+
+
+def guardar_json_atomico(ruta: Path, datos: dict, *, indent: int | None = None) -> None:
+    """Sustituye un JSON al terminar de escribirlo, en el mismo directorio."""
+    archivo = NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=ruta.parent, suffix=".tmp", delete=False,
+    )
+    temporal = Path(archivo.name)
+    try:
+        with archivo:
+            archivo.write(json.dumps(datos, ensure_ascii=False, indent=indent))
+        temporal.replace(ruta)
+    finally:
+        temporal.unlink(missing_ok=True)
 
 
 def version_indicadores() -> dict[str, dict[str, int | str]]:

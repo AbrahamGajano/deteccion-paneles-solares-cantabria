@@ -1,4 +1,4 @@
-"""Conserva detecciones territoriales U-Net y describe su contexto de 2023."""
+"""Conserva detecciones territoriales U-Net y describe su contexto geográfico."""
 
 import argparse
 import hashlib
@@ -14,7 +14,7 @@ import rasterio
 import torch
 from rasterio.features import rasterize, shapes
 from rasterio.windows import Window
-from shapely import union_all
+from shapely import clip_by_rect, union_all
 from shapely.geometry import box, shape
 from torch import nn
 
@@ -32,6 +32,7 @@ from paneles_solares.rutas import (
     MUNICIPIOS_CANTABRIA,
     PESOS_UNET,
     PNOA,
+    RAIZ,
     huella_archivo,
     reemplazar_carpeta,
     ruta_proyecto,
@@ -47,7 +48,7 @@ RESOLUCION_PNOA_M = 0.15
 FACTOR_CALIBRACION_TEST = 0.9246  # Sesgo global de superficie del test: -7,54 %.
 
 
-def cargar_datos() -> tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
+def cargar_datos(pesos: Path = PESOS_UNET) -> tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
     """Lee el índice y las geometrías necesarias antes de la inferencia.
 
     Returns:
@@ -61,7 +62,7 @@ def cargar_datos() -> tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
             incompatible.
     """
 
-    for ruta in (PESOS_UNET, INDICE, EDIFICIOS, MUNICIPIOS):
+    for ruta in (pesos, INDICE, EDIFICIOS, MUNICIPIOS):
         if not ruta.is_file():
             raise FileNotFoundError(ruta)
 
@@ -89,12 +90,13 @@ def cargar_datos() -> tuple[pd.DataFrame, gpd.GeoDataFrame, gpd.GeoDataFrame]:
     return indice, edificios, municipios
 
 
-def comprobar_ortofotos(indice: pd.DataFrame, crs: object) -> dict[str, object]:
+def comprobar_ortofotos(indice: pd.DataFrame, crs: object, ortofotos: Path = PNOA) -> dict[str, object]:
     """Valida las ortofotos y conserva sus extensiones para resolver solapes.
 
     Args:
         indice: Posición de la imagen dentro del dataset.
         crs: Sistema de coordenadas esperado para las ortofotos.
+        ortofotos: Carpeta de los TIFF del índice.
 
     Returns:
         dict[str, object]: Extensión métrica de cada ortofoto comprobada.
@@ -107,7 +109,7 @@ def comprobar_ortofotos(indice: pd.DataFrame, crs: object) -> dict[str, object]:
 
     extensiones = {}
     for nombre, filas in indice.groupby("tif", sort=True):
-        ruta = PNOA / nombre
+        ruta = ortofotos / nombre
         if not ruta.is_file():
             raise FileNotFoundError(ruta)
         with rasterio.open(ruta) as tif:
@@ -282,7 +284,7 @@ def limitar_a_cobertura(tif, ventana, imagen, mascara, zona):
     return mascara & valida & dentro.astype(bool), zona
 
 
-def vectorizar_mascara(mascara, transformacion, zona, registro, borde):
+def vectorizar_mascara(mascara, transformacion, zona, registro, borde, anio=2023):
     """Conserva cada componente completo y su tesela, sin recorte por edificios."""
     componentes = []
     for geometria, _ in shapes(
@@ -296,7 +298,7 @@ def vectorizar_mascara(mascara, transformacion, zona, registro, borde):
             "id_deteccion": "fv_" + identidad.hexdigest()[:24],
             "tile_id": registro.tile_id,
             "tif": registro.tif,
-            "anio": 2023,
+            "anio": anio,
             "area_m2": poligono.area,
             "tesela_con_edificios": bool(registro.num_edificios > 0),
             "borde_tesela": poligono.intersects(borde),
@@ -314,6 +316,8 @@ def procesar_teselas(
     territorio=None,
     avance: Path | None = None,
     referencia: dict | None = None,
+    ortofotos: Path = PNOA,
+    anio: int = 2023,
 ) -> tuple[np.ndarray, np.ndarray, gpd.GeoDataFrame, object]:
     """Infiere por lotes y permite reanudar desde la última hoja guardada.
 
@@ -323,6 +327,8 @@ def procesar_teselas(
         extensiones: Extensión métrica de cada ortofoto.
         modelo: Modelo cargado para esta fase.
         dispositivo: CPU o GPU utilizada por el modelo.
+        ortofotos: Carpeta de los TIFF.
+        anio: Campaña de las detecciones.
 
     Returns:
         tuple: Píxeles y cobertura por unidad edificada, componentes completos
@@ -362,7 +368,7 @@ def procesar_teselas(
         if territorio is not None:
             zona_hoja = zona_hoja.intersection(territorio)
         zonas_procesadas = []
-        with rasterio.open(PNOA / nombre) as tif:
+        with rasterio.open(ortofotos / nombre) as tif:
             for inicio in range(0, len(filas), LOTE):
                 lote = filas.iloc[inicio : inicio + LOTE]
                 ventanas = [
@@ -390,7 +396,7 @@ def procesar_teselas(
                         zonas_procesadas.append(zona)
                         borde = box(*tif.window_bounds(ventanas[i])).boundary
                         detecciones.extend(vectorizar_mascara(
-                            mascara, transformacion, zona, lote.iloc[i], borde
+                            mascara, transformacion, zona, lote.iloc[i], borde, anio
                         ))
                         acumular_ventana(
                             mascara,
@@ -587,6 +593,16 @@ def comparar_cobertura(detecciones, edificios):
     ])
 
 
+def superficies_cubiertas(geometrias, cobertura) -> list[float]:
+    """Mide la cobertura por municipio limitando cada intersección a su entorno."""
+    superficies = []
+    for geometria in geometrias:
+        local = clip_by_rect(cobertura, *geometria.bounds)
+        # El recorte rápido puede generar geometrías inválidas en el borde.
+        superficies.append(geometria.intersection(local if local.is_valid else cobertura).area)
+    return superficies
+
+
 def guardar_detecciones(detecciones, edificios, municipios, cobertura, contexto=None):
     """Publica máscaras vectoriales, contexto y superficies sin filtro catastral."""
     parcelas = gpd.read_file(EDIFICIOS, layer="parcelas", bbox=cobertura.bounds)
@@ -639,7 +655,10 @@ def guardar_detecciones(detecciones, edificios, municipios, cobertura, contexto=
     # Se conserva la calibración anterior solo para los indicadores de cubierta.
     # La superficie exterior no dispone de una calibración independiente.
     municipios["superficie_fv_corregida_test_total_m2"] = np.nan
-    municipios["superficie_territorio_procesado_m2"] = municipios.geometry.intersection(cobertura).area
+    print("Calculando cobertura por municipio…", flush=True)
+    municipios["superficie_territorio_procesado_m2"] = superficies_cubiertas(
+        municipios.geometry, cobertura
+    )
     municipios["fraccion_territorio_procesado"] = (
         municipios.superficie_territorio_procesado_m2 / municipios.geometry.area
     )
@@ -658,18 +677,25 @@ def main() -> None:
     parser.add_argument("--indice", type=Path, default=INDICE)
     parser.add_argument("--catastro", type=Path, default=EDIFICIOS)
     parser.add_argument("--limite", type=int, help="Número máximo de teselas para medir tiempos")
+    parser.add_argument("--ortofotos", type=ruta_proyecto, default=PNOA)
+    parser.add_argument("--pesos", type=ruta_proyecto, default=PESOS_UNET)
+    parser.add_argument("--anio", type=int, default=2023)
+    parser.add_argument("--salida", type=ruta_proyecto)
     args = parser.parse_args()
     INDICE, EDIFICIOS = args.indice, args.catastro
-    if args.bbox or args.limite:
-        SALIDA = ruta_proyecto("runs/prueba_2023/indicadores")
-    destino = SALIDA
-    indice, edificios, municipios = cargar_datos()
+    destino = args.salida or (
+        ruta_proyecto(f"runs/prueba_{args.anio}/indicadores") if args.bbox or args.limite else SALIDA
+    )
+    destino = destino.resolve()
+    if destino == RAIZ / "runs" or not destino.is_relative_to(RAIZ / "runs"):
+        parser.error("La detección necesita una carpeta de salida dentro de runs/.")
+    indice, edificios, municipios = cargar_datos(args.pesos)
     territorio = union_all(municipios.geometry)
     if args.bbox:
         territorio = territorio.intersection(box(*args.bbox))
         seleccion = []
         for nombre, filas in indice.groupby("tif", sort=True):
-            with rasterio.open(PNOA / nombre) as tif:
+            with rasterio.open(args.ortofotos / nombre) as tif:
                 ventana = tif.window(*args.bbox)
                 activas = (
                     (filas.columna < ventana.col_off + ventana.width)
@@ -685,16 +711,18 @@ def main() -> None:
         if args.limite < 1:
             parser.error("El límite debe ser positivo")
         indice = indice.head(args.limite)
-    extensiones = comprobar_ortofotos(indice, edificios.crs)
+    extensiones = comprobar_ortofotos(indice, edificios.crs, args.ortofotos)
     edificios = asociar_municipios(edificios, municipios)
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    modelo = cargar_modelo(PESOS_UNET, dispositivo)
+    modelo = cargar_modelo(args.pesos, dispositivo)
     print(
         f"Dispositivo: {dispositivo}; teselas: {len(indice)}; edificios: {len(edificios)}"
     )
     inicio = time.perf_counter()
     referencia = {
-        "modelo_sha256": huella_archivo(PESOS_UNET),
+        "modelo_sha256": huella_archivo(args.pesos),
+        "anio": args.anio,
+        "ortofotos": str(args.ortofotos),
         "catastro_sha256": huella_archivo(EDIFICIOS),
         "municipios_sha256": huella_archivo(MUNICIPIOS),
         "indice_sha256": huella_archivo(INDICE),
@@ -705,7 +733,8 @@ def main() -> None:
     if not (args.bbox or args.limite):
         avance = destino.with_name(f".{destino.name}_avance") / "estado.pkl"
     pixeles, superficie_cubierta, detecciones, cobertura = procesar_teselas(
-        indice, edificios, extensiones, modelo, dispositivo, territorio, avance, referencia
+        indice, edificios, extensiones, modelo, dispositivo, territorio, avance, referencia,
+        ortofotos=args.ortofotos, anio=args.anio,
     )
     fin_inferencia = time.perf_counter()
     segundos_inferencia = fin_inferencia - inicio
@@ -720,7 +749,6 @@ def main() -> None:
     )
     guardar_resultados(resultado_edificios, resultado_municipios)
     metadata = {
-        "anio": 2023,
         "alcance": "prueba" if args.bbox or args.limite else "regional",
         "bbox": args.bbox,
         "teselas": len(indice),
