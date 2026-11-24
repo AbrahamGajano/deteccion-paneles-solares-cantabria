@@ -175,7 +175,7 @@ La eficiencia inicial depende de la época, utilizando la tabla del JRC \cite{ef
 
 \begin{table}[H]
 \centering
-\caption{Escenarios de producción del inventario histórico. Las inclinaciones de la tabla se utilizan cuando no hay estimación LiDAR aceptada.}
+\caption{Escenarios de producción del inventario histórico. Los ángulos de la tabla se utilizan cuando falta su estimación LiDAR.}
 \small
 \begin{tabular}{lrrrrr}
 \toprule
@@ -190,7 +190,7 @@ Favorable & 40° & Sur & 5\,\% & 0,2\,\% & $\times 1{,}15$\\
 
 En el escenario central se usa el punto medio del intervalo de aparición como aproximación a la edad de los módulos. Cuando falta un límite inferior compatible se supone un intervalo desde 25 años antes de la primera geometría. La degradación central del 0,5\,\% anual toma como referencia la revisión de NREL \cite{degradacion}. PVGIS se consulta con pérdidas adicionales nulas y después se aplican las pérdidas operativas y el envejecimiento una sola vez.
 
-En 2023 se incorpora la inclinación LiDAR aceptada por detección en los tres escenarios. Sin estimación, y en las campañas anteriores, se conservan las inclinaciones supuestas de la tabla. La superficie utiliza el ángulo exacto y PVGIS el múltiplo de 5° más próximo, con empates hacia arriba. Se calcula primero la producción de cada detección y después se agrega, sin promediar pendientes. La orientación sigue siendo supuesta. El método geométrico se documenta aparte en \texttt{docs/lidar/}.
+En 2023 se incorporan la inclinación y la orientación de los planos LiDAR aceptados. El azimut se obtiene proyectando la normal sobre la horizontal y corrigiendo el giro del norte UTM respecto al geográfico. Para pendientes menores de 5°, normales ausentes y campañas anteriores se utiliza la orientación de la tabla. La superficie utiliza la inclinación exacta. PVGIS agrupa los ángulos estimados en pasos de 2° de inclinación y 5° de orientación. Se calcula la producción por detección y después se agrega. El procedimiento geométrico se describe en \texttt{docs/lidar/}.
 
 La producción horaria se calcula aparte mediante \texttt{seriescalc}, compartiendo curvas de referencia de 1 kWp por posición, inclinación, orientación y año meteorológico. Se aplican los mismos factores de superficie, eficiencia, pérdidas y degradación una sola vez. El año del inventario fija equipos y edades; cambiar la meteorología no envejece los equipos. Las potencias se convierten a energía horaria aproximada y se suman por instalación. Las referencias comprimidas permiten reconstruir las curvas sin almacenar millones de filas repetidas. Las fechas y los resúmenes mensuales se calculan en UTC; el gráfico utiliza horario español. Estas series no son lecturas de contador ni tienen que sumar lo mismo que el cálculo anual de clima medio.
 

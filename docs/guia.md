@@ -674,21 +674,24 @@ durante el año del vuelo ni una extrapolación a toda Cantabria.
 | Supuesto | Conservador | Central | Favorable |
 | --- | --- | --- | --- |
 | Inclinación sin estimación LiDAR | 15° | 30° | 40° |
-| Orientación | Oeste | Sur | Sur |
+| Orientación sin estimación LiDAR | Oeste | Sur | Sur |
 | Pérdidas operativas | 18 % | 10 % | 5 % |
 | Degradación anual | 1 % | 0,5 % | 0,2 % |
 | Eficiencia inicial respecto a su época | × 0,85 | × 1 | × 1,15 |
 | Fecha de los módulos | Inicio supuesto del intervalo | Punto medio del intervalo | Año de la imagen |
 
-En 2023 se sustituye la inclinación de los tres escenarios por la estimación
-LiDAR aceptada de cada detección. La relación utiliza `id_panel` y `anio`;
-no se trasladan ángulos a campañas anteriores ni se utilizan planos candidatos
-rechazados. Sin resultado aceptado se mantienen los supuestos de la tabla.
-La orientación continúa siendo supuesta.
+En 2023 se incorporan la inclinación y la orientación de los planos aceptados
+por detección. La relación utiliza `id_panel` y `anio`. Si faltan datos para
+algún ángulo se usan los supuestos de la tabla. El azimut se obtiene de la
+normal proyectada horizontalmente, corrigiendo el norte de la cuadrícula UTM.
+Para pendientes menores de 5° la orientación sigue siendo supuesta.
 
-La superficie usa el ángulo exacto. Para limitar las consultas, PVGIS utiliza
-el múltiplo de 5° más próximo, con empates hacia arriba. El cálculo se realiza
-por detección antes de agregar instalaciones, sin promediar pendientes.
+La superficie usa la inclinación exacta. PVGIS consulta solo combinaciones
+presentes por municipio, redondeando los ángulos estimados a intervalos de 2°
+de inclinación y 5° de orientación.
+Los ángulos supuestos se consultan tal como figuran en la tabla.
+Una superficie horizontal comparte la misma consulta para cualquier dirección.
+El cálculo se realiza por detección antes de agregar instalaciones.
 `--lidar ruta/resumen.csv` permite seleccionar otro lote y `--sin-lidar`
 reproduce las hipótesis anteriores. Para comparar se usan carpetas `--salida`
 distintas. El lote habitual se define en `rutas.INCLINACIONES_LIDAR`.
@@ -720,8 +723,8 @@ las hipótesis, pero no es una condición para mostrar este cálculo exploratori
 
 El comando del panel regenera `produccion_estimada.csv`, `factores_energia.csv`,
 `energia_paneles.csv` y `hipotesis_energia.json` junto al HTML. Los factores
-se conservan por detección y campaña, con inclinación aceptada, origen, motivo,
-ángulo exacto por escenario y ángulo consultado. El detalle energético añade
+se conservan por detección y campaña, con inclinación, azimut geográfico,
+procedencia y ángulos exactos y de consulta por escenario. El detalle energético añade
 superficies, potencias y producción por detección y municipio. La procedencia
 incluye el CSV LiDAR y las hipótesis utilizadas.
 La caché `pvgis_anual.json` conserva
@@ -735,8 +738,8 @@ de 1 kWp consultada con `loss=0`. Ese factor ya incluye eficiencia inicial,
 corrección de inclinación, degradación y pérdidas: no se aplican otra vez.
 
 La curva se obtiene con el servicio `seriescalc` de PVGIS, solicitando
-`pvcalculation=1`. Se conserva la misma posición municipal, tecnología, montaje
-y horizonte del cálculo anual. El año del inventario determina las geometrías
+`pvcalculation=1`. Se conservan la posición municipal, los ángulos de consulta,
+la tecnología, el montaje y el horizonte del cálculo anual. El año del inventario determina las geometrías
 y edades; el año meteorológico determina el recurso solar. No se envejecen los
 equipos al probar otra meteorología.
 

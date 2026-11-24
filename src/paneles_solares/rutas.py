@@ -37,8 +37,12 @@ DATASET_UNET = DATASETS / "unet"
 DATASET_YOLO = DATASETS / "yolo"
 
 PESOS_UNET = ruta_proyecto("weights/unet_resnet34.pt")
+PESOS_UNET_AFINADO = ruta_proyecto("weights/unet_resnet34_afinado.pt")
+PESOS_DEEPLAB = ruta_proyecto("weights/deeplabv3plus_resnet50.pt")
 PESOS_YOLO = ruta_proyecto("runs/entrenamiento/cantabria/yolo11s/weights/best.pt")
 EVALUACION_UNET = ruta_proyecto("runs/evaluacion/unet_actual")
+EVALUACION_UNET_AFINADO = ruta_proyecto("runs/evaluacion/unet_resnet34_afinado")
+EVALUACION_DEEPLAB = ruta_proyecto("runs/evaluacion/deeplabv3plus_resnet50")
 INDICADORES_UNET = ruta_proyecto("runs/indicadores/unet_actual")
 EVALUACION_SEGUIMIENTO = ruta_proyecto("runs/evaluacion/seguimiento")
 INDICADORES_SEGUIMIENTO = ruta_proyecto("runs/indicadores/seguimiento_historico")

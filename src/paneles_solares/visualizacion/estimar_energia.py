@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import requests
 
+from paneles_solares.datos.inclinaciones import INCLINACION_MINIMA_AZIMUT
 from paneles_solares.rutas import (
     INDICADORES_UNET,
     INCLINACIONES_LIDAR,
@@ -90,7 +91,13 @@ FUENTES_HISTORICAS = {
     "Degradación (NREL)": "https://docs.nrel.gov/docs/fy12osti/53712.pdf",
 }
 ANIOS_ANTIGUEDAD_SUPUESTA = 25
-PASO_INCLINACION_PVGIS = 5
+PASO_INCLINACION_PVGIS = 2
+PASO_ORIENTACION_PVGIS = 5
+COLUMNAS_ANGULOS_PVGIS = [
+    f"{angulo}_pvgis_{nombre}_grados"
+    for nombre in ESCENARIOS_HISTORICOS
+    for angulo in ("inclinacion", "orientacion")
+]
 TOTALES_ENERGIA = [
     "produccion_min_mwh",
     "produccion_central_mwh",
@@ -178,12 +185,18 @@ def hipotesis_historicas(resultados_lidar: Path | None = INCLINACIONES_LIDAR) ->
         "eficiencia": "Tabla JRC 2014–2023 e interpolación lineal. Antes de 2014: hipótesis de 10 % en 1989, 12 % en 2000 y 15 % en 2010. No identifica la tecnología de cada placa.",
         "superficie": "Área de módulos = proyección horizontal / cos(inclinación). Los solapes se disuelven y su reparto energético se pondera por área.",
         "inclinacion": (
-            "En 2023 se usa la inclinación LiDAR aceptada de cada detección en los tres escenarios. Sin estimación se conservan 15°/30°/40°; no se trasladan ángulos a otras campañas. La superficie usa el ángulo exacto y PVGIS el múltiplo de 5° más próximo (empates hacia arriba). La orientación sigue siendo supuesta."
+            f"En 2023 se usa la inclinación LiDAR aceptada en los tres escenarios. La superficie usa el ángulo exacto y PVGIS el múltiplo de {PASO_INCLINACION_PVGIS}° más próximo. Sin estimación se consultan directamente los 15°/30°/40° de la tabla."
             if resultados_lidar is not None else
             "LiDAR desactivado: inclinaciones supuestas de 15°/30°/40° en todas las campañas."
         ),
+        "orientacion": (
+            f"En 2023 se proyecta la normal LiDAR aceptada sobre la horizontal y se corrige el norte UTM. PVGIS recibe la orientación al múltiplo de {PASO_ORIENTACION_PVGIS}° más próximo. Sin normal válida o con inclinación menor de {INCLINACION_MINIMA_AZIMUT}° se usan los supuestos de la tabla. Si la inclinación de consulta es 0°, la orientación es indiferente."
+            if resultados_lidar is not None else
+            "Orientaciones supuestas de oeste/sur/sur en todas las campañas."
+        ),
         "resultados_lidar": ruta_registrada(resultados_lidar) if resultados_lidar is not None else None,
         "paso_inclinacion_pvgis_grados": PASO_INCLINACION_PVGIS,
+        "paso_orientacion_pvgis_grados": PASO_ORIENTACION_PVGIS,
         "antiguedad": "Central: punto medio del intervalo de aparición del emplazamiento, como aproximación a la edad de los módulos. Sin límite inferior compatible: desde 25 años antes de la primera geometría, como hipótesis explícita.",
         "ampliaciones": "No se fechan módulos ni se interpretan diferencias del modelo como ampliaciones. El escenario favorable permite que toda el área sea de módulos nuevos del año de la imagen; el conservador usa la fecha más antigua supuesta. El central puede infravalorar renovaciones y ampliaciones recientes.",
         "perdidas": "Operativas y degradación se aplican una sola vez, fuera de PVGIS. No se suma el 14 % del escenario regional uniforme.",
@@ -258,7 +271,7 @@ def factores_historicos(candidatos, paneles) -> pd.DataFrame:
 
 
 def factores_paneles(candidatos, paneles) -> pd.DataFrame:
-    """Combina antigüedad e inclinación por detección, antes de agregar superficies.
+    """Combina antigüedad, inclinación y orientación por detección.
 
     Params:
         candidatos: Emplazamientos con sus periodos de instalación.
@@ -270,7 +283,8 @@ def factores_paneles(candidatos, paneles) -> pd.DataFrame:
     """
 
     columnas = ["id_panel", "id_instalacion", "anio", "inclinacion_estimada",
-                "origen_inclinacion", "motivo_inclinacion"]
+                "origen_inclinacion", "motivo_inclinacion",
+                "azimut_lidar_grados", "origen_orientacion"]
     factores = paneles[columnas].merge(
         factores_historicos(candidatos, paneles), on=["id_instalacion", "anio"],
         validate="many_to_one",
@@ -280,9 +294,16 @@ def factores_paneles(candidatos, paneles) -> pd.DataFrame:
         angulos = factores.inclinacion_estimada.fillna(supuesto)
         correccion = np.cos(np.radians(supuesto)) / np.cos(np.radians(angulos))
         factores[f"inclinacion_{nombre}_grados"] = angulos
-        factores[f"inclinacion_pvgis_{nombre}_grados"] = (
+        inclinacion_pvgis = (
             np.floor(angulos / PASO_INCLINACION_PVGIS + 0.5) * PASO_INCLINACION_PVGIS
         ).astype(int)
+        inclinacion_pvgis = inclinacion_pvgis.where(factores.inclinacion_estimada.notna(), supuesto)
+        factores[f"inclinacion_pvgis_{nombre}_grados"] = inclinacion_pvgis
+        orientacion = (factores.azimut_lidar_grados - 180).fillna(escenario["orientacion_grados"])
+        factores[f"orientacion_{nombre}_grados"] = orientacion
+        redondeada = np.floor(orientacion / PASO_ORIENTACION_PVGIS + 0.5) * PASO_ORIENTACION_PVGIS
+        orientacion_pvgis = ((redondeada + 180) % 360 - 180).astype(int)
+        factores[f"orientacion_pvgis_{nombre}_grados"] = orientacion_pvgis.where(inclinacion_pvgis > 0, 0)
         factores[f"factor_{nombre}"] *= correccion
         if nombre == "central":
             factores["potencia_por_m2_kwp"] *= correccion
@@ -291,7 +312,7 @@ def factores_paneles(candidatos, paneles) -> pd.DataFrame:
 
 
 def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
-    """Consulta las inclinaciones necesarias por municipio y reutiliza la caché.
+    """Consulta las geometrías necesarias por municipio y reutiliza la caché.
 
     Params:
         recortes: Geometrías municipales con sus ángulos PVGIS por escenario.
@@ -306,12 +327,11 @@ def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
     cache = carpeta / "pvgis_anual.json"
     consultas = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
     recortes = recortes.copy()
-    columnas_angulos = []
     for nombre, escenario in ESCENARIOS_HISTORICOS.items():
-        columna = f"inclinacion_pvgis_{nombre}_grados"
-        columnas_angulos.append(columna)
-        if columna not in recortes:
-            recortes[columna] = escenario["inclinacion_grados"]
+        for angulo in ("inclinacion", "orientacion"):
+            columna = f"{angulo}_pvgis_{nombre}_grados"
+            if columna not in recortes:
+                recortes[columna] = escenario[f"{angulo}_grados"]
     filas = []
     with requests.Session() as sesion:
         grupos = list(recortes.groupby("codigo"))
@@ -330,7 +350,7 @@ def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
                 .iloc[0]
             )
             print(f"PVGIS anual: {codigo} ({i}/{len(grupos)})", flush=True)
-            for angulos in grupo[columnas_angulos].drop_duplicates().to_dict("records"):
+            for angulos in grupo[COLUMNAS_ANGULOS_PVGIS].drop_duplicates().to_dict("records"):
                 fila = {"codigo": codigo, "latitud": punto.y, "longitud": punto.x, **angulos}
                 for nombre, escenario in ESCENARIOS_HISTORICOS.items():
                     parametros = {
@@ -340,7 +360,7 @@ def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
                         "peakpower": 1,
                         "loss": 0,
                         "angle": angulos[f"inclinacion_pvgis_{nombre}_grados"],
-                        "aspect": escenario["orientacion_grados"],
+                        "aspect": angulos[f"orientacion_pvgis_{nombre}_grados"],
                         "pvtechchoice": TECNOLOGIA,
                         "mountingplace": MONTAJE,
                         "usehorizon": 1,
@@ -390,7 +410,7 @@ def preparar_energia_historica(candidatos, paneles, recortes, carpeta: Path):
         .merge(factores, on=["id_panel", "id_instalacion", "anio"], validate="many_to_one")
     )
     rendimiento = rendimientos_historicos(tabla, carpeta)
-    claves = ["codigo"] + [f"inclinacion_pvgis_{n}_grados" for n in ESCENARIOS_HISTORICOS]
+    claves = ["codigo", *COLUMNAS_ANGULOS_PVGIS]
     tabla = tabla.drop(columns="geometry").merge(rendimiento, on=claves, validate="many_to_one")
     for nombre in ESCENARIOS_HISTORICOS:
         tabla[f"produccion_{nombre}_mwh"] = (

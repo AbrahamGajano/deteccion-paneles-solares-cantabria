@@ -1,9 +1,12 @@
-"""Evalúa el modelo U-Net sobre el conjunto de test."""
+"""Evalúa U-Net o DeepLabV3+ sobre el mismo conjunto de test."""
 
+import argparse
 import shutil
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import segmentation_models_pytorch as smp
 import torch
 from PIL import Image
 from torch import nn
@@ -13,8 +16,12 @@ from paneles_solares.modelos.metricas import calcular_metricas
 from paneles_solares.modelos.unet import UMBRAL, DatasetPaneles, cargar_modelo
 from paneles_solares.rutas import (
     DATASET_UNET,
+    EVALUACION_DEEPLAB,
     EVALUACION_UNET,
+    EVALUACION_UNET_AFINADO,
+    PESOS_DEEPLAB,
     PESOS_UNET,
+    PESOS_UNET_AFINADO,
 )
 
 DATASET = DATASET_UNET
@@ -188,22 +195,26 @@ def crear_visualizacion(
     return Image.fromarray(imagen)
 
 
-def preparar_salida() -> None:
+def preparar_salida(salida: Path = SALIDA) -> None:
     """Elimina la evaluación anterior y crea las carpetas de salida."""
 
-    if SALIDA.exists():
-        shutil.rmtree(SALIDA)
+    if salida not in (EVALUACION_UNET, EVALUACION_UNET_AFINADO, EVALUACION_DEEPLAB) or salida.resolve() != salida:
+        raise ValueError(f"Carpeta de evaluación no reconocida: {salida}")
 
-    SALIDA.mkdir(parents=True)
+    if salida.exists():
+        shutil.rmtree(salida)
+
+    salida.mkdir(parents=True)
 
     for categoria in CATEGORIAS_REVISION:
-        (SALIDA / categoria).mkdir()
+        (salida / categoria).mkdir()
 
 
 def evaluar_dataset(
     modelo: nn.Module,
     cargador: DataLoader,
     dispositivo: torch.device,
+    salida: Path = SALIDA,
 ) -> list[dict]:
     """Evalúa todas las imágenes del conjunto de test.
 
@@ -211,6 +222,7 @@ def evaluar_dataset(
         modelo: Modelo cargado para esta fase.
         cargador: Cargador de lotes del dataset.
         dispositivo: CPU o GPU utilizada por el modelo.
+        salida: Carpeta para las imágenes de revisión.
 
     Returns:
         list[dict]: Indicadores individuales de todas las imágenes del test.
@@ -254,7 +266,7 @@ def evaluar_dataset(
                     predicha,
                 )
 
-            destino = SALIDA / categoria / f"{tile_id}.png"
+            destino = salida / categoria / f"{tile_id}.png"
             visualizacion.save(destino)
 
         if indice % 100 == 0:
@@ -263,11 +275,12 @@ def evaluar_dataset(
     return resultados
 
 
-def guardar_resultados(resultados: list[dict]) -> None:
+def guardar_resultados(resultados: list[dict], salida: Path = SALIDA) -> None:
     """Guarda los resultados individuales y calcula el resumen global.
 
     Args:
         resultados: Indicadores individuales de las imágenes evaluadas.
+        salida: Carpeta de los CSV de evaluación.
     """
 
     if not resultados:
@@ -277,7 +290,7 @@ def guardar_resultados(resultados: list[dict]) -> None:
     tabla = pd.DataFrame(resultados)
 
     tabla.to_csv(
-        SALIDA / "resultados.csv",
+        salida / "resultados.csv",
         index=False,
     )
 
@@ -291,7 +304,7 @@ def guardar_resultados(resultados: list[dict]) -> None:
     resumen = {"imagenes": len(tabla), **metricas}
 
     pd.DataFrame([resumen]).to_csv(
-        SALIDA / "resumen.csv",
+        salida / "resumen.csv",
         index=False,
     )
 
@@ -311,29 +324,61 @@ def guardar_resultados(resultados: list[dict]) -> None:
         print(f"{categoria}: {cantidad}")
 
 
+def cargar_deeplab(dispositivo: torch.device) -> nn.Module:
+    """Carga el DeepLabV3+ ResNet50 entrenado en Kaggle.
+
+    Params:
+        dispositivo: CPU o GPU donde se ejecutará el modelo.
+
+    Returns:
+        nn.Module: Segmentador binario en modo de evaluación.
+    """
+
+    modelo = smp.DeepLabV3Plus(
+        encoder_name="resnet50",
+        encoder_weights=None,
+        in_channels=3,
+        classes=1,
+        activation=None,
+    )
+    pesos = torch.load(PESOS_DEEPLAB, map_location="cpu", weights_only=True)
+    modelo.load_state_dict(pesos)
+    return modelo.to(dispositivo).eval()
+
+
 def main() -> None:
-    """Ejecuta la evaluación completa del modelo U-Net."""
+    """Ejecuta la evaluación completa del modelo seleccionado."""
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--modelo", choices=("unet", "unet-afinado", "deeplab"), default="unet")
+    args = parser.parse_args()
 
     dispositivo = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
     print(f"Dispositivo: {dispositivo}")
-    preparar_salida()
+    print(f"Modelo: {args.modelo} · umbral: {UMBRAL}")
 
-    modelo = cargar_modelo(
-        PESOS_UNET,
-        dispositivo,
-    )
+    if args.modelo == "deeplab":
+        modelo = cargar_deeplab(dispositivo)
+        salida = EVALUACION_DEEPLAB
+    elif args.modelo == "unet-afinado":
+        modelo = cargar_modelo(PESOS_UNET_AFINADO, dispositivo)
+        salida = EVALUACION_UNET_AFINADO
+    else:
+        modelo = cargar_modelo(PESOS_UNET, dispositivo)
+        salida = SALIDA
 
     cargador = crear_cargador_test()
+    preparar_salida(salida)
 
     resultados = evaluar_dataset(
         modelo,
         cargador,
         dispositivo,
+        salida,
     )
 
-    guardar_resultados(resultados)
-    print(f"Resultados guardados en: {SALIDA}")
+    guardar_resultados(resultados, salida)
+    print(f"Resultados guardados en: {salida}")
 
 
 if __name__ == "__main__":

@@ -411,9 +411,9 @@ def main():
     lidar = parser.add_mutually_exclusive_group()
     lidar.add_argument(
         "--lidar", type=ruta_proyecto, default=INCLINACIONES_LIDAR,
-        help="Resumen CSV de las inclinaciones LiDAR de 2023",
+        help="Resumen CSV de los planos LiDAR de 2023",
     )
-    lidar.add_argument("--sin-lidar", action="store_true", help="Usa las inclinaciones supuestas originales")
+    lidar.add_argument("--sin-lidar", action="store_true", help="Usa la inclinación y orientación supuestas")
     parser.add_argument(
         "--limite", type=int, help="Prueba con los primeros N candidatos"
     )

@@ -11,9 +11,10 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 import requests
+from pyproj import Geod, Transformer
 from shapely.geometry import box
 
-from paneles_solares.datos.inclinaciones import incorporar_inclinaciones
+from paneles_solares.datos.inclinaciones import azimut_geografico, incorporar_inclinaciones
 from paneles_solares.visualizacion.estimar_energia import (
     energia_union,
     factores_historicos,
@@ -24,6 +25,21 @@ from paneles_solares.visualizacion.estimar_energia import (
 
 
 class PruebasPvgis(unittest.TestCase):
+    def test_aspectos_distintos_no_comparten_rendimiento(self):
+        recortes = gpd.GeoDataFrame(
+            {"codigo": ["39001", "39001"],
+             **{f"orientacion_pvgis_{n}_grados": [-90, 90] for n in ("min", "central", "max")}},
+            geometry=[box(420000, 4790000, 420010, 4790010)] * 2, crs=25830,
+        )
+
+        def consultar(sesion, servicio, parametros):
+            return {"outputs": {"totals": {"fixed": {"E_y": 1000 + parametros["aspect"]}}}}
+
+        with TemporaryDirectory() as temporal, redirect_stdout(io.StringIO()):
+            with patch("paneles_solares.visualizacion.estimar_energia.solicitar_pvgis", side_effect=consultar):
+                tabla = rendimientos_historicos(recortes, Path(temporal))
+        self.assertEqual(tabla.rendimiento_central.tolist(), [910, 1090])
+
     def test_reanudar_conserva_consultas_terminadas(self):
         recortes = gpd.GeoDataFrame(
             {"codigo": ["39001"]},
@@ -73,6 +89,18 @@ class PruebasPvgis(unittest.TestCase):
 
 
 class PruebasInclinaciones(unittest.TestCase):
+    def test_corrige_norte_utm_y_orienta_la_normal_hacia_arriba(self):
+        x, y = 420000, 4800000
+        paneles = gpd.GeoDataFrame(geometry=[box(x-1, y-1, x+1, y+1)] * 4, crs=25830)
+        normales = np.array([[0, 1, 1], [1, 0, 1], [0, 1, -1], [-1, 0, 1]])
+        longitudes, latitudes = Transformer.from_crs(25830, 4258, always_xy=True).transform(
+            [x, x, x+1, x, x-1], [y, y+1, y, y-1, y],
+        )
+        geod = Geod(ellps="GRS80")
+        esperados = [geod.inv(longitudes[0], latitudes[0], lon, lat)[0] % 360
+                     for lon, lat in zip(longitudes[1:], latitudes[1:])]
+        np.testing.assert_allclose(azimut_geografico(paneles, normales), esperados, atol=1e-4)
+
     def setUp(self):
         self.paneles = gpd.GeoDataFrame(
             {"id_panel": ["a", "b", "c", "a"], "id_instalacion": ["i"] * 4,
@@ -101,6 +129,14 @@ class PruebasInclinaciones(unittest.TestCase):
         self.assertTrue(pd.isna(datos.inclinacion_estimada.iloc[3]))
         self.assertEqual(datos.origen_inclinacion.tolist(),
                          ["estimada", "estimada", "sin_resultado", "otra_campania"])
+
+    def test_plano_horizontal_comparte_orientacion_y_normal_ausente_usa_supuesto(self):
+        with TemporaryDirectory() as carpeta:
+            datos = self.incorporar(carpeta)
+        factores = factores_paneles(self.candidatos, datos)
+        self.assertEqual(datos.origen_orientacion.tolist(),
+                         ["pendiente_baja", "sin_normal", "supuesta", "supuesta"])
+        self.assertEqual(factores.orientacion_pvgis_min_grados.tolist(), [0, 90, 90, 90])
 
     def test_factores_corrigen_superficie_y_conservan_supuestos(self):
         with TemporaryDirectory() as carpeta:

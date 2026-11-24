@@ -145,13 +145,16 @@ def preparar_relaciones(energia: pd.DataFrame, anio_inventario: int, escenarios)
         "id_panel", "id_instalacion", "anio", "codigo", "latitud", "longitud",
         "area_m2", "origen_inclinacion", "inclinacion_estimada", "antiguedad_supuesta",
     ]
+    columnas += [c for c in ("azimut_lidar_grados", "origen_orientacion") if c in inventario]
     filas = []
     for nombre in escenarios:
         parte = inventario[columnas].copy()
         parte["escenario"] = nombre
         parte["inclinacion_grados"] = inventario[f"inclinacion_{nombre}_grados"]
         parte["inclinacion_pvgis_grados"] = inventario[f"inclinacion_pvgis_{nombre}_grados"]
-        parte["orientacion_grados"] = ESCENARIOS_HISTORICOS[nombre]["orientacion_grados"]
+        supuesto = ESCENARIOS_HISTORICOS[nombre]["orientacion_grados"]
+        parte["orientacion_exacta_grados"] = inventario.get(f"orientacion_{nombre}_grados", supuesto)
+        parte["orientacion_grados"] = inventario.get(f"orientacion_pvgis_{nombre}_grados", supuesto)
         parte["escala_referencia"] = inventario.area_m2 * inventario[f"factor_{nombre}"]
         filas.append(parte)
 

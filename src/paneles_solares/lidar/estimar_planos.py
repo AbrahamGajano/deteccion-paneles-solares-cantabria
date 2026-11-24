@@ -409,6 +409,8 @@ def resumir_fila(resumen: dict) -> dict:
     anidados = {"centro", "normal", "calidad_interior", "estabilidad_interior", "cubierta"}
     fila = {clave: valor for clave, valor in resumen.items()
             if clave not in anidados and not isinstance(valor, (dict, list))}
+    normal = resumen["normal"] or (None, None, None)
+    fila.update(zip(("normal_x", "normal_y", "normal_z"), normal))
 
     for zona in ["interior", "exterior"]:
         fila.update({f"{zona}_{clave}": valor for clave, valor in resumen[zona].items()})

@@ -113,9 +113,13 @@ class PruebasProduccionHoraria(unittest.TestCase):
 
     def test_filtra_campania_y_no_reaplica_eficiencia_o_perdidas(self):
         energia = pd.concat([self.energia(), self.energia().assign(anio=2020)])
+        energia["orientacion_central_grados"] = [-86.0, 93.0] * 2
+        energia["orientacion_pvgis_central_grados"] = [-90, 90] * 2
         relaciones = preparar_relaciones(energia, 2023, ["central"])
         self.assertEqual(len(relaciones), 2)
         self.assertEqual(relaciones.escala_referencia.tolist(), [2., 6.])
+        self.assertEqual(relaciones.orientacion_grados.tolist(), [-90, 90])
+        self.assertEqual(parametros_horarios(next(relaciones.itertuples()), 2023)["aspect"], -90)
         with self.assertRaisesRegex(ValueError, "No hay detecciones"):
             preparar_relaciones(energia, 2014, ["central"])
 

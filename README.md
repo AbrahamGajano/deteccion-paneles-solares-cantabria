@@ -224,13 +224,14 @@ La sección de energía muestra tres escenarios, sus supuestos y fuentes.
 La estimación corresponde al inventario observado, sin extrapolar a toda
 Cantabria. Las áreas se agregan sin duplicar solapes.
 
-El mismo comando incorpora las inclinaciones aceptadas de
-`runs/lidar/cantabria_20261112_v2/resumen.csv` a las detecciones de 2023.
+El mismo comando incorpora la inclinación y la orientación de los planos
+aceptados para 2023 en `runs/lidar/cantabria_20261112_v2/resumen.csv`.
 Se calcula primero la energía de cada detección y después se suma: una misma
 agrupación puede contener paneles con pendientes distintas. Las otras campañas
 conservan los supuestos anteriores; no se hereda la geometría de 2023.
-La superficie de módulos usa el ángulo exacto; las consultas PVGIS se agrupan
-en pasos de 5°. La orientación sigue siendo supuesta.
+La superficie de módulos usa la inclinación exacta. Las consultas PVGIS se
+agrupan los ángulos estimados en pasos de 2° de inclinación y 5° de orientación. Por debajo de 5°
+de inclinación o sin normal válida se utiliza la orientación del escenario.
 
 `--lidar ruta/resumen.csv` selecciona otro lote. Para comparar con los supuestos
 anteriores sin sustituir el panel habitual:
@@ -239,7 +240,7 @@ anteriores sin sustituir el panel habitual:
 .\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores --sin-lidar --salida runs/visualizacion_sin_lidar
 ```
 
-`factores_energia.csv` conserva el ángulo, su origen y los factores por detección
+`factores_energia.csv` conserva los ángulos, su origen y los factores por detección
 y campaña. `energia_paneles.csv` añade el desglose municipal, las superficies,
 potencias y producciones. El mapa mantiene las superficies horizontales.
 Las hipótesis y la procedencia registran el lote LiDAR utilizado. El cálculo
@@ -290,8 +291,8 @@ comprimido. `--escenarios central` limita esa consulta al escenario central.
 Las fechas se calculan en UTC y el gráfico las presenta en horario español.
 La producción horaria es modelada para los equipos del inventario funcionando
 un año completo. Su suma puede diferir del cálculo anual de clima medio.
-La orientación sigue siendo supuesta; no se vuelve a aplicar eficiencia,
-degradación ni pérdidas sobre los factores que ya las incluyen.
+Las series usan los mismos ángulos de consulta que el cálculo anual. La
+eficiencia, la degradación y las pérdidas ya están incluidas en los factores.
 
 ## Documentación
 

@@ -100,14 +100,24 @@ aceptadas; las demás conservan los supuestos de cada escenario. No se trasladan
 pendientes a las imágenes antiguas. Cada detección aporta su propia superficie
 inclinada y producción antes de sumar instalaciones y municipios.
 
-La superficie usa el ángulo exacto; PVGIS usa el múltiplo de 5° más próximo
-(los empates se redondean hacia arriba) y reutiliza las consultas guardadas.
-Se mantienen las orientaciones supuestas: este paso no estima azimut ni genera
-series horarias. Los escenarios son sensibilidades, no intervalos de confianza.
+El azimut se calcula con `atan2(n_x, n_y)` sobre la normal orientada hacia arriba.
+La convergencia de meridianos corrige el giro entre el norte UTM y el geográfico.
+`azimut_lidar_grados` se mide desde el norte en sentido horario. En PVGIS se
+restan 180°, de modo que sur vale 0°, este −90° y oeste 90°.
+
+Para pendientes menores de 5° o sin normal válida se usa la orientación de cada
+escenario. La superficie usa la inclinación exacta. El cálculo anual y el horario
+comparten el redondeo de ángulos estimados a pasos de 2° de inclinación y 5°
+de orientación, y reutilizan
+referencias por municipio y combinación. Si la inclinación de consulta es 0°,
+se usa una sola orientación porque el plano es horizontal.
+
+Los lotes nuevos incluyen `normal_x`, `normal_y` y `normal_z` en `resumen.csv`.
+Para los anteriores se recuperan de los `resumen.json` individuales.
 
 `--lidar ruta/resumen.csv` cambia el lote y `--sin-lidar` permite comparar con
 el cálculo anterior. Usar `--salida` para conservar ambas ejecuciones.
-`factores_energia.csv` y `energia_paneles.csv` registran ángulos exactos,
+`factores_energia.csv` y `energia_paneles.csv` registran ángulos calculados,
 ángulos consultados, motivos y procedencia por detección. El JSON de procedencia
 identifica también el CSV LiDAR. Los detalles energéticos están en la
 [guía del proyecto](../guia.md#energía-y-antigüedad).
