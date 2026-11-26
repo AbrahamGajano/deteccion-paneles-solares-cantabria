@@ -47,34 +47,13 @@ ESCENARIOS = {
     "superior": ("superficie_fv_detectada_total_m2", 0.23),
 }
 
-# Escenarios del inventario histórico; no son intervalos de confianza.
+DEGRADACION_ANUAL = 0.005
 ESCENARIOS_HISTORICOS = {
-    "min": {
-        "inclinacion_grados": 15,
-        "orientacion_grados": 90,
-        "perdidas_operativas_pct": 18,
-        "degradacion_anual": 0.01,
-        "factor_eficiencia": 0.85,
-    },
-    "central": {
-        "inclinacion_grados": 30,
-        "orientacion_grados": 0,
-        "perdidas_operativas_pct": 10,
-        "degradacion_anual": 0.005,
-        "factor_eficiencia": 1.0,
-    },
-    "max": {
-        "inclinacion_grados": 40,
-        "orientacion_grados": 0,
-        "perdidas_operativas_pct": 5,
-        "degradacion_anual": 0.002,
-        "factor_eficiencia": 1.15,
-    },
+    "min": {"perdidas_operativas_pct": 12},
+    "central": {"perdidas_operativas_pct": 10},
+    "max": {"perdidas_operativas_pct": 8},
 }
 EFICIENCIA_POR_ANIO = {
-    1989: 0.10,
-    2000: 0.12,
-    2010: 0.15,
     2014: 0.163,
     2015: 0.170,
     2016: 0.175,
@@ -91,7 +70,7 @@ FUENTES_HISTORICAS = {
     "Eficiencia 2014–2023 (JRC, tabla 2)": "https://publications.jrc.ec.europa.eu/repository/bitstream/JRC144141/JRC144141_01.pdf",
     "Degradación (NREL)": "https://docs.nrel.gov/docs/fy12osti/53712.pdf",
 }
-ANIOS_ANTIGUEDAD_SUPUESTA = 25
+MINIMO_ANGULOS_POR_USO = 20
 PASO_INCLINACION_PVGIS = 2
 PASO_ORIENTACION_PVGIS = 5
 COLUMNAS_ANGULOS_PVGIS = [
@@ -105,6 +84,7 @@ TOTALES_ENERGIA = [
     "produccion_max_mwh",
     "potencia_central_kwp",
     "superficie_antiguedad_supuesta_m2",
+    "superficie_modulos_m2",
 ]
 
 
@@ -183,36 +163,32 @@ def hipotesis_historicas(resultados_lidar: Path | None = INCLINACIONES_LIDAR) ->
             for nombre, parametros in ESCENARIOS_HISTORICOS.items()
         },
         "eficiencia_por_anio": EFICIENCIA_POR_ANIO,
-        "eficiencia": "Tabla JRC 2014–2023 e interpolación lineal. Antes de 2014: hipótesis de 10 % en 1989, 12 % en 2000 y 15 % en 2010. No identifica la tecnología de cada placa.",
+        "eficiencia": "Eficiencia de referencia del JRC según el año atribuido a los módulos, con interpolación lineal entre años de la tabla.",
         "superficie": "Área de módulos = proyección horizontal / cos(inclinación). Los solapes se disuelven y su reparto energético se pondera por área.",
         "inclinacion": (
-            f"En 2023 se usa la inclinación LiDAR aceptada en los tres escenarios. La superficie usa el ángulo exacto y PVGIS el múltiplo de {PASO_INCLINACION_PVGIS}° más próximo. Sin estimación se consultan directamente los 15°/30°/40° de la tabla."
+            f"Se conservan las inclinaciones LiDAR aceptadas. Los valores que faltan se completan con la mediana del uso del edificio si hay al menos {MINIMO_ANGULOS_POR_USO} mediciones, y con la mediana general en los demás casos. Sin mediciones en el lote se usan {INCLINACION}°. El área usa el ángulo exacto y PVGIS el múltiplo de {PASO_INCLINACION_PVGIS}° más próximo."
             if resultados_lidar is not None else
-            "LiDAR desactivado: inclinaciones supuestas de 15°/30°/40° en todas las campañas."
+            f"LiDAR desactivado. Se usa la referencia fija de {INCLINACION}° en todas las campañas."
         ),
         "orientacion": (
-            f"En 2023 se proyecta la normal LiDAR aceptada sobre la horizontal y se corrige el norte UTM. PVGIS recibe la orientación al múltiplo de {PASO_ORIENTACION_PVGIS}° más próximo. Sin normal válida o con inclinación menor de {INCLINACION_MINIMA_AZIMUT}° se usan los supuestos de la tabla. Si la inclinación de consulta es 0°, la orientación es indiferente."
+            f"Se usa el azimut LiDAR corregido al norte geográfico. PVGIS recibe el múltiplo de {PASO_ORIENTACION_PVGIS}° más próximo. Si falta un azimut fiable se usa el sur como referencia. La orientación se considera indeterminada por debajo de {INCLINACION_MINIMA_AZIMUT}°."
             if resultados_lidar is not None else
-            "Orientaciones supuestas de oeste/sur/sur en todas las campañas."
+            "Orientación fija al sur en todas las campañas."
         ),
         "resultados_lidar": ruta_registrada(resultados_lidar) if resultados_lidar is not None else None,
         "paso_inclinacion_pvgis_grados": PASO_INCLINACION_PVGIS,
         "paso_orientacion_pvgis_grados": PASO_ORIENTACION_PVGIS,
-        "antiguedad": "Central: punto medio del intervalo de aparición del emplazamiento, como aproximación a la edad de los módulos. Sin límite inferior compatible: desde 25 años antes de la primera geometría, como hipótesis explícita.",
-        "ampliaciones": "No se fechan módulos ni se interpretan diferencias del modelo como ampliaciones. El escenario favorable permite que toda el área sea de módulos nuevos del año de la imagen; el conservador usa la fecha más antigua supuesta. El central puede infravalorar renovaciones y ampliaciones recientes.",
-        "perdidas": "Operativas y degradación se aplican una sola vez, fuera de PVGIS. No se suma el 14 % del escenario regional uniforme.",
-        "limites": "Escenarios de sensibilidad, no intervalos de confianza. No cubren falsos positivos, omisiones, errores del LiDAR, pendientes sin estimación, sombras locales, averías ni indisponibilidad. Las áreas del modelo de 2023 siguen siendo estimadas.",
+        "antiguedad": "El año de referencia es el punto medio del intervalo de aparición cuando está acotado. Con un solo extremo se usa la primera evidencia disponible y se marca la antigüedad como supuesta. La edad real en esos casos puede ser mayor.",
+        "ampliaciones": "El periodo corresponde al emplazamiento. La fecha de ampliaciones o sustituciones de módulos requiere evidencia propia.",
+        "perdidas": f"Se aplica una degradación de {100 * DEGRADACION_ANUAL:g} % anual según la edad y un descuento operativo del 10 %. La sensibilidad usa 8 % y 12 %. Ambos factores se aplican fuera de PVGIS, que se consulta con loss=0.",
+        "limites": "El rango refleja únicamente la sensibilidad a las pérdidas operativas. La estimación también depende de la detección, los ángulos de referencia y la antigüedad atribuida.",
         "periodo": "Un año completo representativo con los equipos de cada imagen; no la energía realmente generada durante el año del vuelo ni una predicción meteorológica.",
         "fuentes": FUENTES_HISTORICAS,
     }
 
 
 def factores_historicos(candidatos, paneles) -> pd.DataFrame:
-    """Calcula potencia y envejecimiento por m² horizontal, sin consultar radiación.
-
-    La edad central aproxima la época del emplazamiento. Las renovaciones no
-    observadas quedan en los escenarios; no se asignan fechas medidas a módulos.
-    """
+    """Calcula la potencia y el envejecimiento por m² de módulo según su época."""
 
     primeras = paneles.groupby("id_instalacion").anio.min()
     periodos = candidatos.set_index("id_instalacion")
@@ -227,46 +203,28 @@ def factores_historicos(candidatos, paneles) -> pd.DataFrame:
         if pd.notna(periodo.instalacion_hasta):
             hasta = min(hasta, float(periodo.instalacion_hasta))
         desde = periodo.instalacion_desde
-        supuesta = (
+        sin_intervalo = (
             pd.isna(desde)
-            or desde >= hasta
+            or desde > hasta
             or periodo.estado_periodo == "revisar_cambio_o_contradiccion"
         )
-        if supuesta:
-            desde = hasta - ANIOS_ANTIGUEDAD_SUPUESTA
+        fecha = hasta if sin_intervalo else (desde + hasta) / 2
+        densidad = float(np.interp(
+            fecha, list(EFICIENCIA_POR_ANIO), list(EFICIENCIA_POR_ANIO.values())
+        ))
+        edad = anio - fecha
         fila = {
             "id_instalacion": identificador,
             "anio": anio,
-            "fecha_desde_modelada": desde,
+            "fecha_desde_modelada": np.nan if sin_intervalo else desde,
             "fecha_hasta_modelada": hasta,
-            "antiguedad_supuesta": bool(supuesta),
+            "fecha_instalacion_modelada": fecha,
+            "antiguedad_supuesta": sin_intervalo,
+            "potencia_por_m2_kwp": densidad,
         }
-        fechas = {"min": desde, "central": (desde + hasta) / 2, "max": anio}
+        factor_edad = densidad * (1 - DEGRADACION_ANUAL) ** edad
         for nombre, escenario in ESCENARIOS_HISTORICOS.items():
-            fecha = fechas[nombre]
-            densidad = (
-                float(
-                    np.interp(
-                        fecha,
-                        list(EFICIENCIA_POR_ANIO),
-                        list(EFICIENCIA_POR_ANIO.values()),
-                    )
-                )
-                * escenario["factor_eficiencia"]
-            )
-            estimacion = estimar_cohorte(
-                1 / np.cos(np.radians(escenario["inclinacion_grados"])),
-                densidad,
-                1,
-                anio,
-                fecha,
-                fecha,
-                degradacion_anual=escenario["degradacion_anual"],
-                perdidas_operativas_pct=escenario["perdidas_operativas_pct"],
-            )
-            fila[f"factor_{nombre}"] = estimacion["produccion_central_kwh"]
-            if nombre == "central":
-                fila["potencia_por_m2_kwp"] = estimacion["potencia_inicial_kwp"]
+            fila[f"factor_{nombre}"] = factor_edad * (1 - escenario["perdidas_operativas_pct"] / 100)
         filas.append(fila)
     return pd.DataFrame(filas)
 
@@ -290,25 +248,40 @@ def factores_paneles(candidatos, paneles) -> pd.DataFrame:
         factores_historicos(candidatos, paneles), on=["id_instalacion", "anio"],
         validate="many_to_one",
     )
-    for nombre, escenario in ESCENARIOS_HISTORICOS.items():
-        supuesto = escenario["inclinacion_grados"]
-        angulos = factores.inclinacion_estimada.fillna(supuesto)
-        correccion = np.cos(np.radians(supuesto)) / np.cos(np.radians(angulos))
-        factores[f"inclinacion_{nombre}_grados"] = angulos
-        inclinacion_pvgis = (
-            np.floor(angulos / PASO_INCLINACION_PVGIS + 0.5) * PASO_INCLINACION_PVGIS
-        ).astype(int)
-        inclinacion_pvgis = inclinacion_pvgis.where(factores.inclinacion_estimada.notna(), supuesto)
-        factores[f"inclinacion_pvgis_{nombre}_grados"] = inclinacion_pvgis
-        orientacion = (factores.azimut_lidar_grados - 180).fillna(escenario["orientacion_grados"])
-        factores[f"orientacion_{nombre}_grados"] = orientacion
-        redondeada = np.floor(orientacion / PASO_ORIENTACION_PVGIS + 0.5) * PASO_ORIENTACION_PVGIS
-        orientacion_pvgis = ((redondeada + 180) % 360 - 180).astype(int)
-        factores[f"orientacion_pvgis_{nombre}_grados"] = orientacion_pvgis.where(inclinacion_pvgis > 0, 0)
-        factores[f"factor_{nombre}"] *= correccion
-        if nombre == "central":
-            factores["potencia_por_m2_kwp"] *= correccion
+    estimadas = factores.inclinacion_estimada
+    hay_mediciones = estimadas.notna().any()
+    mediana = estimadas.median() if hay_mediciones else INCLINACION
+    usos = (
+        factores.id_instalacion.map(candidatos.set_index("id_instalacion")["uso"])
+        if "uso" in candidatos
+        else pd.Series(index=factores.index, dtype="object")
+    )
+    por_uso = estimadas.groupby(usos).agg(["count", "median"])
+    medianas = por_uso["median"].where(por_uso["count"] >= MINIMO_ANGULOS_POR_USO)
+    referencia_uso = usos.map(medianas)
+    angulos = estimadas.fillna(referencia_uso).fillna(mediana)
+    referencia_general = "mediana_inventario" if hay_mediciones else "referencia_fija"
+    factores["referencia_inclinacion"] = np.select(
+        [estimadas.notna(), referencia_uso.notna()],
+        ["lidar", "mediana_uso"],
+        default=referencia_general,
+    )
+    inclinacion_pvgis = (
+        np.floor(angulos / PASO_INCLINACION_PVGIS + 0.5) * PASO_INCLINACION_PVGIS
+    ).astype(int)
+    orientacion = (factores.azimut_lidar_grados - 180).fillna(ORIENTACION)
+    orientacion = (orientacion + 180) % 360 - 180
+    redondeada = np.floor(orientacion / PASO_ORIENTACION_PVGIS + 0.5) * PASO_ORIENTACION_PVGIS
+    orientacion_pvgis = ((redondeada + 180) % 360 - 180).astype(int).where(inclinacion_pvgis > 0, 0)
 
+    correccion = 1 / np.cos(np.radians(angulos))
+    factores["potencia_por_m2_kwp"] *= correccion
+    for nombre in ESCENARIOS_HISTORICOS:
+        factores[f"inclinacion_{nombre}_grados"] = angulos
+        factores[f"inclinacion_pvgis_{nombre}_grados"] = inclinacion_pvgis
+        factores[f"orientacion_{nombre}_grados"] = orientacion
+        factores[f"orientacion_pvgis_{nombre}_grados"] = orientacion_pvgis
+        factores[f"factor_{nombre}"] *= correccion
     return factores
 
 
@@ -328,11 +301,11 @@ def rendimientos_historicos(recortes, carpeta: Path) -> pd.DataFrame:
     cache = carpeta / "pvgis_anual.json"
     consultas = json.loads(cache.read_text(encoding="utf-8")) if cache.exists() else {}
     recortes = recortes.copy()
-    for nombre, escenario in ESCENARIOS_HISTORICOS.items():
-        for angulo in ("inclinacion", "orientacion"):
+    for nombre in ESCENARIOS_HISTORICOS:
+        for angulo, referencia in (("inclinacion", INCLINACION), ("orientacion", ORIENTACION)):
             columna = f"{angulo}_pvgis_{nombre}_grados"
             if columna not in recortes:
-                recortes[columna] = escenario[f"{angulo}_grados"]
+                recortes[columna] = referencia
     filas = []
     with requests.Session() as sesion:
         grupos = list(recortes.groupby("codigo"))
@@ -421,6 +394,7 @@ def preparar_energia_historica(candidatos, paneles, recortes, carpeta: Path):
             / 1000
         )
     tabla["potencia_central_kwp"] = tabla.area_m2 * tabla.potencia_por_m2_kwp
+    tabla["superficie_modulos_m2"] = tabla.area_m2 / np.cos(np.radians(tabla.inclinacion_central_grados))
     tabla["superficie_antiguedad_supuesta_m2"] = tabla.area_m2.where(
         tabla.antiguedad_supuesta, 0
     )

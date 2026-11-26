@@ -19,7 +19,7 @@
 
 El trabajo empezó como una prueba para localizar paneles solares en ortofotos de Cantabria. A la detección se añadieron una revisión de vuelos anteriores, el ajuste de pendientes y orientaciones con LiDAR y una estimación energética. Este documento recoge las pruebas que motivaron esos cambios y los resultados intermedios que quedaron registrados.
 
-\section{Septiembre. Del detector francés a las etiquetas locales}
+\section{Del detector francés a las etiquetas locales}
 
 El primer ensayo reutilizó un YOLO entrenado con ejemplos franceses. El mAP50 pasó de 0,787 en la validación francesa a 0,257 en el test local. El mAP50--95 pasó de 0,468 a 0,149. Los valores se conservaron en la memoria anterior y la evaluación original ya no está disponible. Se refieren al detector inicial, mientras que las comparaciones de superficie posteriores se hacen por píxel. El ensayo motivó el etiquetado en Cantabria. Las diferencias de resolución, aspecto de las cubiertas y condiciones de captura eran explicaciones posibles, sin evidencia para aislar una de ellas.
 
@@ -44,7 +44,7 @@ U-Net ResNet34 afinada & 0,8360 & 0,7182 & 0,7815 & \(-13{,}05\,\%\) \\
 \end{tabular}
 \end{table}
 
-\section{Octubre. Transferencia, cobertura y seguimiento}
+\section{Transferencia, cobertura y seguimiento}
 
 \paragraph{Prueba con ortofotos de 2024.}
 Se comparó la misma U-Net sobre 240 localizaciones con imágenes de 2023 a 15 cm/píxel y de 2024 a 20 cm/píxel. El Dice pasó de 0,8657 a 0,7254 y el sesgo de área, de \(-9{,}69\,\%\) a \(-34{,}22\,\%\). El ensayo cambió a la vez la campaña y el producto de imagen. Por ello, la caída describe la transferencia a ese conjunto y no permite atribuirla solo a la resolución. El barrido posterior de umbrales quedó como prueba exploratoria.
@@ -55,7 +55,7 @@ La primera selección de teselas se apoyaba en edificios. El índice regional pa
 \paragraph{Reconstrucción de las campañas anteriores.}
 Se recuperaron respuestas del visor y se cerró una revisión manual de 1\,486 imágenes de 2014, 2017 y 2020 distribuidas en 653 ventanas. Había 1\,417 imágenes positivas y 69 negativas. La agrupación espacial combinó las anotaciones con las detecciones de 2023 del lote de seguimiento y produjo 4\,118 candidatos. La muestra comparable de área de 2014 a 2020 incluye 2\,353 candidatos. Las observaciones de 2023 obtenidas del modelo se identifican como estimadas.
 
-\section{Noviembre. Geometría LiDAR y estimación energética}
+\section{Geometría LiDAR y estimación energética}
 
 Se prepararon recortes LiDAR alrededor de las detecciones de 2023 del seguimiento. Se descargaron únicamente las hojas necesarias y se desarrollaron visores para comparar ortofoto, nube y planos ajustados. Los casos con retornos del suelo, varias vertientes o estructuras elevadas motivaron la comprobación con un faldón exterior. En la misma muestra de 100 casos, la versión anterior aceptó 13 pendientes y la revisada aceptó 21. Esa comparación mide cuántos casos pasaron los filtros. La exactitud angular requiere una referencia independiente.
 

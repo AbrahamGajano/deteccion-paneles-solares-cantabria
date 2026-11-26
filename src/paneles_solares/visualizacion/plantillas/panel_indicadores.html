@@ -59,24 +59,26 @@
         <div class="leyenda">
           <strong id="leyenda-titulo"></strong><div class="gradiente"></div>
           <div id="escala" class="escala"></div>
-          <p><i class="sin-datos"></i> Sin superficie disponible <i class="cero"></i> Ausencia observada</p>
-          <p>Escala fija entre campañas y filtros; raíz cuadrada para distinguir los valores bajos.</p>
+          <p><i class="sin-datos"></i> Sin superficie disponible <i class="cero"></i> <span id="leyenda-cero">Ausencia observada</span></p>
+          <p id="leyenda-escala">Escala fija entre campañas y filtros; raíz cuadrada para distinguir los valores bajos.</p>
         </div>
       </section>
       <aside class="tarjeta ficha">
         <div class="titulo-ficha"><h2>Explorar un emplazamiento</h2><button id="cerrar" type="button" aria-label="Cerrar selección">×</button></div>
         <div id="detalle"><p>Selecciona un punto para ver el detalle por campaña.</p></div>
-        <p class="nota">Acerca el mapa para ver puntos y máscaras. Azul: anotación manual. Ámbar: modelo de 2023. Edificio: contorno violeta; parcela: discontinuo.</p>
+        <p class="nota" id="nota-ficha">Acerca el mapa para ver puntos y máscaras. Azul: anotación manual. Ámbar: modelo de 2023. Edificio: contorno violeta; parcela: discontinuo.</p>
       </aside>
     </div>
     </div>
 
     <div id="vista-analisis" role="tabpanel" aria-labelledby="tab-analisis" hidden>
-      <p class="nota">Se agrupan los conjuntos atribuidos al mismo edificio y las coincidencias entre campañas. Compartir parcela no los une. Una agrupación puede requerir separar instalaciones independientes o reunir varias cubiertas; los conjuntos sin edificio se conservan. Las superficies son horizontales.</p>
+      <p id="analisis-regional" class="nota" hidden>La pasada regional de 2023 contiene máscaras. Selecciona una campaña anterior o la muestra comparable para consultar el seguimiento por instalación.</p>
+      <div id="analisis-historico">
+      <p class="nota">Se agrupan los conjuntos atribuidos al mismo edificio y las coincidencias entre campañas. Compartir parcela no los une. Una agrupación puede requerir separar instalaciones independientes o reunir varias cubiertas; los conjuntos sin edificio se conservan. La tabla usa superficie horizontal y el gráfico de tamaños corrige la inclinación.</p>
       <section id="resumen-instalaciones" class="totales" aria-label="Distribución de las instalaciones"></section>
       <section class="graficos analisis-graficos">
         <article class="tarjeta">
-          <h2>Superficie por instalación</h2>
+          <h2>Superficie de módulos por emplazamiento</h2>
           <div id="tamanos"></div>
           <p id="tamanos-nota" class="nota"></p>
         </article>
@@ -115,6 +117,8 @@
           <button id="pagina-siguiente" type="button">Siguiente</button>
         </div></div>
       </section>
+    </div>
+
     </div>
 
     <details class="metodologia tarjeta">

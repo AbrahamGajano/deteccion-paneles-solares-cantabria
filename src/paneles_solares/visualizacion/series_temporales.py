@@ -22,6 +22,7 @@ from paneles_solares.visualizacion.estimar_energia import (
     BASE_RADIACION,
     ESCENARIOS_HISTORICOS,
     MONTAJE,
+    ORIENTACION,
     TECNOLOGIA,
     URL_PVGIS,
     USAR_HORIZONTE,
@@ -153,9 +154,8 @@ def preparar_relaciones(energia: pd.DataFrame, anio_inventario: int, escenarios)
         parte["escenario"] = nombre
         parte["inclinacion_grados"] = inventario[f"inclinacion_{nombre}_grados"]
         parte["inclinacion_pvgis_grados"] = inventario[f"inclinacion_pvgis_{nombre}_grados"]
-        supuesto = ESCENARIOS_HISTORICOS[nombre]["orientacion_grados"]
-        parte["orientacion_exacta_grados"] = inventario.get(f"orientacion_{nombre}_grados", supuesto)
-        parte["orientacion_grados"] = inventario.get(f"orientacion_pvgis_{nombre}_grados", supuesto)
+        parte["orientacion_exacta_grados"] = inventario.get(f"orientacion_{nombre}_grados", ORIENTACION)
+        parte["orientacion_grados"] = inventario.get(f"orientacion_pvgis_{nombre}_grados", ORIENTACION)
         parte["escala_referencia"] = inventario.area_m2 * inventario[f"factor_{nombre}"]
         filas.append(parte)
 

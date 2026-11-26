@@ -42,7 +42,11 @@ class PruebasPvgis(unittest.TestCase):
 
     def test_reanudar_conserva_consultas_terminadas(self):
         recortes = gpd.GeoDataFrame(
-            {"codigo": ["39001"]},
+            {
+                "codigo": ["39001"],
+                "inclinacion_pvgis_min_grados": [10],
+                "inclinacion_pvgis_max_grados": [20],
+            },
             geometry=[box(420000, 4790000, 420010, 4790010)],
             crs=25830,
         )
@@ -83,9 +87,9 @@ class PruebasPvgis(unittest.TestCase):
                 return_value=respuesta,
             ) as consultar:
                 rendimientos_historicos(recortes, Path(temporal))
-                self.assertEqual(consultar.call_count, 4)
+                self.assertEqual(consultar.call_count, 2)
                 rendimientos_historicos(recortes, Path(temporal))
-                self.assertEqual(consultar.call_count, 4)
+                self.assertEqual(consultar.call_count, 2)
 
 
 class PruebasInclinaciones(unittest.TestCase):
@@ -136,7 +140,7 @@ class PruebasInclinaciones(unittest.TestCase):
         factores = factores_paneles(self.candidatos, datos)
         self.assertEqual(datos.origen_orientacion.tolist(),
                          ["pendiente_baja", "sin_normal", "supuesta", "supuesta"])
-        self.assertEqual(factores.orientacion_pvgis_min_grados.tolist(), [0, 90, 90, 90])
+        self.assertEqual(factores.orientacion_pvgis_min_grados.tolist(), [0, 0, 0, 0])
 
     def test_factores_corrigen_superficie_y_conservan_supuestos(self):
         with TemporaryDirectory() as carpeta:
@@ -144,11 +148,23 @@ class PruebasInclinaciones(unittest.TestCase):
         factores = factores_paneles(self.candidatos, datos)
         anteriores = factores_historicos(self.candidatos, self.paneles).set_index("anio")
         central = anteriores.loc[2023, "factor_central"]
-        self.assertAlmostEqual(factores.factor_central.iloc[0], central * np.cos(np.radians(30)))
-        self.assertAlmostEqual(factores.factor_central.iloc[1], central * np.cos(np.radians(30)) * 2)
+        self.assertAlmostEqual(factores.factor_central.iloc[0], central)
+        self.assertAlmostEqual(factores.factor_central.iloc[1], central * 2)
+        self.assertEqual(anteriores.loc[2023, "fecha_instalacion_modelada"], 2018.5)
         for nombre in ["min", "central", "max"]:
-            self.assertEqual(factores[f"factor_{nombre}"].iloc[2], anteriores.loc[2023, f"factor_{nombre}"])
-            self.assertEqual(factores[f"factor_{nombre}"].iloc[3], anteriores.loc[2020, f"factor_{nombre}"])
+            self.assertEqual(factores[f"inclinacion_{nombre}_grados"].tolist(), [0, 60, 30, 30])
+            self.assertAlmostEqual(
+                factores[f"factor_{nombre}"].iloc[2],
+                anteriores.loc[2023, f"factor_{nombre}"] / np.cos(np.radians(30)),
+            )
+        np.testing.assert_allclose(factores.factor_min / factores.factor_central, 0.88 / 0.90)
+        np.testing.assert_allclose(factores.factor_max / factores.factor_central, 0.92 / 0.90)
+        sin_ausencia = factores_historicos(
+            self.candidatos.assign(instalacion_desde=np.nan), self.paneles
+        )
+        self.assertTrue(sin_ausencia.antiguedad_supuesta.all())
+        self.assertTrue(sin_ausencia.fecha_desde_modelada.isna().all())
+        self.assertEqual(sin_ausencia.fecha_instalacion_modelada.tolist(), [2020, 2020])
 
     def test_suma_energia_por_panel_y_mantiene_area_horizontal(self):
         with TemporaryDirectory() as carpeta, redirect_stdout(io.StringIO()):
@@ -167,6 +183,7 @@ class PruebasInclinaciones(unittest.TestCase):
                         + 100 * factores.factor_central.iloc[1] * 1060) / 1000
             total = energia_union(200, energia)
             self.assertAlmostEqual(total["produccion_central_mwh"], esperado)
+            self.assertAlmostEqual(total["superficie_modulos_m2"], 300)
             self.assertEqual(energia.area_m2.sum(), 200)
             self.assertTrue((Path(carpeta) / "energia_paneles.csv").exists())
 

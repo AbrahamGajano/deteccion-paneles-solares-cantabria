@@ -27,9 +27,12 @@ for (const fila of datos.serie) {
 const clave = (...valores) => JSON.stringify(valores);
 const resumenes = new Map(datos.resumen.map(r => [clave(r.modo, r.anio, r.uso, r.revision, r.codigo), r]));
 const candidatosPorId = new Map(datos.candidatos.map(c => [c.id_instalacion, c]));
+const vistas = ['resumen', 'analisis'];
+const urlOrtofoto = anio => `https://geoservicios.cantabria.es/inspire/rest/services/Ortofoto_${anio}_WebMercator/MapServer/tile/{z}/{y}/{x}`;
 let modo = 'inventario';
 let seleccion = null;
 let mapa, municipios, puntos, mascaras, contexto, ortofoto;
+let mascarasRegionales;
 let limiteEscala = 1;
 let pagina = 0;
 const filasPorPagina = 20;
@@ -42,6 +45,10 @@ function opciones(id, valores, inicial) {
 
 function filtros() {
     return Object.fromEntries(['anio', 'municipio', 'uso', 'revision', 'metrica'].map(id => [id, elemento(id).value]));
+}
+
+function regionalActiva(f = filtros()) {
+    return Boolean(datos.deteccion_regional) && modo === 'inventario' && f.anio === '2023';
 }
 
 function resumen(anio, codigo, vista = modo) {
@@ -73,7 +80,7 @@ function barras(id, filas, unidad = '') {
 }
 
 function cambiarVista(vista) {
-    for (const nombre of ['resumen', 'analisis']) {
+    for (const nombre of vistas) {
         const activa = nombre === vista;
         elemento(`vista-${nombre}`).hidden = !activa;
         elemento(`tab-${nombre}`).classList.toggle('activo', activa);
@@ -148,12 +155,12 @@ function dibujarUsos(filas) {
 function actualizarInstalaciones() {
     const filas = filasSeleccionadas();
     const positivas = filas.filter(f => f.superficie_horizontal_m2 > 0);
-    const areas = positivas.map(f => f.superficie_horizontal_m2).sort((a, b) => a - b);
+    const areas = positivas.map(f => f.superficie_modulos_m2).filter(a => a > 0).sort((a, b) => a - b);
     const conUso = positivas.filter(f => f.uso !== 'Sin dato cartográfico').length;
     const tarjetas = [
         [numero(positivas.length), 'agrupaciones con superficie', 'En la campaña seleccionada'],
-        [numero(percentil(areas, .5), 1), 'm² · superficie mediana', 'La mitad tiene una superficie menor o igual'],
-        [numero(percentil(areas, .9), 1), 'm² · percentil 90', 'El 90 % tiene una superficie menor o igual'],
+        [numero(percentil(areas, .5), 1), 'm² de módulos · mediana', 'La mitad tiene una superficie menor o igual'],
+        [numero(percentil(areas, .9), 1), 'm² de módulos · percentil 90', 'El 90 % tiene una superficie menor o igual'],
         [positivas.length ? `${numero(100 * conUso / positivas.length, 1)} %` : 'Sin dato', 'con uso cartográfico', 'Referencia CBT23, no clasificación manual'],
     ];
     elemento('resumen-instalaciones').innerHTML = tarjetas.map(([valor, titulo, nota]) =>
@@ -163,8 +170,8 @@ function actualizarInstalaciones() {
     barras('tamanos', rangos.map((rango, i) => [rango,
         areas.filter(a => a >= limites[i] && a < limites[i + 1]).length]));
     const sinArea = filas.filter(f => f.estado === 'presente' && f.superficie_horizontal_m2 == null).length;
-    elemento('tamanos-nota').textContent = `${numero(positivas.length)} agrupaciones con área positiva. ` +
-        `${numero(sinArea)} presencias sin área delimitada quedan fuera. ${fuenteCampania(filtros().anio)}`;
+    elemento('tamanos-nota').textContent = `${numero(areas.length)} agrupaciones con superficie de módulos. ` +
+        `Se usa la inclinación LiDAR cuando está disponible o una referencia del inventario. ${numero(sinArea)} presencias sin contorno quedan fuera.`;
     dibujarUsos(positivas);
     elemento('usos-nota').textContent = 'Reparto por número de agrupaciones con superficie, no por m². ' +
         'Uso de la edificación según CBT23/LULC23, aplicado a todas las campañas. No identifica chalets, urbanizaciones ni titularidad pública.';
@@ -216,10 +223,21 @@ function descargarCSV(nombre, columnas, filas) {
 }
 
 function descargarResumen(energia = false) {
+    if (!energia && regionalActiva()) {
+        const total = datos.deteccion_regional.resumen['*'];
+        descargarCSV('detecciones_regionales_2023.csv', ['codigo', 'municipio', 'superficie_m2', 'detecciones'],
+            [['*', 'Cantabria', total.superficie_m2, total.detecciones],
+             ...Object.entries(nombres).map(([codigo, municipio]) => {
+                 const fila = datos.deteccion_regional.resumen[codigo];
+                 return [codigo, municipio, fila?.superficie_m2 ?? 0, fila?.detecciones ?? 0];
+             })]);
+        return;
+    }
     const columnas = energia ? [
         'modo', 'anio', 'uso', 'revision', 'codigo', 'superficie_m2',
         'produccion_min_mwh', 'produccion_central_mwh', 'produccion_max_mwh',
         'potencia_central_kwp', 'superficie_antiguedad_supuesta_m2',
+        'superficie_modulos_m2',
     ] : Object.keys(datos.resumen[0] || {});
     descargarCSV(energia ? 'produccion_estimada.csv' : 'resumen_municipal.csv',
         columnas, datos.resumen.map(f => columnas.map(c => f[c])));
@@ -284,7 +302,12 @@ function actualizarGraficos() {
 function actualizarTotales() {
     const f = filtros();
     const r = resumen(f.anio, f.municipio);
-    const tarjetas = [
+    const regional = regionalActiva(f);
+    const deteccion = datos.deteccion_regional?.resumen[f.municipio];
+    const tarjetas = regional ? [
+        [numero(deteccion?.superficie_m2 ?? 0, 1), 'm² horizontales detectados', 'Pasada regional del modelo'],
+        [numero(deteccion?.detecciones ?? 0), 'polígonos detectados', 'Una instalación puede contener varios polígonos'],
+    ] : [
         [numero(r?.superficie_m2, 1), 'm² horizontales observados', fuenteCampania(f.anio)],
         [numero(r?.con_mascara ?? 0), 'agrupaciones con paneles', 'Con superficie delimitada en esta campaña'],
         [numero(r?.ausentes ?? 0), 'ausencias confirmadas', 'En la campaña seleccionada'],
@@ -292,6 +315,10 @@ function actualizarTotales() {
     ];
     elemento('totales').innerHTML = tarjetas.map(([valor, titulo, nota]) =>
         `<div class="total"><strong>${valor}</strong><span>${titulo}</span><small>${nota}</small></div>`).join('');
+    if (regional) {
+        elemento('alcance').textContent = 'Campaña 2023 · Detección regional del modelo. Acerca el mapa para ver las máscaras.';
+        return;
+    }
     elemento('alcance').textContent = modo === 'muestra' ?
         `Muestra comparable de ${datos.comparables.join(', ')}: mismas agrupaciones con áreas revisadas en todas las fechas.` :
         `Campaña ${f.anio}. ${fuenteCampania(f.anio)} Inventario seleccionado; la cobertura cambia entre campañas.`;
@@ -301,11 +328,12 @@ function actualizarEnergia() {
     if (!datos.energia) return;
     const f = filtros();
     const r = resumen(f.anio, f.municipio);
+    const perdidas = datos.energia.escenarios;
     const tarjetas = [
-        [numero(r?.produccion_central_mwh), 'MWh/año · escenario central', 'Edad aproximada y eficiencia según época'],
-        [numero(r?.produccion_min_mwh), 'MWh/año · conservador', 'Orientación oeste, pérdidas y envejecimiento mayores'],
-        [numero(r?.produccion_max_mwh), 'MWh/año · favorable', 'Permite módulos nuevos en toda el área observada'],
+        [numero(r?.produccion_central_mwh), 'MWh/año · estimación de referencia', `${perdidas.central.perdidas_operativas_pct} % de pérdidas operativas`],
+        [`${numero(r?.produccion_min_mwh)} – ${numero(r?.produccion_max_mwh)}`, 'MWh/año · sensibilidad', `Entre ${perdidas.max.perdidas_operativas_pct} % y ${perdidas.min.perdidas_operativas_pct} % de pérdidas operativas`],
         [numero(r?.potencia_central_kwp != null ? r.potencia_central_kwp / 1000 : null, 2), 'MWp · potencia nominal estimada', 'Potencia inicial; la producción sí descuenta degradación'],
+        [numero(r?.superficie_modulos_m2), 'm² · superficie de módulos', 'Superficie estimada al corregir la inclinación'],
     ];
     elemento('energia-totales').innerHTML = tarjetas.map(([valor, titulo, nota]) =>
         `<div class="total"><strong>${valor}</strong><span>${titulo}</span><small>${nota}</small></div>`).join('');
@@ -319,25 +347,22 @@ function actualizarEnergia() {
         elemento('energia-edades').textContent = 'No hay superficie positiva delimitada en esta selección.';
         return;
     }
-    elemento('energia-edades').textContent = `Central: ${numero(rendimiento)} kWh por m² horizontal y año. ` +
-        `${numero(sinFecha, 1)} % del área necesita el supuesto de antigüedad de hasta 25 años antes de la primera imagen. ` +
-        'Los escenarios no son intervalos de confianza y no fechan ampliaciones o sustituciones.';
+    elemento('energia-edades').textContent = `${numero(rendimiento)} kWh por m² horizontal y año. ` +
+        `En el ${numero(sinFecha, 1)} % de la superficie se usa la primera evidencia como referencia de edad.`;
 }
 
 function mostrarSupuestosEnergia() {
     const h = datos.energia;
     document.querySelector('.bloque-energia').hidden = !h;
     if (!h) return;
-    const nombres = { min: 'Conservador', central: 'Central', max: 'Favorable' };
+    const nombres = { min: 'Más pérdidas', central: 'Referencia', max: 'Menos pérdidas' };
     const filas = Object.entries(h.escenarios).map(([nombre, e]) => `<tr><td>${nombres[nombre]}</td>` +
-        `<td>${e.inclinacion_grados}° sin estimación LiDAR</td><td>${e.orientacion_grados === 90 ? 'Oeste' : 'Sur'} sin estimación LiDAR</td>` +
-        `<td>${e.perdidas_operativas_pct} %</td><td>${numero(100 * e.degradacion_anual, 1)} %/año</td>` +
-        `<td>× ${numero(e.factor_eficiencia, 2)}</td></tr>`).join('');
+        `<td>${e.perdidas_operativas_pct} %</td></tr>`).join('');
     const etiquetas = { radiacion: 'Radiación', inclinacion: 'Inclinación', orientacion: 'Orientación', superficie: 'Superficie', eficiencia: 'Tecnología y época',
-        antiguedad: 'Edad central', ampliaciones: 'Ampliaciones y renovaciones', perdidas: 'Pérdidas',
+        antiguedad: 'Año de referencia', ampliaciones: 'Ampliaciones y renovaciones', perdidas: 'Pérdidas',
         periodo: 'Año representativo', limites: 'Alcance del rango' };
     elemento('energia-supuestos').innerHTML = '<div class="tabla-supuestos"><table><thead><tr>' +
-        '<th>Escenario</th><th>Inclinación</th><th>Orientación</th><th>Pérdidas</th><th>Degradación</th><th>Eficiencia de época</th>' +
+        '<th>Cálculo</th><th>Pérdidas operativas</th>' +
         `</tr></thead><tbody>${filas}</tbody></table></div>` +
         Object.entries(etiquetas).map(([clave, titulo]) => `<p><strong>${titulo}.</strong> ${texto(h[clave])}</p>`).join('') +
         '<p><strong>Eficiencias de referencia.</strong> ' + Object.entries(h.eficiencia_por_anio).map(([a, e]) => `${a}: ${numero(e * 100, 1)} %`).join(' · ') + '</p>' +
@@ -345,6 +370,10 @@ function mostrarSupuestosEnergia() {
 }
 
 function maximoEscala() {
+    if (regionalActiva()) {
+        return Math.max(1, ...Object.entries(datos.deteccion_regional.resumen)
+            .filter(([codigo]) => !['*', 'fuera'].includes(codigo)).map(([, r]) => r.superficie_m2));
+    }
     const anios = modo === 'muestra' ? datos.comparables : datos.anios;
     return Math.max(1, ...datos.resumen.filter(r => r.modo === modo && anios.includes(r.anio) &&
         r.uso === '*' && r.revision === '*' && !['*', 'fuera'].includes(r.codigo))
@@ -362,13 +391,18 @@ function color(valor) {
 function estiloMunicipio(feature) {
     const f = filtros();
     const r = resumen(f.anio, feature.properties.codigo);
-    const valor = f.metrica === 'con_mascara' && r?.superficie_m2 == null ? null : r?.[f.metrica];
+    const valor = regionalActiva(f) ? datos.deteccion_regional.resumen[feature.properties.codigo]?.superficie_m2 ?? 0 :
+        f.metrica === 'con_mascara' && r?.superficie_m2 == null ? null : r?.[f.metrica];
     return { color: f.municipio === feature.properties.codigo ? '#142d39' : '#7d9691',
         weight: f.municipio === feature.properties.codigo ? 2.8 : .7,
         fillColor: color(valor), fillOpacity: mapa?.getZoom() >= 15 ? .05 : .74 };
 }
 
 function verFicha() {
+    if (regionalActiva()) {
+        elemento('detalle').innerHTML = '<p>Acerca el mapa y pulsa un punto naranja para ver su detección.</p>';
+        return;
+    }
     const c = candidatosPorId.get(seleccion);
     if (!c) {
         elemento('detalle').innerHTML = '<p>Selecciona un punto para ver el detalle por campaña.</p>';
@@ -400,9 +434,39 @@ function verFicha() {
         `<details><summary>Identificadores del contexto</summary><p class="identificador">${texto(idsEdificio.join(' · '))}<br>${texto(idsParcela.join(' · '))}<br>RC: ${texto(referencias.join(' · '))}</p></details>`;
 }
 
+function verDeteccion(p) {
+    elemento('detalle').innerHTML = `<p><strong>${numero(p.superficie_m2, 2)} m² horizontales</strong></p>` +
+        `<p class="identificador">${texto(p.id_panel)}</p>`;
+}
+
 function dibujarDetalle() {
     if (!mapa) return;
     const f = filtros();
+    if (regionalActiva(f)) {
+        puntos.clearLayers();
+        contexto.clearLayers();
+        if (mapa.getZoom() >= 12) {
+            const cerca = mapa.getBounds().pad(.1);
+            for (const { properties: p } of datos.deteccion_regional.mascaras.features) {
+                if (!cerca.contains([p.lat, p.lon])) continue;
+                L.circleMarker([p.lat, p.lon], { radius: 4, color: '#b16e00', fillColor: '#f8b928',
+                    weight: 1.5, fillOpacity: .85 }).on('click', () => {
+                    mapa.setView([p.lat, p.lon], Math.max(19, mapa.getZoom()));
+                    verDeteccion(p);
+                }).addTo(puntos);
+            }
+        }
+        if (mapa.getZoom() < 16) {
+            mascaras.clearLayers();
+        } else if (!mascarasRegionales || !mascaras.hasLayer(mascarasRegionales)) {
+            mascarasRegionales ??= L.geoJSON(datos.deteccion_regional.mascaras, {
+                style: { color: '#f8b928', weight: 1.5, fillOpacity: .3 },
+                onEachFeature: (feature, capa) => capa.on('click', () => verDeteccion(feature.properties)),
+            });
+            mascaras.addLayer(mascarasRegionales);
+        }
+        return;
+    }
     const elegidos = candidatosFiltrados();
     const ids = new Set(elegidos.map(c => c.id_instalacion));
     puntos.clearLayers();
@@ -455,24 +519,38 @@ function elegirCandidato(id) {
 }
 
 function actualizar() {
+    const regional = regionalActiva();
+    for (const id of ['uso', 'revision', 'metrica']) {
+        elemento(id).disabled = regional;
+    }
+    if (regional) elemento('metrica').value = 'superficie_m2';
+    elemento('nota-ficha').hidden = regional;
+    elemento('analisis-historico').hidden = regional;
+    elemento('analisis-regional').hidden = !regional;
+    document.querySelector('.bloque-energia').hidden = regional || !datos.energia;
     if (seleccion && !candidatosFiltrados().some(c => c.id_instalacion === seleccion)) seleccion = null;
     actualizarTotales();
-    actualizarEnergia();
-    actualizarGraficos();
-    pagina = 0;
-    actualizarInstalaciones();
+    if (!regional) {
+        actualizarEnergia();
+        actualizarGraficos();
+        pagina = 0;
+        actualizarInstalaciones();
+    }
     verFicha();
     const f = filtros();
     const maximo = maximoEscala();
     limiteEscala = maximo;
     elemento('leyenda-titulo').textContent = {
-        superficie_m2: 'Superficie horizontal observada · m²', con_mascara: 'Agrupaciones con paneles',
+        superficie_m2: regional ? 'Superficie horizontal detectada · m²' : 'Superficie horizontal observada · m²',
+        con_mascara: 'Agrupaciones con paneles',
         produccion_central_mwh: 'Producción estimada del inventario · MWh/año',
     }[f.metrica];
+    elemento('leyenda-cero').textContent = regional ? 'Sin detecciones' : 'Ausencia observada';
+    elemento('leyenda-escala').hidden = regional;
     elemento('escala').innerHTML = [0, .25, 1].map(t => `<span>${numero(maximo * t)}</span>`).join('');
     if (!mapa) return;
     municipios.setStyle(estiloMunicipio);
-    ortofoto.setUrl(`https://geoservicios.cantabria.es/inspire/rest/services/Ortofoto_${f.anio}_WebMercator/MapServer/tile/{z}/{y}/{x}`);
+    ortofoto.setUrl(urlOrtofoto(f.anio));
     dibujarDetalle();
 }
 
@@ -488,6 +566,11 @@ function crearMapa() {
         style: estiloMunicipio,
         onEachFeature: (feature, capa) => {
             capa.bindTooltip(() => {
+                if (regionalActiva()) {
+                    const r = datos.deteccion_regional.resumen[feature.properties.codigo];
+                    return `<strong>${texto(feature.properties.municipio)}</strong><br>` +
+                        `${numero(r?.superficie_m2 ?? 0, 1)} m² detectados<br>${numero(r?.detecciones ?? 0)} polígonos`;
+                }
                 const r = resumen(filtros().anio, feature.properties.codigo);
                 return `<strong>${texto(feature.properties.municipio)}</strong><br>` +
                     `${numero(r?.superficie_m2, 1)} m² observados<br>${numero(r?.con_mascara ?? 0)} agrupaciones con paneles`;
@@ -545,7 +628,7 @@ elemento('municipio').addEventListener('change', () => {
     }
 });
 elemento('cerrar').addEventListener('click', () => { seleccion = null; verFicha(); dibujarDetalle(); });
-for (const vista of ['resumen', 'analisis']) {
+for (const vista of vistas) {
     elemento(`tab-${vista}`).addEventListener('click', () => cambiarVista(vista));
 }
 elemento('buscar-instalacion').addEventListener('input', () => { pagina = 0; actualizarTabla(); });

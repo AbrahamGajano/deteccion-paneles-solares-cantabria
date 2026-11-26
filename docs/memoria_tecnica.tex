@@ -121,37 +121,23 @@ La máscara aporta la proyección horizontal \(A_h\). Para un faldón plano de i
 \[
 A_{\text{módulos}}=\frac{A_h}{\cos\beta}.
 \]
-Se usa el ángulo exacto estimado o el supuesto del escenario. Para evitar que un mismo píxel se cuente dos veces, primero se disuelven las piezas de cada detección dentro de su municipio. Para el grupo \((\text{instalación},\text{campaña},\text{municipio})\), cada área \(A_{h,i}\) se multiplica por
+Se usa el ángulo exacto aceptado por LiDAR. Para completar los que faltan se toma la mediana del uso cartográfico del edificio cuando hay al menos 20 inclinaciones aceptadas en esa categoría, y la mediana del inventario en los demás casos. Si se ejecuta el cálculo sin LiDAR se usan \(30^\circ\). El azimut aceptado se conserva. Sin azimut fiable, se toma el sur como referencia. Para evitar que un mismo píxel se cuente dos veces, primero se disuelven las piezas de cada detección dentro de su municipio. Para el grupo \((\text{instalación},\text{campaña},\text{municipio})\), cada área \(A_{h,i}\) se multiplica por
 \[
 q=\frac{A\bigl(\bigcup_i P_i\bigr)}{\sum_i A_{h,i}}.
 \]
 Así las áreas asignadas a las detecciones suman la unión del grupo y conservan su peso relativo. El resumen cartográfico vuelve a disolver posibles solapes entre candidatos. La energía del resumen municipal aplica a la mezcla de áreas y ángulos ese mismo ajuste de superficie.
 
-Si \(y_0\) es el año atribuido a los módulos, \(\eta(y_0)\) la eficiencia inicial de referencia, \(k_s\) el multiplicador de eficiencia del escenario y \(G_{\mathrm{STC}}=1\,\mathrm{kW/m^2}\) la irradiancia de referencia de ensayo, la potencia pico inicial es
+Si \(y_0\) es el año atribuido a los módulos, \(\eta(y_0)\) la eficiencia inicial de referencia y \(G_{\mathrm{STC}}=1\,\mathrm{kW/m^2}\) la irradiancia de referencia de ensayo, la potencia pico inicial es
 \[
-P_{\mathrm{pico}}=A_{\text{módulos}}\ \eta(y_0)\ k_s\ G_{\mathrm{STC}}.
+P_{\mathrm{pico}}=A_{\text{módulos}}\ \eta(y_0)\ G_{\mathrm{STC}}.
 \]
-La tabla de eficiencias se interpola por año. Entre sus referencias están el \(16{,}3\,\%\) en 2014, \(17{,}7\,\%\) en 2017, \(20\,\%\) en 2020 y \(21{,}8\,\%\) en 2023. Antes de 2014 se usan como hipótesis \(10\,\%\) en 1989, \(12\,\%\) en 2000 y \(15\,\%\) en 2010. Esta densidad de potencia describe módulos típicos de una época. La potencia real de un sistema requiere su ficha o un registro. \cite{eficiencia}
+La tabla de eficiencias se interpola por año. Entre sus referencias están el \(16{,}3\,\%\) en 2014, \(17{,}7\,\%\) en 2017, \(20\,\%\) en 2020 y \(21{,}8\,\%\) en 2023. Para años fuera de la tabla se usa el extremo más cercano. Esta densidad de potencia describe módulos típicos de una época. La potencia real de un sistema requiere su ficha o un registro. \cite{eficiencia}
 
-\subsection{Antigüedad y escenarios}
+\subsection{Antigüedad y sensibilidad a las pérdidas}
 
-El escenario central sitúa el origen de los módulos en el punto medio del intervalo. Si falta el extremo inferior o existen contradicciones, se modela un intervalo de 25 años hasta la primera evidencia compatible. La marca de antigüedad supuesta se exporta en el CSV. El escenario conservador sitúa el origen en el extremo más antiguo considerado. El favorable simula módulos del año de la imagen. El código conserva esos supuestos al calcular la edad \(a=y-y_0\), donde \(y\) es el año del inventario.
+El año estimado se sitúa en el punto medio de un intervalo de aparición válido. Si solo se conoce la primera evidencia, esa fecha se toma como referencia y la antigüedad queda marcada como supuesta en el CSV. Para calcular el envejecimiento se usa \(a=y-y_0\), donde \(y\) es el año del inventario. Las ampliaciones y renovaciones necesitan una fecha propia.
 
-\begin{table}[htbp]
-\centering
-\caption{Valores de los escenarios. Los ángulos se aplican cuando falta el valor LiDAR correspondiente.}
-\begin{tabular}{lrrrrr}
-\toprule
-Escenario & Inclinación & Orientación & Pérdidas & Degradación anual & \(k_s\) \\
-\midrule
-Conservador & \(15^\circ\) & Oeste & \(18\,\%\) & \(1\,\%\) & 0,85 \\
-Central & \(30^\circ\) & Sur & \(10\,\%\) & \(0{,}5\,\%\) & 1,00 \\
-Favorable & \(40^\circ\) & Sur & \(5\,\%\) & \(0{,}2\,\%\) & 1,15 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-El envejecimiento acumulado se representa con \((1-d)^a\), siendo \(d\) la degradación anual. La hipótesis central se apoya en la mediana de la revisión de Jordan y Kurtz. Las pérdidas operativas \(\ell\) se modelan con el factor \(1-\ell\). Los tres valores son escenarios de sensibilidad. Un intervalo de confianza exigiría modelar la incertidumbre de las entradas y validarla con observaciones. \cite{degradacion}
+El envejecimiento acumulado se representa con \((1-d)^a\), con \(d=0{,}005\) según la mediana de Jordan y Kurtz. Las pérdidas operativas \(\ell\) se modelan con el factor \(1-\ell\). Se toma el \(10\,\%\) como referencia y se evalúan el \(8\,\%\) y el \(12\,\%\) para mostrar la sensibilidad. Los ángulos, la eficiencia y la edad se mantienen fijos en esa comparación. \cite{degradacion}
 
 \subsection{Referencia solar y estimación anual}
 

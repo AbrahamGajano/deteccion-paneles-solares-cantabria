@@ -13,6 +13,7 @@ from shapely import covers, prepare, union_all
 from paneles_solares.datos.inclinaciones import incorporar_inclinaciones
 from paneles_solares.rutas import (
     INDICADORES_SEGUIMIENTO,
+    INDICADORES_UNET,
     INCLINACIONES_LIDAR,
     MUNICIPIOS_CANTABRIA,
     VISUALIZACION,
@@ -123,7 +124,8 @@ def desgloses(tabla: pd.DataFrame):
 def recortar_paneles(paneles, municipios):
     """Separa el área municipal y exterior conservando la geometría de cada máscara."""
 
-    geometrias = paneles[["id_panel", "id_instalacion", "anio", "geometry"]]
+    columnas = [c for c in ("id_panel", "id_instalacion", "anio", "geometry") if c in paneles]
+    geometrias = paneles[columnas]
     limites = municipios[["codigo", "geometry"]]
     recortes = gpd.overlay(geometrias, limites, how="intersection", keep_geom_type=True)
     territorio = union_all(limites.geometry)
@@ -239,6 +241,27 @@ def geojson(tabla, tolerancia=0.02):
     return json.loads(dibujo.to_crs(4326).to_json(drop_id=True))
 
 
+def preparar_deteccion_regional(archivo: Path, municipios):
+    """Prepara las máscaras regionales y su superficie por municipio para 2023."""
+    regional = gpd.read_file(archivo, layer="detecciones", columns=["id_deteccion"])
+    regional = regional.to_crs(municipios.crs).rename(columns={"id_deteccion": "id_panel"})
+    regional["superficie_m2"] = regional.area.round(2)
+    centros = regional.representative_point().to_crs(4326)
+    regional["lat"] = centros.y.round(7)
+    regional["lon"] = centros.x.round(7)
+    recortes = recortar_paneles(regional, municipios)
+    recortes["superficie_m2"] = recortes.area
+    recortes = recortes[recortes.superficie_m2.gt(0)]
+    resumen = recortes.groupby("codigo").agg(
+        superficie_m2=("superficie_m2", "sum"), detecciones=("id_panel", "nunique")
+    ).to_dict("index")
+    resumen["*"] = {"superficie_m2": float(regional.area.sum()), "detecciones": len(regional)}
+    return {
+        "mascaras": geojson(regional),
+        "resumen": resumen,
+    }
+
+
 def resumir_atribucion(paneles):
     """Describe la coincidencia de todos los paneles de cada agrupación y campaña."""
 
@@ -261,7 +284,7 @@ def resumir_atribucion(paneles):
     return pd.DataFrame(filas, columns=["id_instalacion", "anio", "soporte"])
 
 
-def preparar_contenido(candidatos, paneles, serie, municipios, contexto, resumen):
+def preparar_contenido(candidatos, paneles, serie, municipios, contexto, resumen, energia):
     """Empaqueta las fichas y las capas necesarias para explorar el mapa."""
 
     fichas = candidatos.drop(columns="geometry").copy()
@@ -270,6 +293,8 @@ def preparar_contenido(candidatos, paneles, serie, municipios, contexto, resumen
     serie = serie.merge(
         resumir_atribucion(paneles), on=["id_instalacion", "anio"], how="left"
     )
+    superficie_modulos = energia.groupby(["id_instalacion", "anio"], as_index=False).superficie_modulos_m2.sum()
+    serie = serie.merge(superficie_modulos, on=["id_instalacion", "anio"], how="left")
     columnas = [
         "id_instalacion",
         "codigo",
@@ -294,6 +319,7 @@ def preparar_contenido(candidatos, paneles, serie, municipios, contexto, resumen
                 "anio",
                 "estado",
                 "superficie_horizontal_m2",
+                "superficie_modulos_m2",
                 "fuente_superficie",
                 "soporte",
                 "superficie_horizontal_anotada_m2",
@@ -400,6 +426,8 @@ def main():
         "--carpeta", type=ruta_proyecto, default=INDICADORES_SEGUIMIENTO
     )
     parser.add_argument("--salida", type=ruta_proyecto, default=SALIDA)
+    parser.add_argument("--detecciones-regionales", type=ruta_proyecto,
+                        help="GeoPackage de detecciones regionales de 2023 para el mapa comparativo")
     parser.add_argument("--series-horarias", action="store_true",
                         help="Prepara referencias horarias y resúmenes por instalación")
     parser.add_argument("--exportar-horarias", action="store_true",
@@ -434,9 +462,15 @@ def main():
     print("Calculando áreas sin solapes y la muestra comparable…", flush=True)
     resumen = resumir_mapa(candidatos, paneles, serie, municipios, recortes, energia)
     contenido = preparar_contenido(
-        candidatos, paneles, serie, municipios, contexto, resumen
+        candidatos, paneles, serie, municipios, contexto, resumen, energia
     )
     contenido["energia"] = hipotesis_historicas(resultados_lidar)
+    regional = args.detecciones_regionales
+    if regional is None and args.carpeta == INDICADORES_SEGUIMIENTO and args.limite is None:
+        archivo_regional = INDICADORES_UNET / "detecciones.gpkg"
+        regional = archivo_regional if archivo_regional.exists() else None
+    if regional is not None:
+        contenido["deteccion_regional"] = preparar_deteccion_regional(regional, municipios)
     crear_panel(contenido, args.salida / "panel_indicadores.html")
     resumen.to_csv(args.salida / "resumen_municipal.csv", index=False)
     columnas = [
@@ -458,6 +492,8 @@ def main():
     archivos.append(args.salida / "pvgis_anual.json")
     if resultados_lidar is not None:
         archivos.append(resultados_lidar)
+    if regional is not None:
+        archivos.append(regional)
     procedencia = {
         "fuentes": {ruta_registrada(p): huella_archivo(p) for p in archivos},
         "limite_prueba": args.limite,

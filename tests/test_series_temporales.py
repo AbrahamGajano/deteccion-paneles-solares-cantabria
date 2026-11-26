@@ -139,7 +139,7 @@ class PruebasProduccionHoraria(unittest.TestCase):
                 relaciones = preparar_series_temporales(
                     self.energia(), carpeta / "salida", cache=carpeta / "cache", exportar_horarias=True,
                 )
-            self.assertEqual(peticion.call_count, 4)
+            self.assertEqual(peticion.call_count, 2)
             serie = calcular_serie_instalacion(relaciones)
             esperado = 2 * 0.110 + 6 * 0.130
             np.testing.assert_allclose(serie.potencia_central_kw, esperado)

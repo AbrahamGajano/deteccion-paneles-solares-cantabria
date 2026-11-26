@@ -256,7 +256,8 @@ El mismo HTML tiene dos pestañas:
   reparto de usos cartográficos, relación con edificios, periodos y cambios
   de superficie. Incluye una tabla buscable y la descarga de la selección.
 
-Los gráficos por instalación usan agrupaciones con área positiva en la campaña
+Los gráficos de tamaño por instalación usan superficie de módulos corregida por
+inclinación. Incluyen agrupaciones con área positiva en la campaña
 elegida; los ceros y valores desconocidos se conservan en la tabla. Los usos
 proceden de las edificaciones CBT23/LULC23, no de una clasificación manual ni
 de un supuesto tipo de parcela. El gráfico cuenta cada agrupación una vez y
@@ -269,7 +270,9 @@ común con áreas revisadas en todas las campañas comparables. El inventario
 conserva también estimaciones del modelo y estados pendientes. Un dato
 desconocido no equivale a cero; los recuentos siguen siendo provisionales.
 
-La sección de energía muestra tres escenarios, sus supuestos y fuentes.
+La sección de energía muestra la estimación de referencia con un 10 % de
+pérdidas operativas y la sensibilidad al 8–12 %. La geometría, el año de los
+módulos y la degradación se mantienen fijos al variar esas pérdidas.
 La estimación corresponde al inventario observado, sin extrapolar a toda
 Cantabria. Las áreas se agregan sin duplicar solapes.
 
@@ -277,10 +280,17 @@ El mismo comando incorpora la inclinación y la orientación de los planos
 aceptados para 2023 en `runs/lidar/cantabria_20261112_v2/resumen.csv`.
 Se calcula primero la energía de cada detección y después se suma: una misma
 agrupación puede contener paneles con pendientes distintas. Las otras campañas
-conservan los supuestos anteriores; no se hereda la geometría de 2023.
-La superficie de módulos usa la inclinación exacta. Las consultas PVGIS se
-agrupan los ángulos estimados en pasos de 2° de inclinación y 5° de orientación. Por debajo de 5°
-de inclinación o sin normal válida se utiliza la orientación del escenario.
+usan las referencias del inventario cuando falta una inclinación propia.
+La superficie de módulos usa la inclinación exacta. Para completar las
+inclinaciones sin ajuste se usa la mediana del uso del edificio si hay al menos
+20 mediciones, y la mediana del inventario en los demás casos. Se usa el sur
+como referencia cuando falta un azimut fiable. PVGIS recibe ángulos agrupados
+en pasos de 2° de inclinación y 5° de orientación.
+
+La eficiencia de referencia depende del año atribuido a los módulos. Se toma
+el punto medio del intervalo de aparición cuando está acotado. Si solo se
+conoce la primera presencia se usa esa fecha como referencia y se registra el
+supuesto en el CSV. Se aplica un 0,5 % de degradación anual según la edad.
 
 `--lidar ruta/resumen.csv` selecciona otro lote. Para comparar con los supuestos
 anteriores sin sustituir el panel habitual:
@@ -289,8 +299,8 @@ anteriores sin sustituir el panel habitual:
 .\.venv\Scripts\python.exe -m paneles_solares.visualizacion.panel_indicadores --sin-lidar --salida runs/visualizacion_sin_lidar
 ```
 
-`factores_energia.csv` conserva los ángulos, su origen y los factores por detección
-y campaña. `energia_paneles.csv` añade el desglose municipal, las superficies,
+`factores_energia.csv` conserva los ángulos, su origen, el año de referencia y los factores por detección
+y campaña. `energia_paneles.csv` añade el desglose municipal, las superficies horizontal y de módulos,
 potencias y producciones. El mapa mantiene las superficies horizontales.
 Las hipótesis y la procedencia registran el lote LiDAR utilizado. El cálculo
 regional uniforme del apartado 3 permanece como escenario independiente.
@@ -349,6 +359,7 @@ eficiencia, la degradación y las pérdidas ya están incluidas en los factores.
 - [Historial del proyecto](docs/historial_proyecto.tex).
 - [Guía de etiquetado, validación y seguimiento](docs/guia.md).
 - [Memoria técnica](docs/memoria_tecnica.tex).
+- [Análisis de resultados](docs/analisis_resultados.tex) e [índice de mapas, visores y datos](docs/README.md#consultar-los-resultados).
 - [LiDAR: método, descarga y ejecución](docs/lidar/README.md).
 - [Fuentes catastrales de 2023](docs/revision_catastro_2023.md).
 
